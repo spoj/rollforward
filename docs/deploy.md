@@ -124,6 +124,21 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
   Then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
 
+## Updating to v0.8.0
+
+This is a `Manual:` release: the message store changes on disk. Do not point v0.8.0 at the old data, or v0.7.x at converted data. Keep the old checkout and a recoverable backup of the complete original data root and both keys, including keys supplied by systemd. Check that published skills and local scripts on the host use `rf comment` and `rf settle` before the switch.
+
+1. Stop the update timer; check that no update job is running. Check that the checkout is clean and the tag includes the deployed commit. Use the native or container drain above. Stop the server only after `/drained` returns 200. Keep writers stopped, including clients and admin scripts, until verification is complete.
+2. Copy the stopped data root to a **separate directory** on the production host, preserving owner, permissions and any keys. Do not use hard links to the original. Keep `.rf`, the instance repositories and series directories. Check free space first. As the service user, run against the copy from the new checkout (using its Node 26):
+
+       node scripts/migrate-messages.ts --stopped-copy "$COPY" --source "$ORIGINAL" --dry-run
+       node scripts/migrate-messages.ts --stopped-copy "$COPY" --source "$ORIGINAL" --apply
+       node scripts/migrate-messages.ts --stopped-copy "$COPY" --source "$ORIGINAL" --dry-run
+
+   Progress goes to standard error; standard output is one JSON count report. Review the counts against the old root. Stop on any refusal; do not hand-fill a gap or restart on an incomplete conversion. The final dry run must say `already converted`. A failed partial conversion is discarded and started again on a fresh stopped copy.
+3. Point the service at the converted copy, with the same keys and environment, and append `--verify-only` after the port in the new `src/server.ts` command. This startup binds only to loopback, does not recover runs, start scheduled work, or contact the browser, tunnelling, index or model services. It refuses sign-in exchanges and all HTTP writes. Use an existing authenticated token from the copied data to check `GET /me` (`version: "v0.8.0"`, `verifyOnly: true`), `/api/status`, conversation links, Notes, Waiting, and `rf pull` with `@rfany/rf@0.20.0`. Verify the converter's projection counts. Use `@rfany/rf@0.19.2` with v0.7.9 and pin `@rfany/rf@0.20.0` after cutover.
+4. On a verification failure, stop the verification service, keep the converted copy for inspection, and restart the old checkout on the untouched original. Verify authenticated `/me` again. If verification passes, stop the verification service, remove only the `--verify-only` argument and restart on the converted copy to activate it. Verify `/me` again and restore the updater timer to its previous state. Activation can run due work and make outward changes. If anything fails after activation, keep the updater paused, preserve both roots, and agree on how to reconcile new work before rolling back. Never copy converted logs over old ones.
+
 ## Updating to v0.7.0
 
 Release v0.7.0 with a `Manual:` line in the tag message so the updater stops for a person to deploy it.

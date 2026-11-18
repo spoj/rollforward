@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
+import { parseArgs } from 'node:util';
 
-// The agent's rf. For its own instance it calls the people's API (/api), as a run; /agent holds what only a run has.
+// The agent's rf calls /api as a run; /agent holds what only a run has.
 const HELP: Record<string, string> = {
   show: `rf show
   Prints the screen, {"rev", "status", "items"}.`,
@@ -10,27 +11,22 @@ const HELP: Record<string, string> = {
   uploaded): run rf show and merge. It fails, with the reasons, unless every item has a unique id, a name and a kind (input,
   step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; and status
   is left out or as it is.`,
-  say: `rf say [--at PATH] [--in cN | --on ITEM[@REF]] TEXT|-
-  Tells people something that needs no reply. --in cN replies under comment cN, N its seq; a thread's id is its first
-  comment's. --on starts a thread on an item, or on a place in its file, such as ar-aging@Sheet1!C22 or a markdown file's line
-  by its opening words. With neither, the thread is on the instance. In TEXT, [name](PATH) links a file and ![name](PATH)
-  shows an image, PATH under upload/ or working/ of this instance, or as ../<label>/working/x.csv of another of its series;
-  cN, or [name](#cN), links a comment, and [name](../<label>#cN) one of another instance. - reads TEXT from stdin. --at PATH
-  says it in another open instance of your workspace, such as ../<label> or ../../<series>/<label>, --in and --on then its
-  threads and items: a note for its series owner, naming you, your run, your captured executor and this instance; it starts no run there.`,
-  ask: `rf ask [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Asks a question, for information: it waits on EMAIL, else the series owner, until a person replies under it. Only the current owner initiates execution. It authorises nothing. The rest as rf say.`,
-  propose: `rf propose [--in cN | --on ITEM[@REF]] [--to EMAIL] TEXT|-
-  Proposes what you will do on your series owner's behalf, such as an act outside the series, which waits for its approval,
-  linking what it uses: it waits on EMAIL, else the series owner, until someone approves or rejects it, with an optional
-  note. A collaborator's decision records content approval, never execution authority. An approval is the log's signoff entry, naming the proposal as on, with the commit of your
-  instance's folder as it was then, in their name (rf help commit): before you act, check with git diff against it that what
-  you use is unchanged. A reject entry says no: don't act on it; follow its feedback and propose revised work anew. Missing
-  information is a reason to reject, not to leave the proposal pending. Comments are not proposal decisions. Whose approval
-  counts, and for what, is the series' instructions' call. The rest as rf say.`,
-  withdraw: `rf withdraw cN [--see cM] REASON|-
-  Withdraws your question or proposal cN still waiting, saying why: it waits no more, and shows as withdrawn. --see names the
-  comment where it was answered.`,
+  comment: `rf comment TARGET [--in cN | --on ITEM[@REF]] [--ask | --propose] [--to EMAIL] [--request] [--for cN|nN] TEXT|-
+rf comment SERIES [--json]
+rf comment --mine [--json]
+  TARGET is . for your own instance, or a relative path such as ../<label> for another instance or .. for your series.
+  --in replies under cN. --on starts a thread on an item or a place in its file, such as ar-aging@Sheet1!C22.
+  In TEXT, [name](PATH) links a file and ![name](PATH) shows an image. Link a comment with cN, [name](#cN), or
+  [name](../<label>#cN) for another instance. - reads TEXT from stdin.
+  In your own instance, --ask asks for information and --propose asks for approval to act. Either waits on --to EMAIL,
+  else the series owner.
+  A collaborator's approval records content approval, not execution authority. Before acting on an approval, use git diff
+  against the signoff commit to check that what you use is unchanged. Comments are not proposal decisions.
+  --request marks a request to propose, not authority to act. --for links a proposal to the message it addresses.
+  Without TEXT, list a series' notes; --mine lists your own notes.`,
+  settle: `rf settle ID taken|aside|withdrawn [--see cN] TEXT|-
+  ID is cN in your instance or nN in its series. Say where you acted (taken), why you set it aside (aside), or why you
+  withdraw a pending question or proposal (withdrawn). --see links a comment in your instance. - reads TEXT from stdin.`,
   commit: `rf commit MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
@@ -50,11 +46,6 @@ const HELP: Record<string, string> = {
   read-only sandbox, with rf show and the selected indexes. Print just {"decision":"stop","message":"No new files"} or
   {"decision":"continue","message":"New file found"}. Errors fall through to Pi. --deadline TIME (ISO with offset) makes Pi
   run by that time even if the check would stop.`,
-  note: `rf note SERIES TEXT|- | rf note --taken ID [--see cN] TEXT|- | rf note --aside ID TEXT|-
-  Leaves a note on a series of your workspace, such as .. for your own or ../../<series>, for its runs, whether or not an
-  instance is open; it names you, your run, your captured executor and this instance, and starts no run. Each run's first message lists
-  its series' open notes, by ID, their files under ../.notes/, all of them in ../.notes/log.jsonl. --taken settles one of your
-  series' as acted on, saying where, --see cN a thread of yours; --aside sets it aside, saying why.`,
   correct: `rf correct PATH [--on ITEM[@REF]] --wrong|--superseded [--in THREAD] TEXT|-
   Says that a closed instance of your workspace, such as ../<label>, or an item of it, at a place in its file if given, is wrong
   or superseded, and why, as a later entry it keeps; it is never changed. It links your instance, and THREAD of yours, where the
@@ -67,36 +58,83 @@ const HELP: Record<string, string> = {
   sign in again, and the instance carries on once they do.`,
 };
 const USAGE = `${Object.values(HELP).map(h => h.split('\n  ')[0]).join('\n')}\nrf help COMMAND`;
+const REPLACEMENTS = new Map([
+  ['note', 'Use rf comment SERIES [TEXT], rf comment --mine, or rf settle ID taken|aside TEXT'],
+  ['say', 'Use rf comment TARGET TEXT'],
+  ['ask', 'Use rf comment . --ask TEXT'],
+  ['propose', 'Use rf comment . --propose TEXT'],
+  ['withdraw', 'Use rf settle cN withdrawn [--see cN] TEXT'],
+]);
 
 const [cmd, ...args] = process.argv.slice(2);
 // node:http, not fetch, which gives up on an answer after 5 minutes.
-const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; text: string }>((ok, fail) => {
+const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; status: number; text: string }>((ok, fail) => {
   const req = request(`${process.env.RF_URL}/${path}`, { method, headers: { authorization: `Bearer ${process.env.RF_TOKEN}` } }, res => {
-    const chunks: Buffer[] = [];
-    res.on('data', c => chunks.push(c)).on('end', () => ok({ ok: res.statusCode! < 300, text: Buffer.concat(chunks).toString() }));
+    const chunks: Buffer[] = [], status = res.statusCode!;
+    res.on('data', c => chunks.push(c)).on('end', () => ok({ ok: status < 300, status, text: Buffer.concat(chunks).toString() }));
   });
   req.on('error', fail).end(body);
 });
 const usage = (c?: string) => ({ ok: false, text: c && HELP[c] ? HELP[c] : USAGE });
 
-const own = `api/instances/${process.env.RF_INSTANCE}`;
+const instance = process.env.RF_INSTANCE, own = `api/instances/${instance}`;
 
-// rf say, rf ask and rf propose: a comment in a thread, or starting one on an item or the instance; rf say --at, in another instance.
 async function comment() {
-  const o: { in?: string; on?: string; to?: string; at?: string; words: string[] } = { words: [] };
-  for (let i = 0; i < args.length; i++) {
-    const flag = /^--(in|on|to|at)$/.exec(args[i])?.[1] as 'in' | 'on' | 'to' | 'at' | undefined;
-    if (!flag && /^--\w/.test(args[i])) return { ok: false, text: `rf ${cmd} has no ${args[i]}\n${HELP[cmd]}` };
-    if (!flag || args[i + 1] === undefined) o.words.push(args[i]);
-    else o[flag] = args[++i];
+  let parsed;
+  try {
+    parsed = parseArgs({ args, allowPositionals: true, options: {
+      in: { type: 'string' }, on: { type: 'string' }, ask: { type: 'boolean' }, propose: { type: 'boolean' },
+      to: { type: 'string' }, request: { type: 'boolean' }, for: { type: 'string' }, mine: { type: 'boolean' }, json: { type: 'boolean' },
+    } });
+  } catch (e) { return { ok: false, text: (e as Error).message }; }
+  const { values: { mine, json, ...flags }, positionals: [target, ...words] } = parsed;
+  const writing = words.length > 0;
+  if ((mine && target !== undefined) || (writing ? json : Object.keys(flags).length)) return usage('comment');
+
+  let listed;
+  if (mine) {
+    listed = await send('GET', 'api/messages?mine=1');
+    // A run has no legacy reader to fall back to.
+    if (listed.status === 404 || listed.status === 405) return { ok: false, text: 'This server does not support rf comment --mine for runs.' };
+  } else {
+    if (!target?.trim() || /^(?:[-/]|[a-z][a-z\d+.-]*:)|[\\\x00-\x1f\x7f\x85\u2028\u2029]/i.test(target))
+      return { ok: false, text: 'rf comment needs a relative target path (such as . or ..), or --mine' };
+    const { in: thread, on, ask, propose, to, request, for: source } = flags;
+    const at = on?.indexOf('@') ?? -1, item = at < 0 ? on : on!.slice(0, at), ref = at < 0 ? undefined : on!.slice(at + 1);
+    if (thread !== undefined && (on !== undefined || !/^c[1-9]\d*$/.test(thread))) return { ok: false, text: 'Use --in cN or --on ITEM[@REF], not both' };
+    if (on !== undefined && (!item?.trim() || (ref !== undefined && !ref.trim()))) return { ok: false, text: 'Use --on ITEM[@REF]' };
+    if ((ask && propose) || (to !== undefined && (!(ask || propose) || !/^[^\s@]+@[^\s@]+$/.test(to))))
+      return { ok: false, text: 'Use --ask or --propose, with optional --to EMAIL' };
+    if (source !== undefined && (!propose || !/^[cn][1-9]\d*$/.test(source))) return { ok: false, text: '--for cN|nN requires --propose' };
+    const wordsText = words.join(' '), text = wordsText === '-' ? readFileSync(0, 'utf8') : wordsText;
+    if (writing && !text.trim()) return usage('comment');
+
+    let targetAt = { id: instance, kind: 'instance' };
+    if (target !== '.' || !instance) {
+      const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
+      if (!found.ok) return found;
+      targetAt = JSON.parse(found.text);
+    }
+    const { id, kind } = targetAt;
+    if (kind === 'series' && (thread !== undefined || on !== undefined || ask || propose))
+      return { ok: false, text: 'Use an instance for --in, --on, --ask or --propose' };
+    if (writing) return send('POST', 'api/messages', JSON.stringify({
+      ...(kind === 'series' ? { series: id } : { instance: id }), text, thread, item, ref,
+      ask: ask ? 'question' : propose ? 'proposal' : undefined, to, request, for: source,
+    }));
+    if (kind !== 'series') return { ok: false, text: `${target} is an instance: name its series to list notes` };
+    listed = await send('GET', `api/series/${id}/notes`);
   }
-  const text = o.words.join(' ') === '-' ? readFileSync(0, 'utf8') : o.words.join(' ');
-  if (!text.trim() || (o.in && o.on) || (o.to && cmd === 'say')) return usage(cmd);
-  const found = o.at === undefined ? undefined : await send('GET', `api/resolve?path=${encodeURIComponent(o.at)}`);
-  if (found && !found.ok) return found;
-  if (found && JSON.parse(found.text).kind === 'series') return { ok: false, text: `${o.at} is a series: say it in one of its open instances, or rf note it` };
-  const at = o.on?.indexOf('@') ?? -1, item = at >= 0 ? o.on!.slice(0, at) : o.on, ref = at >= 0 ? o.on!.slice(at + 1) : undefined;
-  return send('POST', found ? `api/instances/${JSON.parse(found.text).id}/comment` : `${own}/comment`, JSON.stringify({ thread: o.in, item, ref, text, ask: { ask: 'question', propose: 'proposal' }[cmd], to: o.to }));
+  if (!listed.ok || json) return listed;
+  const messages: {
+    id?: string; path?: string; request?: true; seq: number; at: string; by: string; text: string;
+    settled?: { how?: string; op?: string; by: string; text: string };
+  }[] = JSON.parse(listed.text);
+  return { ok: true, text: messages.map(n => {
+    const how = n.settled?.how ?? n.settled?.op;
+    const state = n.settled ? `${how === 'aside' ? 'set aside' : how} by ${n.settled.by}: ${n.settled.text}` : 'open';
+    return `${n.path ? `${n.path}#` : ''}${n.id ?? `n${n.seq}`}  ${n.at}  ${n.by}  ${state}${n.request ? ' (request to propose)' : ''}\n  ${n.text}`;
+  }).join('\n') || 'No messages.' };
 }
 
 // rf wake TARGET AT [--label LABEL] [--days DAYS] [TEXT]: the folder becomes an id, then the wake is set as a person sets one.
@@ -135,37 +173,32 @@ const correct = async () => {
   return send('POST', `api/instances/${JSON.parse(found.text).id}/correct`, JSON.stringify({ kind: o.kind, item, ref, text, thread: o.in }));
 };
 
-// rf note: a note on a series, the folder made an id, or settling one of its own series'.
-const note = async () => {
-  const o: Record<string, string> = {}, words: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const flag = /^--(taken|aside|see)$/.exec(args[i])?.[1];
-    if (flag && args[i + 1] !== undefined) o[flag] = args[++i];
-    else words.push(args[i]);
-  }
-  const settle = o.taken ?? o.aside, [path, ...said] = settle ? ['..', ...words] : words, text = said.join(' ') === '-' ? readFileSync(0, 'utf8') : said.join(' ');
-  if (!path || !text.trim() || (o.taken && o.aside) || (o.see && !o.taken)) return usage('note');
-  const found = await send('GET', `api/resolve?path=${encodeURIComponent(path)}`);
-  if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text);
-  if (kind !== 'series') return { ok: false, text: `${path} is an instance: name its series, such as ..` };
-  return send('POST', `api/series/${id}/notes${settle ? `/${settle}` : ''}`, JSON.stringify({ text, how: o.taken ? 'taken' : o.aside && 'aside', thread: o.see }));
-};
+async function settle() {
+  const [id, how, ...tail] = args;
+  let parsed;
+  try { parsed = parseArgs({ args: tail, allowPositionals: true, options: { see: { type: 'string' } } }); }
+  catch (e) { return { ok: false, text: (e as Error).message }; }
+  const { values: { see }, positionals } = parsed;
+  if (!/^[cn][1-9]\d*$/.test(id ?? '') || !['taken', 'aside', 'withdrawn'].includes(how) ||
+      (how === 'withdrawn' && !id.startsWith('c')) || (see !== undefined && !/^c[1-9]\d*$/.test(see))) return usage('settle');
+  const words = positionals.join(' '), text = words === '-' ? readFileSync(0, 'utf8') : words;
+  if (!text.trim()) return usage('settle');
+  if (!instance) return { ok: false, text: 'rf settle needs RF_INSTANCE' };
+  return send('POST', 'api/messages', JSON.stringify({ instance, id, how, text, see }));
+}
 
 let res;
-if (cmd === 'show') res = await send('GET', `${own}/screen`);
+const replacement = REPLACEMENTS.get(cmd);
+if (replacement) res = { ok: false, text: replacement };
+else if (cmd === 'show') res = await send('GET', `${own}/screen`);
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
-else if (['say', 'ask', 'propose'].includes(cmd)) res = await comment();
-else if (cmd === 'withdraw') {
-  const flagged = args[1] === '--see', words = args.slice(flagged ? 3 : 1).join(' ');
-  res = !/^c\d+$/.test(args[0] ?? '') || !words ? usage(cmd) : await send('POST', `${own}/withdraw`, JSON.stringify({ thread: args[0], text: words === '-' ? readFileSync(0, 'utf8') : words, see: flagged ? args[2] : undefined }));
-}
+else if (cmd === 'comment') res = await comment();
+else if (cmd === 'settle') res = await settle();
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'correct') res = await correct();
-else if (cmd === 'note') res = await note();
 else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));
 else if (['expired', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
-else if (cmd === 'help') res = { ok: true, text: HELP[args[0]] ?? USAGE };
+else if (cmd === 'help') res = { ok: true, text: REPLACEMENTS.get(args[0]) ?? HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
 (res.ok ? console.log : console.error)(res.text);
 process.exitCode = res.ok ? 0 : 1;

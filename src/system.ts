@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, closeSync, existsSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { BlockList } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { AUTHORITY_FORMAT, authorityTree } from './authority-format.ts';
 
 // The data root's .rf/ holds what only the server uses: the people who can sign in, the sessions' key, and tree.json, the
@@ -37,9 +37,14 @@ export function readJson<T>(name: string, fallback: T): T {
 }
 
 // Writes a file whole, by renaming a temporary file into place, so a write cut short leaves the old one.
-export function replaceFile(path: string, data: string | Buffer) {
-  writeFileSync(path + '.tmp', data, { mode: 0o600 });
+export function replaceFile(path: string, data: string | Buffer, durable = false) {
+  if (durable) rmSync(path + '.tmp', { force: true });
+  writeFileSync(path + '.tmp', data, { mode: 0o600, ...(durable && { flag: 'wx', flush: true }) });
   renameSync(path + '.tmp', path);
+  if (durable) {
+    const fd = openSync(dirname(path), 'r');
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
 }
 
 export function writeJson(name: string, data: unknown) {
@@ -47,8 +52,8 @@ export function writeJson(name: string, data: unknown) {
   changes.emit('change', 'tree');
 }
 
-// The append-only logs of JSON lines: an instance's, a series' notes and the system's. An append a write error cut short, as on a
-// full disk, is taken back; a last line a kill or a power cut left unended is dropped as the log is next read, and the server says so.
+// An append a write error cut short, as on a full disk, is taken back. A last line a kill or a power cut left unended is dropped
+// as a log is next read, and the server says so.
 export function readLines<T>(path: string): T[] {
   if (!existsSync(path)) return [];
   const all = readFileSync(path), end = all.lastIndexOf(10) + 1;

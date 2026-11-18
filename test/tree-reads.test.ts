@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { idp } from './idp.ts';
-import { writeFixtureTree } from './owner-fixture.ts';
+import { writeLegacyFixtureTree } from './owner-fixture.ts';
+import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
 
 // Every open page asks for /api again as each run goes, and hears every change on its event stream, so neither reads .rf/tree.json
 // or .rf/users.json for each instance, series or stream: on a thousand instances and ninety open pages, that kept the server's one
@@ -23,7 +24,7 @@ async function reads(act: () => Promise<void>) {
   const was = count();
   await act();
   const now = count(), grew = (name: string) => (now[name] ?? 0) - (was[name] ?? 0);
-  return { tree: grew('tree.json'), users: grew('users.json'), series: grew('series.json') };
+  return { tree: grew('tree.json'), users: grew('users.json'), series: grew('series.json'), logs: grew('messages.jsonl') + grew('events.jsonl') + grew('notes/log.jsonl') };
 }
 
 before(async () => {
@@ -31,17 +32,23 @@ before(async () => {
   const at = new Date().toISOString(), series: Record<string, { name: string; workspace: string }> = {};
   for (let s = 0; s < SERIES; s++) {
     series[`s${s}`] = { name: `Series ${s}`, workspace: 'w' };
-    mkdirSync(join(root, 'series', `s${s}`), { recursive: true });
-    writeFileSync(join(root, 'series', `s${s}`, 'series.json'), JSON.stringify({ version: 1, owner: admin, epoch: 1, since: at }));
+    const book = join(root, 'series', `s${s}`);
+    mkdirSync(join(book, 'notes'), { recursive: true });
+    writeFileSync(join(book, 'series.json'), JSON.stringify({ version: 1, owner: admin, epoch: 1, since: at }));
+    writeFileSync(join(book, 'notes/log.jsonl'), JSON.stringify({ seq: 1, at, by: 'bob@demo.test', op: 'note', text: 'Seasonal FYI' }) + '\n');
     for (let n = 0; n < EACH; n++) {
       const dir = join(root, 'instances', `s${s}i${n}`);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'instance.json'), JSON.stringify({ label: `2026-${n + 1}`, series: `s${s}` }));
       writeFileSync(join(dir, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
-      writeFileSync(join(dir, 'log.jsonl'), JSON.stringify({ seq: 1, at, by: admin, op: 'create', logins: [] }) + '\n');
+      writeFileSync(join(dir, 'log.jsonl'), [
+        { seq: 1, at, by: admin, op: 'create', logins: [] },
+        { seq: 2, at, by: 'bob@demo.test', thread: 'c2', op: 'comment', note: true, text: 'Period FYI' },
+      ].map(e => JSON.stringify(e) + '\n').join(''));
     }
   }
-  writeFixtureTree(root, { workspaces: { w: { name: 'Books', owners: [], members: [] } }, series });
+  writeLegacyFixtureTree(root, { workspaces: { w: { name: 'Books', owners: [], members: [] } }, series });
+  migrateMessageCopy(root, true);
   entra = await idp();
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
@@ -78,6 +85,7 @@ test('a listing reads tree.json and users.json fewer times than it has series, h
 test("a listing reads each series' settings once, however many instances it holds", async () => {
   const n = await reads(async () => assert.equal((await fetch(`${base}/api`, { headers: { cookie } })).status, 200));
   assert.ok(n.series <= SERIES, `GET /api read series.json ${n.series} times, for ${SERIES} series of ${EACH} instances`);
+  assert.equal(n.logs, 0, 'the listing reuses the loaded logs');
 });
 
 test('a change reads tree.json once for all the event streams open, not for each', async () => {
@@ -87,6 +95,7 @@ test('a change reads tree.json once for all the event streams open, not for each
     // Viewing an instance first marks it seen, a change every stream hears.
     const n = await reads(async () => assert.equal((await fetch(`${base}/api/instances/s0i0`, { headers: { cookie } })).status, 200));
     assert.ok(n.tree < STREAMS, `a change heard by ${STREAMS} event streams read tree.json ${n.tree} times`);
+    assert.equal(n.logs, 0, 'detail and SSE reuse the loaded logs');
   } finally {
     open.abort();
   }

@@ -7,7 +7,9 @@ import type { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { writeFixtureTree } from './owner-fixture.ts';
+import { writeLegacyFixtureTree } from './owner-fixture.ts';
+import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
+import { eventsFile, messagesFile } from '../src/message-store.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'rf-wake-check-deletion-'));
 const owner = 'owner@demo.test', workspace = 'eb4100000001', series = 'eb4100000002';
@@ -23,7 +25,7 @@ let server: Server, token: string;
 before(async () => {
   mkdirSync(join(root, '.rf'));
   mkdirSync(join(root, 'usr'));
-  writeFixtureTree(root, {
+  writeLegacyFixtureTree(root, {
     workspaces: { [workspace]: { name: 'Fixture', owners: [owner], members: [] } },
     series: { [series]: { name: 'Checks', workspace } },
   });
@@ -43,6 +45,7 @@ before(async () => {
   const session = join(root, 'instances', old, 'session');
   mkdirSync(session);
   writeFileSync(join(session, 'main.jsonl'), JSON.stringify({ type: 'message', timestamp: at, message: { role: 'user', content: message } }) + '\n');
+  migrateMessageCopy(root, true);
   process.argv[2] = root;
   Object.assign(process.env, { RF_AGENT_ROOT: root, RF_SCRATCH: join(root, 'scratch'),
     RF_OIDC_ISSUER: 'https://issuer.demo.test', RF_OIDC_CLIENT_ID: 'fixture', RF_PUBLIC_URL: 'https://rf.demo.test' });
@@ -76,10 +79,13 @@ async function request(path: string, method = 'GET', status = 200) {
 
 test('deleting a wake-check stop keeps its zero-cost row without storing its message', async () => {
   const path = `${seriesPath}/fresh`;
+  const live = JSON.parse(await request(`/api/files?path=${encodeURIComponent(path)}`));
+  assert.deepEqual(live.map((f: { path: string }) => f.path).sort(), ['instance.json', 'log.jsonl', 'screen.json'].map(f => `${path}/${f}`));
   assert.deepEqual(JSON.parse(await request('/api/runs')).find(r => r.path === path), { path, ...row, message }, 'live rows still report the stop message');
   await request(`/api/instances/${fresh}/delete`, 'POST');
   const stored = JSON.parse(readFileSync(join(root, 'instances', fresh, 'log.jsonl'), 'utf8'));
   assert.deepEqual(stored.wakeChecks, [row], 'the new tombstone never stores the message');
+  assert.doesNotMatch(readFileSync(messagesFile(join(root, 'series', series)), 'utf8'), /Synthetic wake check/);
   assert.deepEqual(JSON.parse(await request('/api/runs')).find(r => r.path === path), { path, ...row });
 });
 
@@ -90,7 +96,8 @@ test('public reads never serve a legacy tombstone’s stop message', async () =>
     request(`/api/files?path=${encodeURIComponent(path)}`), request('/api/runs'),
   ]);
   const instance = JSON.parse(detail), files = JSON.parse(pull), pulledLog = files.find(f => f.path === `${path}/log.jsonl`);
-  assert.deepEqual(instance.doc, { rev: 1, status: 'deleted', items: [] });
+  assert.deepEqual(instance.doc, { rev: 2, status: 'deleted', items: [] });
+  assert.doesNotMatch(readFileSync(eventsFile(join(root, 'series', series), old), 'utf8'), /Synthetic wake check/);
   assert.deepEqual(JSON.parse(trace), [], 'not even a trace left on disk before cleanup');
   assert.equal(file, 'the instance was deleted');
   assert.equal(preview, file);

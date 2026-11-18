@@ -30,7 +30,8 @@ for (const mode of ['new-instance', 'request-series', 'request-instance']) for (
           if (req.url === path) admitted.resolve();
         } } });
         const { initSystem, saveTree, writeJson } = await import('./src/system.ts');
-        const { openStore, createInstance, labels, instance } = await import('./src/store.ts');
+        const { openStore, createInstance, labels, instance, seriesDir } = await import('./src/store.ts');
+        const { appendMessage } = await import('./src/message-store.ts');
         const { ownSeries } = await import('./test/owner-fixture.ts');
         initSystem(root); openStore(root);
         writeJson('users.json', { [owner]: { role: 'admin' } });
@@ -52,9 +53,15 @@ for (const mode of ['new-instance', 'request-series', 'request-instance']) for (
         const target = mode === 'request-instance' ? createInstance('s', 'A-existing', owner) : undefined;
         const blocked = fetch(base + '/api/series/s/credentials', { method: 'PUT', headers: { cookie }, body: '{"logins":[],"autonomous":false}' });
         await entered.promise;
-        writeJson('wakes.json', { pending: {}, fired: {}, requests: mode === 'new-instance' ? {} : {
-          request1: { series: 's', label: 'Accepted', ...(target && { target: target.id }), from: 'collaborator@demo.test', at: new Date().toISOString(), text: 'Information only' }
-        } });
+        if (mode !== 'new-instance') {
+          const label = 'Accepted', from = 'collaborator@demo.test';
+          const request = appendMessage(seriesDir('s'), target ? { instance: target.id } : {}, {
+            seq: 1, by: from, at: new Date().toISOString(), op: 'request', requestId: 'request1', label, from, text: 'Information only'
+          });
+          writeJson('wakes.json', { pending: {}, fired: {}, requests: {
+            request1: { series: 's', label, ...(target && { target: target.id }), message: request.id }
+          } });
+        } else writeJson('wakes.json', { pending: {}, fired: {}, requests: {} });
         const token = auth.newToken(owner, 'queued', 1), tokenId = auth.myTokens(owner).find(t => t.name === 'queued').id;
         const headers = change === 'session' ? { cookie } : { authorization: 'Bearer ' + token };
         let responded = false;

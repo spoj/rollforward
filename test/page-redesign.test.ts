@@ -88,6 +88,46 @@ async function openWebsiteTicks(conversation = false) {
   return { ...state, series, sites };
 }
 
+test('only the current owner sees controls for a request-linked proposal, including after a refresh with an open draft', async () => {
+  const { page, series, responses, requests } = await openWebsiteTicks(true);
+  try {
+    const at = series.since, detail = responses['/api/instances/i1'] as {
+      log: object[]; owner: { by: string }; waiting: { who: string; seq: number }[];
+    };
+    detail.log.push(
+      { seq: 2, at, by: 'agent', op: 'comment', thread: 'c2', ask: 'proposal', noteFor: 'n1', text: 'Do what the note requests.' },
+      { seq: 3, at, by: 'agent', op: 'comment', thread: 'c3', ask: 'proposal', text: 'Unrelated proposal.' },
+    );
+    detail.waiting = [{ who: person, seq: 2 }];
+    responses['/api/messages'] = 'ok';
+    await page.evaluate(() => refresh());
+    const controls = '#conv .post[data-seq="2"] > .pa', draft = '#conv .post[data-seq="2"] > .reply[data-mode=reject] textarea';
+    assert.equal(await page.locator('#needs [data-mode=approve]').isVisible(), true);
+    await page.click(controls + ' [data-mode=reject]');
+    await page.fill(draft, 'A rejection draft');
+
+    detail.owner.by = series.owner = 'alice@demo.test';
+    detail.waiting[0].who = series.owner;
+    await page.evaluate(() => refresh());
+    assert.equal(await page.locator(controls + ' [data-mode=approve]').isVisible(), false);
+    assert.equal(await page.locator(draft).isVisible(), false);
+    assert.equal(await page.locator('#needs [data-mode=approve]').count(), 0);
+    assert.equal(await page.locator('#conv .post[data-seq="3"] > .pa [data-mode=approve]').isVisible(), true, 'ordinary proposals are unchanged');
+
+    detail.owner.by = series.owner = detail.waiting[0].who = person;
+    await page.evaluate(() => refresh());
+    assert.equal(await page.inputValue(draft), 'A rejection draft');
+    await page.click(controls + ' [data-mode=approve]');
+    await page.click('#conv .post[data-seq="2"] [data-act=approve]');
+    await page.waitForFunction(() => !document.querySelector('#conv .post[data-seq="2"] [data-act=approve][aria-busy]'));
+    assert.deepEqual(requests.filter(r => r.method === 'POST'), [
+      { path: '/api/messages', method: 'POST', body: { instance: 'i1', id: 'c2', how: 'approve', text: '' } },
+    ]);
+  } finally {
+    await page.close();
+  }
+});
+
 test('saving a website sign-in keeps its expanded setup row', async () => {
   const { page } = await open('user');
   try {

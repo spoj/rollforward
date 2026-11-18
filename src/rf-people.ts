@@ -4,6 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { parseArgs } from 'node:util';
 
 // A failure is one line, rf's own or the server's, never a stack.
 process.on('uncaughtException', e => {
@@ -15,10 +16,9 @@ const usage = (c?: string, vpn = false, admin = false) => {
   const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
 rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, owner, asks waiting and wakes;
                                   --mine, only open instances of series you own
-rf waiting [--json]               what waits on you: asks and notes, requests to start or wake an
-                                  instance or to use a
-                                  website in a workspace you own, proposals and expired logins; only admins see hosts a run's
-                                  browser was refused that the server rates high or finds at an internal address
+rf waiting [--json]               what waits on you: asks, proposals, requests and expired logins; also note notices (FYI).
+                                  Only admins see hosts a run's browser was refused that the server rates high or finds
+                                  at an internal address
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -30,9 +30,18 @@ rf pull PATH DIR [--delete] [-n|--dry-run] [--exclude PATTERN]... [--max-size SI
                                   that differ only in case, the second is skipped
 rf help [COMMAND]                 how rollforward works and how to use rf, for an agent, or COMMAND's usage
 rf --version                      rf's own version, to tell whether it's older than what the guide names
-rf comment PATH TEXT [--item ID] [--ref REF] [--thread cN] [--wake|--wait]   a new thread, or a reply under comment cN, as to
-                                  an agent's question; --wake or --wait starts a run for the owner or an answer to the agent's named ask,
-                                  under current consent; --wait prints what the agent says back
+rf comment TARGET [--in cN | --on ITEM[@REF]] [--ask | --propose] [--to EMAIL] [--for cN|nN] [--request] [--wake|--wait] TEXT
+                                  TARGET is WORKSPACE/SERIES[/INSTANCE]. On a series, posts a note and starts no run.
+                                  On an instance, starts a thread or replies under cN. --to names who an ask or proposal waits on.
+                                  --for links a proposal to an informing message. A non-owner's note can use --request
+                                  to ask for a proposal without starting a run.
+                                  --wake or --wait starts an instance run for the owner or an answer to a named ask
+                                  under current consent; --wait prints what the agent says back.
+rf comment SERIES [--json]        lists Notes on WORKSPACE/SERIES, open and settled
+rf comment --mine [--json]        lists your own notes and their settlements
+rf settle TARGET#cN|TARGET#nN taken|aside|withdrawn TEXT
+                                  IDs are local: use WORKSPACE/SERIES/INSTANCE#cN or WORKSPACE/SERIES#nN.
+                                  Say where a note was taken, why it was set aside, or why an ask or proposal was withdrawn.
 rf upload PATH FILE [--onto ITEM] [--output] [--wake]
 rf approve PATH cN [TEXT] [--wake]   records content approval of proposal cN, not permission to run as you; the folder is
                                   committed as it is now, in your name
@@ -101,8 +110,6 @@ rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline I
                                   later or agent-set wakes need it. Collaborators' wakes are requests. DAYS, such as mon-fri,
                                   repeats weekly at AT's time. With the owner's wake-check capability, --check working/FILE.py (or .ts)
                                   gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops.
-rf note SERIES [TEXT] [--json]    tells the series something for its runs, about the series rather than one period or while no
-                                  instance is open, which starts no run; without TEXT, its notes, open and settled
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
                                   owners let them; its owners let OTHER's agents read it, one they see, and its owners or
@@ -212,8 +219,8 @@ What rf pull copies, the folders as the agent sees them
 The copy is read-only: only rf's commands change what's on the server.
 
 Usual work
-- What waits on me: rf waiting, then rf show PATH, which names each comment that waits by its id.
-- Answer a question: rf comment PATH TEXT --thread cN --wait, which prints what the agent says back. Decide a proposal:
+- What waits on me: rf waiting, then rf show PATH, which names each comment that waits by its id. Note notices are FYI.
+- Answer a question: rf comment PATH --in cN --wait TEXT, which prints what the agent says back. Decide a proposal:
   rf approve PATH cN [TEXT] --wake, for the agent to go ahead, or rf reject PATH cN [TEXT] --wake. Close an
   instance once it's the record: rf close PATH.
 - Transfer a whole series, as its current owner or workspace manager: rf series owner SERIES EMAIL. The incoming owner
@@ -225,8 +232,9 @@ Usual work
 - Start an instance: rf new instance SERIES LABEL --wake, only as the series owner. Scheduled wakes need that owner's
   autonomous opt-in and keep their authorized credential snapshot; collaborators' wakes become requests for the owner.
   A one-off: rf new task WORKSPACE --clear --comment TEXT --wake. Promotion with rf new series PATH NAME keeps its owner.
-- Tell a series something for its runs, such as a rule from now on, or while no instance is open: rf note SERIES TEXT, which
-  starts no run; rf note SERIES lists its notes, open, and settled by a run or by hand.
+- Tell a series something for its runs, or while no instance is open: rf comment SERIES TEXT, which starts no run.
+  rf comment SERIES lists its notes; rf comment --mine lists your notes. Settle an informing note with
+  rf settle SERIES#nN taken|aside TEXT or rf settle PATH#cN taken|aside TEXT.
 - Read what a run did: rf show PATH for its last run, rf log PATH for every entry, --follow as they come, and rf cat PATH/FILE
   for a file; rf pull PATH/ DIR copies the folder, with session/ for every step.
 
@@ -234,7 +242,7 @@ Watching over it, for admins and power users; each sees what the caller sees
 - What's stuck: rf status lists low OpenRouter credit (for admins), runs going, flagging those past --long MIN (30); queued runs, since when and why: their series is
   running, an update's drain, the RF_MAX_RUNS cap, or memory; what waits on whom since when: asks, notes for series owners, expired logins and the instances
   they hold, and requests to start, grouped by whom they wait on, the oldest three each unless --all; open instances whose last run
-  failed; and indexes crawling or failing.
+  failed; note notices for you; and indexes crawling or failing.
 - What runs use (admins): rf top shows the host's CPU, load and memory, each run going with its processes, CPU and memory, and the
   ten processes of runs busiest by CPU and by memory. rf kill PID ends one, with all it started; rf interrupt PATH stops a run.
   rf top, rf status and rf runs take -d SECONDS to show again every SECONDS, as top does, until Ctrl+C.
@@ -253,8 +261,25 @@ Watching over it, for admins and power users; each sees what the caller sees
 
 const config = join(homedir(), '.config', 'rollforward.json');
 const [cmd, ...argv] = process.argv.slice(2);
+const replacement = new Map([
+  ['note', 'rf comment SERIES [TEXT] or rf comment --mine'],
+  ['say', 'rf comment TARGET TEXT'],
+  ['ask', 'rf comment TARGET --ask TEXT'],
+  ['propose', 'rf comment TARGET --propose TEXT'],
+  ['withdraw', 'rf settle TARGET#cN withdrawn TEXT'],
+]).get(cmd === 'help' ? argv[0] : cmd);
+if (replacement) throw new Error(`use ${replacement}`);
+
 const flags: Record<string, string | true> = {}, excludes: string[] = [], args: string[] = [];
-for (let i = 0; i < argv.length; i++) {
+if (cmd === 'comment' || cmd === 'settle') {
+  const parsed = parseArgs({ args: argv, allowPositionals: true, options: cmd === 'settle' ? {} : {
+    in: { type: 'string' }, on: { type: 'string' }, ask: { type: 'boolean' }, propose: { type: 'boolean' },
+    to: { type: 'string' }, for: { type: 'string' }, request: { type: 'boolean' }, mine: { type: 'boolean' },
+    json: { type: 'boolean' }, wake: { type: 'boolean' }, wait: { type: 'boolean' },
+  } });
+  Object.assign(flags, parsed.values);
+  args.push(...parsed.positionals);
+} else for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i] === '-d' ? 'delay' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
   else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all'].includes(flag)) flags[flag] = true;
@@ -274,9 +299,9 @@ if ((!cmd || cmd === 'help') && !existsSync(config)) {
 if (cmd !== 'login' && !existsSync(config)) throw new Error('sign in first: rf login URL');
 let { url, token } = cmd === 'login' ? { url: args[0]?.replace(/\/$/, ''), token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
 
-async function api(path: string, init: RequestInit = {}) {
+async function api(path: string, init: RequestInit = {}, accept: number[] = []) {
   const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error(`${init.method ?? 'GET'} ${path}: ${r.status} ${await r.text()}`);
+  if (!r.ok && !accept.includes(r.status)) throw new Error(`${init.method ?? 'GET'} ${path}: ${r.status} ${await r.text()}`);
   return r;
 }
 const get = async (path: string) => (await api(path)).json();
@@ -544,6 +569,7 @@ if (cmd === 'login' && url) {
   const rows = [
     ...s.ownership.map(s => ({ kind: 'owner', path: s.path, text: s.text })),
     ...s.asks.filter(a => a.who === me.email).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
+    ...(s.noteNotices ?? []),
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
@@ -551,7 +577,9 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
-  else console.log(rows.map(r => `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.kind === 'grant' ? r.text : r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
+  else console.log(rows.map(r => r.kind === 'open' || r.kind === 'settled'
+    ? `note ${r.kind}  ${r.path}#${r.id} by ${r.by} at ${when(r.at)}: ${gist(r.text, 120)}`
+    : `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.kind === 'grant' ? r.text : r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
 } else if (cmd === 'show' && args.length === 1) {
   const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, owner, waiting: w } = await get(at);
   const waiting = w.map(({ who, seq }) => {
@@ -582,36 +610,86 @@ if (cmd === 'login' && url) {
   if (!f || f.path !== path || more.length) throw new Error(f ? `${args[0]} is a folder: rf pull it` : `nothing you can see at ${args[0]}`);
   process.stdout.write(f.text ?? Buffer.from(await (await api(f.url)).arrayBuffer()));
 } else if (cmd === 'pull' && args.length === 2) await pull(args[0], args[1]);
-else if (cmd === 'comment' && args.length === 2) {
-  const { at } = await instanceAt(args[0]);
-  const posted = await post(`${at}/comment`, { text: args[1], item: flags.item, ref: flags.ref, thread: flags.thread, quiet: !flags.wake && !flags.wait });
-  const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, owner, starts, standing } = await get(at), note = log.find(e => e.seq === seq)?.note;
-  if (!starts && standing?.[seq] !== 'answer') console.log(`recorded for the series owner, ${owner.by}, seq ${seq}: no run starts`);
-  else if (!flags.wait) console.log(`${note ? `a note for the series owner, ${owner.by}` : 'commented'}, seq ${seq}`);
-  else if (doc.status !== 'open') console.log(`The instance was ${doc.status}.`);
-  else for (;;) {
-    // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
-    await new Promise(r => setTimeout(r, 5000));
-    const { doc, log } = await get(at);
-    const done = log.find(e => e.op === 'done' && (e.seen >= seq || (e.seq > seq && (e.error || e.aborted) && !log.some(w => w.seq > e.seq && ((w.op === 'wake' && w.cause === e.seq) || w.op === 'run')))));
-    if (done) {
-      const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run)?.seq ?? 0);
-      for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
-      if (done.error) console.log(`The run failed: ${done.error}`);
-      else if (done.aborted && done.seen < seq) console.log('The run was stopped.');
-      break;
-    }
-    if (doc.status !== 'open') {
-      console.log(`The instance was ${doc.status}.`);
-      break;
+else if (cmd === 'comment' && args.length < 2) {
+  if (Object.keys(flags).some(f => !['json', 'mine'].includes(f)) || (flags.mine ? args.length !== 0 : !args[0]))
+    throw new Error('use rf comment SERIES [--json], rf comment --mine [--json], or rf help comment to post');
+  let rows;
+  if (!flags.mine) rows = await get(`/api/series/${(await seriesAt(args[0])).id}/notes`);
+  else {
+    const response = await api('/api/messages?mine=1', {}, [404, 405]);
+    if (response.ok) rows = await response.json();
+    else {
+      // Older servers only have per-series Notes; instance notes need the new API.
+      const [me, workspaces] = await Promise.all([get('/me'), get('/api')]);
+      rows = [];
+      for (const w of workspaces) for (const s of w.series.filter(s => !s.single)) {
+        const notes = await get(`/api/series/${s.id}/notes`);
+        rows.push(...notes.filter(n => n.by === me.email).map(n => ({ ...n, id: `n${n.seq}`, path: `${w.name}/${s.name}` })));
+      }
     }
   }
+  if (flags.json) console.log(JSON.stringify(rows, null, 1));
+  else for (const n of rows) {
+    const by = n.by === 'agent' && n.see ? `agent of ${n.see.label}, for ${n.runner}` : n.by;
+    const how = n.settled?.how ?? n.settled?.op;
+    console.log(`${n.path ? `${n.path}#` : ''}${n.id ?? `n${n.seq}`}  ${when(n.at)}  ${by}  ${n.settled ? `${how === 'aside' ? 'set aside' : how} by ${n.settled.by}: ${n.settled.text}` : 'open'}${n.request ? ' (request to propose)' : ''}\n  ${n.text.split('\n')[0].slice(0, 200)}`);
+  }
+} else if (cmd === 'comment') {
+  const [path, ...words] = args, text = words.join(' '), { in: thread, ask, propose, to, for: linked, request, wake, wait } = flags;
+  const on = typeof flags.on === 'string' ? flags.on : undefined, split = on?.indexOf('@') ?? -1;
+  const item = split < 0 ? on : on!.slice(0, split), ref = split < 0 ? undefined : on!.slice(split + 1);
+  if (flags.json || flags.mine) throw new Error('--json and --mine are for reading notes');
+  if (thread !== undefined && (on !== undefined || !/^c\d+$/.test(String(thread)))) throw new Error('use --in cN or --on ITEM[@REF], not both');
+  if (on !== undefined && (!item?.trim() || ref?.trim() === '')) throw new Error('use --on ITEM[@REF]');
+  if (ask && propose || (to !== undefined && (!String(to).trim() || !(ask || propose)))) throw new Error('use --ask or --propose, with optional --to EMAIL');
+  if (linked !== undefined && (!propose || !/^[cn]\d+$/.test(String(linked)))) throw new Error('--for cN|nN requires --propose');
+  if (!text.trim()) throw new Error('a comment needs text');
+  if (wake && wait) throw new Error('use --wake or --wait, not both');
+  const { series, inst, at } = await find(path);
+  if (!inst && (wake || wait)) throw new Error('a series note starts no run: omit --wake or --wait');
+  const posted = await post('/api/messages', {
+    ...(inst ? { instance: inst.id, quiet: !wake && !wait } : { series: series.id }),
+    text, thread, item, ref, ask: ask ? 'question' : propose ? 'proposal' : undefined, to, request, for: linked,
+  });
+  if (!inst) console.log(`noted ${(await posted.json()).id} on ${path}: it starts no run, and its runs read it`);
+  else {
+    const seq = Number(posted.headers.get('X-RF-Comment-Seq')), { doc, log, owner, starts, standing } = await get(at), note = log.find(e => e.seq === seq)?.note;
+    if (!starts && standing?.[seq] !== 'answer') console.log(`recorded for the series owner, ${owner.by}, seq ${seq}: no run starts`);
+    else if (!wait) console.log(`${note ? `a note for the series owner, ${owner.by}` : 'commented'}, seq ${seq}`);
+    else if (doc.status !== 'open') console.log(`The instance was ${doc.status}.`);
+    else for (;;) {
+      // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
+      await new Promise(r => setTimeout(r, 5000));
+      const { doc, log } = await get(at);
+      const done = log.find(e => e.op === 'done' && (e.seen >= seq || (e.seq > seq && (e.error || e.aborted) && !log.some(w => w.seq > e.seq && ((w.op === 'wake' && w.cause === e.seq) || w.op === 'run')))));
+      if (done) {
+        const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run)?.seq ?? 0);
+        for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);
+        if (done.error) console.log(`The run failed: ${done.error}`);
+        else if (done.aborted && done.seen < seq) console.log('The run was stopped.');
+        break;
+      }
+      if (doc.status !== 'open') {
+        console.log(`The instance was ${doc.status}.`);
+        break;
+      }
+    }
+  }
+} else if (cmd === 'settle') {
+  const [qualified, how, ...words] = args, text = words.join(' '), target = /^(.+)#([cn]\d+)$/.exec(qualified ?? '');
+  if (!target || !['taken', 'aside', 'withdrawn'].includes(how) || !text.trim())
+    throw new Error('use rf settle WORKSPACE/SERIES/INSTANCE#cN or WORKSPACE/SERIES#nN, followed by taken|aside|withdrawn TEXT');
+  const [, path, id] = target;
+  const scope = id.startsWith('c') ? { instance: (await instanceAt(path)).inst.id } : { series: (await seriesAt(path)).id };
+  await post('/api/messages', { ...scope, id, how, text });
+  console.log(`${qualified} ${how === 'aside' ? 'set aside' : how}`);
 } else if (cmd === 'react' && [2, 3].includes(args.length) && ['up', 'down', 'none'].includes(args.at(-1)!)) {
   const on = args.length === 3 ? Number(args[1].replace(/^c/, '')) : undefined, up = { up: true, down: false, none: null }[args.at(-1)!];
   await post(`${(await instanceAt(args[0])).at}/react`, { ...(on !== undefined && { on }), up });
   console.log(`${args.at(-1)} on ${args.length === 3 ? args[1] : args[0]}`);
 } else if (['approve', 'reject'].includes(cmd) && [2, 3].includes(args.length)) {
-  await post(`${(await instanceAt(args[0])).at}/${cmd === 'approve' ? 'signoff' : 'reject'}`, { thread: args[1], text: args[2], quiet: !flags.wake });
+  const { inst } = await instanceAt(args[0]);
+  await post('/api/messages', { instance: inst.id, id: args[1], how: cmd, text: args[2], quiet: !flags.wake });
   console.log(`${cmd === 'approve' ? 'approved' : 'rejected'} ${args[1]}`);
 } else if (['close', 'abandon', 'interrupt'].includes(cmd) && args.length === 1) {
   const { series, at } = await instanceAt(args[0]);
@@ -672,7 +750,7 @@ else if (cmd === 'comment' && args.length === 2) {
   if (flags.autonomous !== undefined && !selected) throw new Error('autonomous consent requires --creds OFFER,... or --clear');
   const { instance } = await (await post('/api/series', { workspace: workspace.id, single: true, ...(selected && { logins: ticks(), autonomous: flags.autonomous === 'true' }) })).json();
   if (clean && (await pathOf(instance)).split('/').at(-1) !== clean) await post(`/api/instances/${instance}/rename?as=${encodeURIComponent(args[2])}`, {});
-  if (typeof flags.comment === 'string') await post(`/api/instances/${instance}/comment`, { text: flags.comment, quiet: !flags.wake });
+  if (typeof flags.comment === 'string') await post('/api/messages', { instance, text: flags.comment, quiet: !flags.wake });
   console.log(`made ${await pathOf(instance)}${selected ? consent(ticks()) : '; no execution consent: select series credentials before running'}`);
 } else if (cmd === 'new' && args[0] === 'instance' && args.length === 3) {
   if (flags.creds !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('instance credentials were removed: use rf series credentials SERIES');
@@ -774,14 +852,6 @@ else if (cmd === 'comment' && args.length === 2) {
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
   const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline }, 'PUT')).json();
   console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}` : ''}`);
-} else if (cmd === 'note' && [1, 2].includes(args.length)) {
-  const at = `/api/series/${(await seriesAt(args[0])).id}/notes`;
-  if (args[1]) console.log(`noted ${(await (await post(at, { text: args[1] })).json()).id} on ${args[0]}: it starts no run, and its runs read it`);
-  else {
-    const all = await get(at);
-    if (flags.json) console.log(JSON.stringify(all, null, 1));
-    else for (const n of all) console.log(`n${n.seq}  ${when(n.at)}  ${n.by === 'agent' ? `agent of ${n.see.label}, for ${n.runner}` : n.by}  ${n.settled ? `${n.settled.op === 'taken' ? 'taken' : 'set aside'} by ${n.settled.by === 'agent' ? 'agent' : n.settled.by}: ${n.settled.text}` : 'open'}\n  ${n.text.split('\n')[0].slice(0, 200)}`);
-  }
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);
@@ -859,11 +929,14 @@ else if (cmd === 'comment' && args.length === 2) {
       ...(g.shown.length < g.all ? [`    … ${g.all - g.shown.length} more: rf status --all`] : [])].join('\n'));
     const failing = ix.flatMap(x => x.people.filter(p => p.phase === 'crawl' || p.error).map(p => [clip(x.name, PATH_COLS), p.who,
       p.error ? `failing${p.retry_at ? `, again ${when(p.retry_at)}` : ''}` : `crawling, ${p.pages} pages`, p.error ? brief(p.error, TEXT_COLS) : '']));
+    const notices = s.noteNotices ?? [];
     const sections: [string, number, string][] = [
       ['Running', s.running.length, table(['PATH', 'RUN', 'FOR', 'COST', ''], s.running.map(r => [clip(r.path, PATH_COLS), String(r.run), took((Date.now() - Date.parse(r.at)) / 1000),
         usdNote(r.cost, r.estimated), Date.now() - Date.parse(r.at) > long * 60e3 ? `LONG, past ${long}m` : '']))],
       ['Queued', s.queued.length, table(['PATH', 'SINCE', 'WHY'], s.queued.map(q => [clip(q.path, PATH_COLS), when(q.since), q.why]))],
       [`Waiting on ${byWho.size} ${byWho.size === 1 ? 'person' : 'people'}`, waiting.length, waits.join('\n')],
+      ['Note notices (FYI)', notices.length, table(['STATE', 'MESSAGE', 'BY', 'AT', 'TEXT'], notices.map(n =>
+        [n.kind, `${clip(n.path, PATH_COLS - n.id.length - 1)}#${n.id}`, n.by, when(n.at), gist(n.text, TEXT_COLS)]))],
       ['Last run failed', s.failed.length, table(['PATH', 'RUN', 'AT', 'ERROR'], s.failed.map(f => [clip(f.path, PATH_COLS), String(f.run), when(f.at), brief(f.error, TEXT_COLS)]))],
       ['Indexes crawling or failing', failing.length, table(['INDEX', 'PERSON', 'STATE', 'ERROR'], failing)],
     ].filter(([, n]) => n) as [string, number, string][];

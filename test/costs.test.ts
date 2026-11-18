@@ -1,5 +1,5 @@
 import { after, before, test } from 'node:test';
-import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
+import { migrateFixtureMessages, readFixtureTree, writeLegacyFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
@@ -103,7 +103,7 @@ before(async () => {
   const tree = readFixtureTree(root);
   tree.workspaces.ops001 = { name: 'Ops', owners: [adminEmail], members: [bobEmail] };
   tree.series.ser001 = { name: 'Daily', workspace: 'ops001' };
-  writeFixtureTree(root, tree);
+  writeLegacyFixtureTree(root, tree);
   for (const id of Object.keys(tree.series)) {
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
@@ -157,6 +157,7 @@ before(async () => {
     { at: t5, service: 'openrouter', inst: instId, run: 3, person: bobEmail, cost: 0.80, own: true },
   ];
   writeFileSync(join(root, '.rf', 'costs.jsonl'), costRecords.map(r => JSON.stringify(r) + '\n').join(''), { mode: 0o600 });
+  migrateFixtureMessages(root);
 
   await new Promise<void>(ok => providers.listen(0, '127.0.0.1', ok));
   const provUrl = `http://127.0.0.1:${(providers.address() as { port: number }).port}`;

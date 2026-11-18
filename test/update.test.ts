@@ -174,7 +174,7 @@ esac
   const srv = readFileSync(join(stage, 'src', 'server.ts'), 'utf8');
   const olderServer = srv
     .replace("    if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();\n", '')
-    .replace("process.on('SIGUSR2', drain);\n", '')
+    .replace(/^process\.on\('SIGUSR2',[^\n]*\);\n/m, '')
     .replace(', draining: updating()', '');
   assert.notEqual(olderServer, srv);
   assert.ok(!olderServer.includes("url.pathname === '/drained'") && !olderServer.includes("process.on('SIGUSR2'"));

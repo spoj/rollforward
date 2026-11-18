@@ -1,12 +1,13 @@
 import { test } from 'node:test';
-import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
+import { migrateFixtureMessages, readFixtureTree, writeLegacyFixtureTree } from './owner-fixture.ts';
+import { eventsFile } from '../src/message-store.ts';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { keyStatus, resetKeyCache, upstreams } from '../src/connections.ts';
 import { idp } from './idp.ts';
@@ -60,7 +61,7 @@ test('deleting instances preserves daily run key provenance and UTC shared-key O
   const t = readFixtureTree(root);
   t.workspaces.r4ws = { name: 'Costs', owners: [admin], members: [] };
   t.series.r4ser = { name: 'Legacy', workspace: 'r4ws' };
-  writeFixtureTree(root, t);
+  writeLegacyFixtureTree(root, t);
   mkdirSync(join(root, 'series/r4ser'), { recursive: true });
   for (const sid of Object.keys(t.series)) {
     writeFileSync(join(root, 'series', sid, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
@@ -136,6 +137,7 @@ test('deleting instances preserves daily run key provenance and UTC shared-key O
     { at, service: 'openrouter', inst: 'ledgown', run: 1, person: admin, cost: 0.6, own: true },
     { at, service: 'openrouter', inst: 'ledgshared', run: 1, person: admin, cost: 0.3 },
   ].map(e => JSON.stringify(e) + '\n').join(''), { mode: 0o600 });
+  migrateFixtureMessages(root);
 
   const providers = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
@@ -224,7 +226,9 @@ test('deleting instances preserves daily run key provenance and UTC shared-key O
     mkdirSync(holeDir, { recursive: true });
     writeFileSync(join(holeDir, 'instance.json'), JSON.stringify({ label: 'oldhole', series: 'r4ser' }));
     writeFileSync(join(holeDir, 'screen.json'), JSON.stringify({ rev: 2, status: 'deleted', items: [] }));
-    writeFileSync(join(holeDir, 'log.jsonl'), JSON.stringify({
+    const holeEvents = eventsFile(join(root, 'series/r4ser'), 'oldhole');
+    mkdirSync(dirname(holeEvents), { recursive: true });
+    writeFileSync(holeEvents, JSON.stringify({
       seq: 7, at, by: admin, op: 'delete', cost: 0.5,
       runs: [{ run: 1, at, outcome: 'done', failure: null, seconds: 5, cost: 0.5, runner: admin }],
     }) + '\n');

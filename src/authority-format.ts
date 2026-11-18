@@ -1,11 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { messagesFile } from './message-store.ts';
 import { replaceFile, type Tree } from './system.ts';
 
-export const AUTHORITY_FORMAT = { format: 'rollforward-series-owner', version: 1, minReader: '0.7.0', state: 'complete' } as const;
+export const AUTHORITY_FORMAT = { format: 'rollforward-series-owner', version: 1, minReader: '0.8.0', state: 'complete' } as const;
 
 export function authorityTree(data: any): Tree {
-  if (data?.format !== AUTHORITY_FORMAT.format || data.version !== 1 || data.minReader !== '0.7.0' || data.state !== 'complete'
+  if (data?.format === AUTHORITY_FORMAT.format && data.version === AUTHORITY_FORMAT.version) {
+    if (data.state !== 'complete') throw new Error('incomplete data conversion: restore the original and convert a fresh stopped copy');
+    if (data.minReader !== AUTHORITY_FORMAT.minReader) throw new Error('incompatible message format: convert a stopped v0.7.9 copy with scripts/migrate-messages.ts');
+  }
+  if (data?.format !== AUTHORITY_FORMAT.format || data.version !== AUTHORITY_FORMAT.version || data.minReader !== AUTHORITY_FORMAT.minReader || data.state !== 'complete'
     || 'workspaces' in data || 'series' in data || !data.tree || typeof data.tree !== 'object' || Array.isArray(data.tree)
     || !data.tree.workspaces || typeof data.tree.workspaces !== 'object' || Array.isArray(data.tree.workspaces)
     || !data.tree.series || typeof data.tree.series !== 'object' || Array.isArray(data.tree.series))
@@ -33,6 +38,14 @@ export function checkAuthorityFormat(root: string): void {
     return;
   }
   const tree = authorityTree(JSON.parse(readFileSync(path, 'utf8')));
+  checkSeriesAuthority(root, tree);
+  for (const id of Object.keys(tree.series)) {
+    if (!lstatSync(messagesFile(join(root, 'series', id)), { throwIfNoEntry: false })?.isFile())
+      throw new Error(`missing canonical message log for ${id}`);
+  }
+}
+
+export function checkSeriesAuthority(root: string, tree: Tree) {
   for (const [id, series] of Object.entries(tree.series)) {
     const settings = join(root, 'series', id, 'series.json');
     if (!existsSync(settings)) throw new Error(`incomplete series authority for ${id}`);

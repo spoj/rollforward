@@ -7,7 +7,7 @@ import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { idp } from './idp.ts';
-import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
+import { migrateFixtureMessages } from './owner-fixture.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'rf-admitted-auth-')), root = join(tmp, 'data');
 const ADMIN = 'admin@demo.test', ACTOR = 'delayed@demo.test';
@@ -33,7 +33,7 @@ const skillBody = JSON.stringify({ files: { 'SKILL.md': Buffer.from('---\nname: 
 
 before(async () => {
   cpSync(join(import.meta.dirname, 'fixture'), root, { recursive: true });
-  writeFixtureTree(root, readFixtureTree(root));
+  migrateFixtureMessages(root);
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -225,11 +225,11 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     import { createServer } from 'node:http';
     import { join } from 'node:path';
     import { idp } from './test/idp.ts';
-    import { ownSeries, readFixtureTree, writeFixtureTree } from './test/owner-fixture.ts';
+    import { migrateFixtureMessages, ownSeries } from './test/owner-fixture.ts';
     const root = ${JSON.stringify(join(tmp, 'queued-data'))} + '-${action}';
     const action = '${action}';
     cpSync('./test/fixture', root, { recursive: true });
-    writeFixtureTree(root, readFixtureTree(root));
+    migrateFixtureMessages(root);
     const probe = createServer();
     await new Promise(ok => probe.listen(0, '127.0.0.1', ok));
     const port = probe.address().port, base = 'http://127.0.0.1:' + port;
@@ -289,6 +289,39 @@ for (const action of ['reject', 'owner', 'credentials']) test(`a ${action} reque
     assert.equal(JSON.stringify((await import('./src/series.ts')).seriesSettings(inst.series())), before);
     entra.close(); process.exit(0);
   `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
+});
+
+test('legacy and unified messages recheck credentials after the body and do not copy conversation bodies to the global audit', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Message auth' })).json();
+  await call('PUT', `/api/workspaces/${ws}`, { members: [ACTOR] });
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'S' })).json();
+  const routes = ['/api/messages', `/api/series/${series}/notes`], markers = ['unified-message-sentinel', 'legacy-message-sentinel'];
+  const cookie = await login(), headers = { cookie };
+  const put = (path: string, text: string, opts = headers) => fetch(base + path, {
+    method: 'POST', headers: opts, body: JSON.stringify({ series, text })
+  });
+  for (const [i, path] of routes.entries()) assert.deepEqual(await (await put(path, markers[i])).json(), { id: `n${i + 1}` });
+  assert.ok(markers.every(s => !readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').includes(s)));
+  const finishes = [];
+  for (const path of routes) finishes.push(await delayed('POST', path, headers, JSON.stringify({ series, text: 'never accepted' })));
+  await call('PUT', `/users/${ACTOR}`, { signout: true });
+  const before = files();
+  assert.deepEqual(await Promise.all(finishes.map(f => f())), [401, 401]);
+  assert.deepEqual(files(), before);
+});
+
+test('deleting a task refuses new series Notes and an attachment already streaming', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Task deletion' })).json();
+  const { id: series, instance } = await (await call('POST', '/api/series', { workspace: ws, single: true })).json();
+  const path = `/api/series/${series}/attach?name=late`, headers = { cookie: admin };
+  const finish = await delayed('POST', path, headers, 'delete in between');
+  assert.equal((await call('POST', `/api/instances/${instance}/delete`, {})).status, 200);
+  const before = files();
+  assert.equal(await finish(), 409);
+  assert.equal((await fetch(base + path, { method: 'POST', headers, body: 'late' })).status, 409);
+  assert.equal((await call('POST', '/api/messages', { series, text: 'late' })).status, 409);
+  assert.equal((await call('POST', `/api/series/${series}/notes`, { text: 'late' })).status, 409);
+  assert.deepEqual(files(), before);
 });
 
 test('valid note attachments remain streaming and may exceed the JSON body limit', async () => {

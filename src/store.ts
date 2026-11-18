@@ -1,7 +1,9 @@
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, extname, join, posix, sep } from 'node:path';
-import { appendLine, changes, readLines, tree } from './system.ts';
+import { basename, dirname, extname, join, posix, sep } from 'node:path';
+import { appendLine, changes, replaceFile, tree } from './system.ts';
+import { authorityTree, checkSeriesAuthority } from './authority-format.ts';
+import { appendMessage, deletedEntry, eventsFile, installMessageBooks, instanceAnchor, instanceMessage, instanceProjection, jsonLines, messagesAt, projectInstance, Projection, purgeMessages, readBook, readEntries, readMessages, startMessageStore, type Book, type TornTails } from './message-store.ts';
 import { commit, committed, pack, type Who } from './git.ts';
 import { seriesSettings } from './series.ts';
 import { answered } from './messages.ts';
@@ -110,44 +112,105 @@ export class HttpError extends Error {
   }
 }
 
-// Besides .rf/ (system.ts), the data root holds series/<id>/, a series' series.json and .pylib, and instances/<id>/, each instance
-// flat, with instance.json naming its label and its series. Names live there and in .rf/tree.json, so a rename or a move edits one
-// small file, at any time, even mid-run. The index holds every instance's instance.json, read once at start; an instance loads
-// when it's first listed or opened.
+// The instance index comes from instances/<id>/instance.json. The private canonical logs live outside those mounted instance
+// folders, under series/<id>/.
 export type Meta = { label: string; series: string };
 
 let root = '';
-const index = new Map<string, Meta>();
+let index = new Map<string, Meta>();
 const cache = new Map<string, Instance>();
 
-function hasEntry(log: string): boolean {
-  if (!existsSync(log)) return false;
-  const fd = openSync(log, 'r'), buf = Buffer.allocUnsafe(65536);
-  try {
-    for (let n; (n = readSync(fd, buf, 0, buf.length, null)) > 0;) if (buf.subarray(0, n).includes(10)) return true;
-    return false;
-  } finally {
-    closeSync(fd);
-  }
+function readMetadata<T>(path: string): T | undefined {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (!st) return;
+  if (!st.isFile()) throw new Error(`${path}: not a regular metadata file`);
+  const text = readFileSync(path, 'utf8');
+  try { return JSON.parse(text); } catch { throw new Error(`${path}: invalid metadata JSON`); }
 }
 
-export function openStore(dataRoot: string) {
-  root = dataRoot;
-  index.clear();
-  cache.clear();
-  mkdirSync(join(root, 'instances'), { recursive: true });
-  mkdirSync(join(root, 'series'), { recursive: true });
-  mkdirSync(join(root, 'agents'), { recursive: true });
-  for (const id of readdirSync(join(root, 'instances'))) {
-    const dir = instanceDir(id), meta = join(dir, 'instance.json'), log = join(dir, 'log.jsonl');
-    if (!existsSync(meta) || !hasEntry(log)) {
-      readLines(log);
-      console.error(`${dir}: removed an uncreated instance`);
-      wipe(Buffer.from(dir));
+function startupDirectory(path: string) {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  if (!st) return [];
+  if (!st.isDirectory()) throw new Error(`${path}: not a directory`);
+  return readdirSync(path, { withFileTypes: true });
+}
+
+function readScreen(dir: string): Doc {
+  const path = join(dir, 'screen.json'), doc = readMetadata<Doc>(path);
+  if (doc === undefined) return { rev: 0, status: 'open', items: [] };
+  if (!doc || !Number.isSafeInteger(doc.rev) || doc.rev < 0 || !['open', 'closed', 'abandoned', 'deleted'].includes(doc.status) || !Array.isArray(doc.items))
+    throw new Error(`${path}: invalid screen metadata`);
+  return doc;
+}
+
+export function openStore(dataRoot: string, beforeRepair?: () => void) {
+  const manifest = readMetadata<unknown>(join(dataRoot, '.rf', 'tree.json'));
+  const authority = manifest === undefined ? undefined : authorityTree(manifest), series = authority?.series ?? {};
+  if (authority) checkSeriesAuthority(dataRoot, authority);
+  const folders = join(dataRoot, 'instances'), seriesRoot = join(dataRoot, 'series');
+  const metas = new Map<string, Meta>(), uncreated: string[] = [], tails: TornTails = new Map();
+  for (const d of startupDirectory(folders)) {
+    const dir = join(folders, d.name), path = join(dir, 'instance.json');
+    const m = d.isDirectory() ? readMetadata<Meta>(path) : undefined;
+    if (m === undefined) {
+      uncreated.push(dir);
       continue;
     }
-    index.set(id, JSON.parse(readFileSync(meta, 'utf8')));
+    if (!/^[\w-]+$/.test(d.name) || typeof m?.series !== 'string' || !/^[\w-]+$/.test(m.series) || typeof m.label !== 'string')
+      throw new Error(`${path}: invalid instance metadata`);
+    metas.set(d.name, m);
   }
+  const loaded = new Map<string, Book>(), ids = new Set([...Object.keys(series), ...Array.from(metas.values(), m => m.series)]);
+  for (const d of startupDirectory(seriesRoot)) {
+    const dir = join(seriesRoot, d.name);
+    if (!d.isDirectory() || !/^[\w-]+$/.test(d.name)) throw new Error(`${dir}: invalid series directory`);
+    if (!ids.has(d.name) && readdirSync(dir).length) ids.add(d.name);
+  }
+  for (const sid of ids) {
+    const dir = join(seriesRoot, sid), b = readBook(dir, readMessages(dir, tails));
+    for (const m of b.messages) {
+      if (m.anchor.instance && metas.get(m.anchor.instance)?.series !== sid)
+        throw new Error(`${dir}: message ${m.id} anchors to an unknown instance`);
+      if (m.entry.op === 'request' && typeof m.entry.source === 'string' && !metas.has(m.entry.source))
+        throw new Error(`${dir}: request ${m.id} names an unknown source instance`);
+    }
+    for (const d of startupDirectory(join(dir, 'events'))) {
+      const path = eventsFile(dir, d.name), meta = metas.get(d.name);
+      if (d.isDirectory() && (meta?.series === sid || (!meta && readdirSync(dirname(path)).every(name => name === 'events.jsonl.tmp')))) continue;
+      throw new Error(`${path}: no matching instance.json metadata`);
+    }
+    loaded.set(dir, b);
+  }
+  const replayed = new Map<string, { doc: Doc; log: Entry[] }>(), redacted = new Map<string, Entry>();
+  for (const [id, m] of metas) {
+    const dir = join(seriesRoot, m.series), path = eventsFile(dir, id), events = readEntries(path, tails);
+    const log = projectInstance(path, events, loaded.get(dir)!.byInstance.get(id) ?? []);
+    if (log[0].op === 'delete' && log[0] !== events[0]) redacted.set(path, log[0]);
+    replayed.set(id, { doc: readScreen(join(folders, id)), log });
+  }
+
+  // A bad stream anywhere must not change even a recoverable stream elsewhere.
+  beforeRepair?.();
+  for (const dir of [folders, seriesRoot, join(dataRoot, 'agents')]) mkdirSync(dir, { recursive: true });
+  for (const [path, { end, dropped }] of tails) {
+    truncateSync(path, end);
+    console.error(`${path}: dropped a torn last line, ${dropped} bytes`);
+  }
+  for (const [path, tombstone] of redacted) replaceFile(path, jsonLines([tombstone]), true);
+  for (const dir of uncreated) {
+    wipe(Buffer.from(dir));
+    console.error(`${dir}: removed an uncreated instance`);
+  }
+  root = dataRoot;
+  index = metas;
+  cache.clear();
+  installMessageBooks(loaded);
+  for (const [id, state] of replayed) cache.set(id, new Instance(instanceDir(id), state));
+  for (const inst of cache.values()) {
+    if (inst.hole) inst.clear(Object.hasOwn(series, inst.seriesId) && !!series[inst.seriesId].single);
+    else inst.syncLog();
+  }
+  for (const b of loaded.values()) b.notes.sync();
 }
 
 export const newId = () => randomBytes(6).toString('hex');
@@ -157,9 +220,14 @@ export const instanceDir = (id: string) => join(root, 'instances', id);
 export const agentsFile = (id = 'company') => join(root, 'agents', `${id}.md`);
 
 export function instance(id: string): Instance {
-  if (!index.has(id)) throw new HttpError(404, `no instance ${id}`);
-  if (!cache.has(id)) cache.set(id, new Instance(instanceDir(id)));
-  return cache.get(id)!;
+  const inst = cache.get(id);
+  if (!inst) throw new HttpError(404, `no instance ${id}`);
+  return inst;
+}
+
+export function syncInstanceLog(dir: string) {
+  const inst = cache.get(basename(dir));
+  if (inst?.dir === dir) inst.syncLog();
 }
 
 const byLabel = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label, 'en', { numeric: true });
@@ -174,7 +242,7 @@ export function instances(seriesId: string): Instance[] {
 }
 
 // Each series' instances as `instances` gives them, from one pass over the index, for what lists many series at once; a series'
-// are sorted, and load, only once it's asked for, as with `instances`, so a bad one fails only what asks for its series.
+// are sorted only once it's asked for.
 export function instancesBySeries(): (seriesId: string) => Instance[] {
   const by = new Map<string, { id: string; label: string }[]>(), sorted = new Set<string>();
   for (const [id, m] of index) {
@@ -242,19 +310,28 @@ function freeLabel(seriesId: string, label: string): string {
 // A new instance starts empty. Its creator is recorded separately from its series owner.
 export function createInstance(seriesId: string, label: string, by: string): Instance {
   const name = freeLabel(seriesId, label), id = newId(), stage = join(root, '.tmp', id), dir = instanceDir(id), meta = { label: name, series: seriesId };
+  const book = seriesDir(seriesId), source = eventsFile(book, id);
+  if (!existsSync(book)) startMessageStore(book);
+  messagesAt(book);
   try {
     mkdirSync(join(stage, 'upload'), { recursive: true });
     mkdirSync(join(stage, 'working'));
     replaceReadOnly(join(stage, 'instance.json'), JSON.stringify(meta));
     replaceReadOnly(join(stage, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }, null, 1));
-    appendLine(join(stage, 'log.jsonl'), JSON.stringify({ seq: 1, at: new Date().toISOString(), by, op: 'create' }));
+    mkdirSync(dirname(source), { recursive: true, mode: 0o700 });
+    const create = { seq: 1, at: new Date().toISOString(), by, op: 'create' };
+    replaceFile(source, jsonLines([create]));
+    new Projection(join(stage, 'log.jsonl'), [create]).sync();
     renameSync(stage, dir);
   } catch (e) {
     wipe(Buffer.from(stage));
+    wipe(Buffer.from(dirname(source)));
     throw e;
   }
   index.set(id, meta);
-  const inst = instance(id);
+  const inst = new Instance(dir);
+  inst.syncLog();
+  cache.set(id, inst);
   changes.emit('change', 'tree');
   changes.emit('change', id);
   return inst;
@@ -268,26 +345,23 @@ export class Instance {
   dir: string;
   id: string;
   doc: Doc;
-  log: Entry[];
+  private projection: Projection;
+  get log(): Entry[] { return this.projection.entries; }
   // What `copied` answers, kept as the log changes rather than found on each read: the sidebar and the page read it for each entry
   // of a log thousands long.
   private copiedSeq: number;
   closing = false;
 
-  constructor(dir: string) {
+  constructor(dir: string, state?: { doc: Doc; log: Entry[] }) {
     this.dir = dir;
     this.id = basename(dir);
-    const ws = join(dir, 'screen.json'), log = join(dir, 'log.jsonl');
-    this.doc = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : { rev: 0, status: 'open', items: [] };
-    this.log = readLines(log);
+    this.doc = state?.doc ?? readScreen(dir);
+    this.projection = instanceProjection(this.series(), this.id, join(dir, 'log.jsonl'), state?.log);
     this.copiedSeq = this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
-    // Its log is written first as it's deleted, so a restart that cut a deletion finds it deleted (waker.ts recover()).
-    if (this.hole) {
-      this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
-      // Older tombstones may still hold wake-check text on disk; no reader sees it.
-      for (const row of (this.log[0].wakeChecks ?? []) as { message?: string }[]) delete row.message;
-    }
+    if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
   }
+
+  syncLog() { this.projection.sync(); }
 
   // Deleted: its log is its delete entry alone.
   get hole(): boolean {
@@ -299,9 +373,10 @@ export class Instance {
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
-    appendLine(join(this.dir, 'log.jsonl'), JSON.stringify(e));
-    this.log.push(e);
+    if (instanceMessage(e)) return appendMessage(this.series(), instanceAnchor(this.id, e, this.log), e).entry;
+    appendLine(eventsFile(this.series(), this.id), JSON.stringify(e), 0o600);
     if (e.op === 'duplicate') this.copiedSeq = e.seq;
+    this.projection.update(e);
     changes.emit('change', this.id);
     return e;
   }
@@ -336,16 +411,16 @@ export class Instance {
   }
 
   // The agent's asks still waiting on people: those no one answered.
-  asking(): Entry[] {
+  asking(owner?: string): Entry[] {
     const from = this.copied;
-    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !answered(this.log, e));
+    return this.log.filter(e => e.seq > from && e.op === 'comment' && e.by === 'agent' && e.ask && !answered(this.log, e, this.log.length, owner));
   }
 
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
   // accepted as the agent said it did them. It commits the folder in the series owner's name. The instance is closed meanwhile, so nothing
   // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
   async close(by: Who) {
-    const accepted = this.asking().map(e => `c${e.seq}`);
+    const accepted = this.asking(by.email).map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     this.closing = true;
     let hash: string;
@@ -384,23 +459,25 @@ export class Instance {
 
   // The tombstone precedes waiting for runs and commits: a restart finishes clearing the folder.
   markDeleted(by: string, fields: Record<string, unknown>): Entry {
-    const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op: 'delete', ...fields };
-    writeFileSync(join(this.dir, 'log.jsonl.tmp'), JSON.stringify(e) + '\n');
-    renameSync(join(this.dir, 'log.jsonl.tmp'), join(this.dir, 'log.jsonl'));
-    this.log = [e];
+    const e = deletedEntry({ ...fields, seq: this.log.length + 1, at: new Date().toISOString(), by, op: 'delete' });
+    replaceFile(eventsFile(this.series(), this.id), jsonLines([e]), true);
     this.copiedSeq = 0;
     this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+    this.projection.update([e]);
+    purgeMessages(this.series(), this.id, this.label, !!tree().series[this.seriesId]?.single);
     return e;
   }
 
-  clear() {
-    const ws = join(this.dir, 'screen.json'), was: Doc | undefined = existsSync(ws) ? JSON.parse(readFileSync(ws, 'utf8')) : undefined;
-    if (was?.status !== 'deleted' || was.items.length) {
+  clear(task = !!tree().series[this.seriesId]?.single) {
+    purgeMessages(this.series(), this.id, this.label, task);
+    this.syncLog();
+    const was = readScreen(this.dir);
+    if (was.status !== 'deleted' || was.items.length) {
       this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
       this.save();
     }
     for (const name of readdirSync(this.dir, { encoding: 'buffer' })) if (!HOLE.includes(name.toString('latin1'))) wipe(Buffer.concat([Buffer.from(this.dir + sep), name]));
-    if (tree().series[this.seriesId].single) wipe(Buffer.from(join(this.series(), '.pylib')));
+    if (task) for (const name of ['.pylib', 'notes']) wipe(Buffer.from(join(this.series(), name)));
   }
 
   put(text: string, run: number) {

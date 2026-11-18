@@ -18,7 +18,8 @@ import { confirm } from './entra.ts';
 import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 import { runWakeCheck } from './wake-check.ts';
-import { binds, isPerson, notes, openNotes, type Note } from './messages.ts';
+import { binds, conversation, currentMessage, isPerson, openNotes, type Note } from './messages.ts';
+import { appendMessage, messagesAt, syncNotes, visibleInstanceFiles } from './message-store.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -77,9 +78,8 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const lease = e.authority as Authority | undefined;
   const stale = e.op === 'wake' ? !lease || !sameAuthority(inst, lease) : epoch !== r.epoch;
   if ((e.seq < line && e.seq <= readAt(inst, line)) || (stale && e.seq <= seenBefore(inst))) return undefined;
-  const ask = binds(inst, e);
-  const word = e.seq < line || e.note || stale ? 'note'
-    : e.op !== 'wake' ? (e.by === owner ? 'runner' : ask?.to === e.by ? 'answer' : 'note')
+  const word = e.seq < line || e.note || e.informs || stale ? 'note'
+    : e.op !== 'wake' ? binds(inst, e, owner, r)
     : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
   const valid = e.op === 'wake' ? !stale && (!(e.recovery || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
     : epoch === r.epoch && owner === r.by;
@@ -107,8 +107,12 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 // renames and a run cut or failed; not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
 const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
+export function seriesConversation(id: string, periods = instances(id), epoch = seriesSettings(seriesDir(id)).epoch) {
+  return conversation(messagesAt(seriesDir(id)), periods, epoch);
+}
+
 // Messages describe the captured lease, never a later-expanded series ceiling.
-export function message(inst: Instance, n: number, entries: Entry[], first = false, open: Note[] = [], lease = (inst.log.find(e => e.op === 'run' && e.run === n)?.authority as Authority | undefined) ?? authority(inst)): string {
+export function message(inst: Instance, n: number, entries: Entry[], first = false, open: readonly Note[] = [], lease = (inst.log.find(e => e.op === 'run' && e.run === n)?.authority as Authority | undefined) ?? authority(inst), names: View['names'] = {}): string {
   const us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const by = lease.owner, ticked = lease.logins, set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
   const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
@@ -125,14 +129,39 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     })();
     return `${i.label}${e.item ? ` ${e.item}${e.ref ? `@${e.ref}` : ''}` : ''} is ${e.kind}, ${JSON.stringify(e.text)}${see ? `, see ${seeLabel}${see.thread ? ` ${see.thread}` : ''}` : ''}`;
   }));
-  const from = (e: Note) => e.by !== 'agent' ? who(e.by) : `the agent of ${named(tree(), instance((e.see as { inst: string }).inst).seriesId)}/${instance((e.see as { inst: string }).inst).label}, run ${e.run}, for ${who(e.runner as string)}`;
+  const from = (e: Note) => {
+    if (e.by !== 'agent') return who(e.by);
+    const see = e.see as { inst: string; label: string } | undefined;
+    let label = see?.label ?? inst.label;
+    if (see) {
+      // Older notes can point at a deleted origin or a series since moved outside the recipient's reach.
+      let origin: Instance | undefined;
+      try { origin = instance(see.inst); } catch (err) { if (!(err instanceof HttpError) || err.status !== 404) throw err; }
+      const t = tree();
+      if (origin && !origin.hole && t.series[origin.seriesId]?.workspace === t.series[inst.seriesId].workspace) label = `${named(t, origin.seriesId)}/${origin.label}`;
+    }
+    return `the agent of ${label}, run ${e.run}, for ${who(e.runner as string)}`;
+  };
+  const paths = new Map(Object.entries(names).map(([path, id]) => [id, path]));
+  const files = (e: Entry) => visibleInstanceFiles(e, inst.id, (id, path) => {
+    if (id !== inst.id && !paths.has(id)) return false;
+    const fd = openFile(instanceDir(id), path);
+    if (fd === undefined) return false;
+    closeSync(fd);
+    return true;
+  });
+  const asks = first ? inst.asking(by).filter(e => currentMessage(inst.log, e, { by, epoch: lease.epoch, workspace: lease.workspace })) : [];
+  const series = open.filter(e => !e.anchor), here = open.filter(e => e.anchor);
   return `Instance ${inst.label}, run ${n}.`
     + (first ? ` Its series owner and captured execution person is ${who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}. Approvals from an earlier authority epoch are history, not authorization for this owner.` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
-    + (open.length ? ` Open notes on the series: ${open.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}`).join('; ')}.` : '')
+    + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')
+    + (series.length ? ` Open notes on the series: ${series.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
+    + (here.length ? ` Open notes on this instance: ${here.map(e => `${e.id}, on ${e.anchor!.label}${e.anchor!.item ? ` ${e.anchor!.item}` : ''}${e.anchor!.ref ? `@${e.anchor!.ref}` : ''}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${files(e).map(f => `, ${typeof f === 'string' ? f : f.inst === inst.id ? f.path : `${paths.get(f.inst)}/${f.path}`}`).join('')}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
     + ' New log entries:\n'
-    + entries.filter(told).map(e => JSON.stringify(standing(inst, e)?.word === 'note' ? { ...e, note: true } : e)).join('\n');
+    + entries.filter(told).map(e => JSON.stringify({ ...e, ...(standing(inst, e)?.word === 'note' && { note: true }),
+      ...(e.op === 'comment' && e.files && { files: files(e) }) })).join('\n');
 }
 
 // What a series' agent may read: the other series of its workspace, and those of each workspace whose managers let its workspace's
@@ -153,9 +182,16 @@ export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].arc
 // /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance, lease = authority(inst)): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
-  const names = Object.fromEntries(series.flatMap(id => labels(id).filter(l => !['abandoned', 'deleted'].includes(instance(l.id).doc.status)).map(l => [`${at(id)}/${l.label}`, l.id])));
+  const names = Object.fromEntries(series.flatMap(id => instances(id).filter(i => !['abandoned', 'deleted'].includes(i.doc.status)).map(i => {
+    i.syncLog();
+    return [`${at(id)}/${i.label}`, i.id];
+  })));
   const agents = [...new Set(series.map(id => t.series[id].workspace))].map(w => [agentsFile(w), `/work/${t.workspaces[w].name}/AGENTS.md`] as [string, string]);
-  const noting = series.filter(id => !t.series[id].single).map(id => [join(seriesDir(id), 'notes'), `${at(id)}/.notes`] as [string, string]);
+  const noting = series.filter(id => !t.series[id].single || existsSync(join(seriesDir(id), 'notes'))).map(id => {
+    const dir = seriesDir(id);
+    syncNotes(dir);
+    return [join(dir, 'notes'), `${at(id)}/.notes`] as [string, string];
+  });
   return {
     instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
     ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
@@ -178,12 +214,13 @@ export function kick(inst: Instance) {
 
 function flush(a: Active) {
   if (a.stopped) return;
-  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = openNotes(notes(a.inst.series()).filter(e => e.seq > a.noted));
+  const all = seriesConversation(a.inst.seriesId).notes, local = new Set(all.filter(e => e.anchor?.inst === a.inst.id).map(e => e.seq));
+  const entries = a.inst.log.filter(e => e.seq > a.sent && (e.by !== 'agent' || e.note)), fresh = openNotes(all, a.inst.id).filter(e => e.seq > (e.anchor ? a.sent : a.noted));
   // What it is told of reaches it at once, notes too.
   if (!entries.some(told) && !fresh.length) return;
-  const text = message(a.inst, a.n, entries, false, fresh);
+  const text = message(a.inst, a.n, entries.filter(e => !local.has(e.seq)), false, fresh, a.authority, a.view.names);
   a.sent = entries.at(-1)?.seq ?? a.sent;
-  a.noted = fresh.at(-1)?.seq ?? a.noted;
+  a.noted = fresh.findLast(e => !e.anchor)?.seq ?? a.noted;
   a.texts.set(text, a.sent);
   a.run!.steer(text).catch(err => finishRun(a, true, String(err)));
 }
@@ -238,14 +275,16 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   // Losing workspace visibility never chooses a replacement owner.
   if (!sees(inst)) return bail(inst, tried);
   const n = inst.log.filter(e => e.op === 'run').length + 1;
-  const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = notes(inst.series());
-  const text = message(inst, n, entries, true, openNotes(left), lease);
+  const entries = inst.log.filter(e => e.seq > seen && (e.by !== 'agent' || e.note)), left = seriesConversation(series).notes;
+  const local = new Set(left.filter(e => e.anchor?.inst === inst.id).map(e => e.seq));
+  const work = view(inst, lease);
+  const text = message(inst, n, entries.filter(e => !local.has(e.seq)), true, openNotes(left, inst.id), lease, work.names);
   // Authority and carried code are captured before the process starts.
   // The versions live as its Pi starts, which it uses to its end.
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
-    inst, n, runner: lease.owner, authority: lease, token: randomUUID(), view: view(inst, lease), workspace: lease.workspace,
-    sent: entries.at(-1)!.seq, noted: left.at(-1)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
+    inst, n, runner: lease.owner, authority: lease, token: randomUUID(), view: work, workspace: lease.workspace,
+    sent: entries.at(-1)!.seq, noted: left.findLast(e => !e.anchor)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -429,8 +468,8 @@ function cut(a: Active, why: string) {
 }
 
 // Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it, as a lease is cut, and any run whose view
-// holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes and requests for its
-// label, or all of a task's. Once nothing runs in its folder, its last commit is done and its runs' browsers have logged what
+// holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes for its label, or all of a
+// task's. Requests to or from it go too. Once nothing runs in its folder, its last commit is done and its runs' browsers have logged what
 // they did, it becomes a hole. `fields` says what it cost, as its runs ended.
 export async function remove(inst: Instance, by: string, fields: () => Record<string, unknown>): Promise<Entry> {
   const t = tree(), task = !!t.series[inst.seriesId].single;
@@ -446,7 +485,8 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (k.target === inst.id || (k.target === inst.seriesId && (task || (k.label === inst.label && !k.days)))) delete w.pending[id];
-  for (const [id, r] of Object.entries(w.requests)) if (r.target === inst.id || (r.series === inst.seriesId && (task || r.label === inst.label))) delete w.requests[id];
+  for (const [id, r] of Object.entries(w.requests)) if (r.inst === inst.id || r.target === inst.id
+    || (r.series === inst.seriesId && (task || !r.target && r.label === inst.label))) delete w.requests[id];
   delete w.fired[inst.id];
   saveWakes(w);
   const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
@@ -526,10 +566,67 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 // Schedules retain target authority and independent setter/source-run provenance.
 // Unconsented or revoked schedules become requests, never execution as their clicker.
 export type Wake = { target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number; days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string; deadlineTarget?: string };
-export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string };
+export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; message?: number };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
-export const wakes = () => readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
-const saveWakes = (w: Wakes) => writeJson('wakes.json', w);
+
+// Keep the request scope in its pointer too: a tombstone can explain a missing row even after the canonical body has been purged.
+export function wakes(): Wakes {
+  const stored = readJson<Wakes>('wakes.json', { pending: {}, fired: {}, requests: {} });
+  if (!stored?.requests || typeof stored.requests !== 'object' || Array.isArray(stored.requests)) throw new Error('invalid scheduler requests');
+  let t: Tree | undefined;
+  for (const [id, r] of Object.entries(stored.requests)) {
+    if (!r || !/^[\w-]+$/.test(id) || Object.keys(r).some(k => !['series', 'label', 'target', 'inst', 'message'].includes(k)))
+      throw new Error('invalid wake request reference');
+    const { series, label, target, inst: source, message } = r;
+    if (typeof series !== 'string' || !/^[\w-]+$/.test(series) || typeof label !== 'string' || !label
+      || (target !== undefined && (typeof target !== 'string' || !/^[\w-]+$/.test(target)))
+      || (source !== undefined && (typeof source !== 'string' || !/^[\w-]+$/.test(source)))
+      || typeof message !== 'number' || !Number.isSafeInteger(message) || message <= 0) throw new Error(`invalid wake request reference ${id}`);
+    const rows = messagesAt(seriesDir(series)), row = rows.find(m => m.id === message);
+    if (row && (row.entry.op !== 'request' || row.entry.requestId !== id || row.anchor.instance !== target
+      || row.entry.label !== label || row.entry.source !== source)) throw new Error(`invalid wake request reference ${id}`);
+    if (rows.some(m => m.id > message && m.anchor.instance === target && m.entry.op === 'request-decision'
+      && m.entry.requestId === id && m.entry.request === message)) {
+      delete stored.requests[id];
+    } else if (row) {
+      const { from, at, text } = row.entry;
+      Object.assign(r, { from, at, ...(text !== undefined && { text }) });
+    } else {
+      const book = (t ??= tree()).series[series];
+      if (book) try {
+        const to = target ? instance(target) : undefined, from = source ? instance(source) : undefined;
+        if ((!to || to.seriesId === series) && (to?.hole || from?.hole
+          || ((!to || book.single) && labels(series).some(l => (book.single || l.label === label) && instance(l.id).hole)))) {
+          delete stored.requests[id];
+          continue;
+        }
+      } catch (err) {
+        if (!(err instanceof HttpError) || err.status !== 404) throw err;
+      }
+      throw new Error(`invalid wake request reference ${id}`);
+    }
+  }
+  return stored;
+}
+
+function saveWakes(w: Wakes) {
+  const requests = Object.create(null);
+  for (const [id, r] of Object.entries(w.requests)) {
+    const { from, at, text, series, target, label, inst: source } = r;
+    let message = r.message;
+    if (message === undefined) {
+      // A recurring wake can outlive the instance that set it or a deleted slot. Do not recreate its request body.
+      if ((source && instance(source).hole) || (target ? instance(target).hole : labels(series).some(l => l.label === label && instance(l.id).hole))) continue;
+      const dir = seriesDir(series), recorded = messagesAt(dir).findLast(m => m.entry.op === 'request' && m.entry.requestId === id
+        && m.entry.at === at && m.anchor.instance === target && m.entry.label === label && m.entry.source === source
+        && m.entry.from === from && m.entry.text === text);
+      message = recorded?.id ?? appendMessage(dir, target ? { instance: target } : {},
+        { seq: 1, by: source ? 'agent' : from, op: 'request', requestId: id, at, from, label, ...(source && { source }), ...(text !== undefined && { text }) }).id;
+    }
+    requests[id] = { series, label, ...(source && { inst: source }), ...(target && { target }), message };
+  }
+  writeJson('wakes.json', { ...w, requests });
+}
 const byAt = (a: { at: string }, b: { at: string }) => a.at.localeCompare(b.at);
 export const wakesOf = (target: string, w = wakes()) => Object.entries(w.pending).filter(([, k]) => k.target === target)
   .map(([id, k]) => ({ id, ...k })).sort(byAt);
@@ -612,9 +709,11 @@ export function cancelWakes(targets: string[]) {
   saveWakes(w);
 }
 
-export function dropRequest(id: string): Request {
+export function dropRequest(id: string, by: string, how: 'started' | 'dismissed'): Request {
   const w = wakes(), r = w.requests[id];
   if (!r) throw new HttpError(404, `no request ${id}`);
+  appendMessage(seriesDir(r.series), r.target ? { instance: r.target } : {},
+    { seq: 1, at: new Date().toISOString(), by, op: 'request-decision', requestId: id, request: r.message, how });
   delete w.requests[id];
   saveWakes(w);
   return r;

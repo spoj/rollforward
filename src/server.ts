@@ -27,9 +27,10 @@ import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
 import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
-import { commentAt, isPerson, notes, openNotes, post, waitsOn } from './messages.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
+import { appendMessage } from './message-store.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -39,18 +40,20 @@ checkTheme();
 const version = existsSync(join(app, '.git')) ? execFileSync('git', ['describe', '--tags', '--always'], { cwd: app, encoding: 'utf8' }).trim() : null;
 const exec = promisify(execFile);
 const port = Number(process.argv[3] ?? 8780);
-const host = process.env.RF_HOST ?? '127.0.0.1';
+const verifyOnly = process.argv[4] === '--verify-only';
+if (process.argv[4] !== undefined && (!verifyOnly || process.argv.length !== 5)) throw new Error('usage: node src/server.ts DATA_ROOT PORT [--verify-only]');
+const host = verifyOnly ? '127.0.0.1' : process.env.RF_HOST ?? '127.0.0.1';
 const tmpDir = join(root, '.tmp'), previews = join(root, '.previews');
 if (!existsSync(join(agentRoot, 'usr'))) throw new Error(`no agent image at ${agentRoot}: node scripts/agent.ts unpacks agent-${agentId}, which this checkout runs`);
 checkAuthorityFormat(root);
 initSystem(root);
-// As it starts, before anything changes .rf/, the server copies it to .rf-backups/<time>/, keeping the newest five, but the indexes'
-// caches and the runs' copies of them, which Graph gives again: what a mistake or a release's migration changed is there to put back.
-const backups = join(root, '.rf-backups');
-mkdirSync(backups, { recursive: true, mode: 0o700 });
-cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
-for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
-openStore(root);
+openStore(root, verifyOnly ? undefined : () => {
+  // Back up .rf/ after canonical validation but before repairs, keeping the newest five without disposable caches.
+  const backups = join(root, '.rf-backups');
+  mkdirSync(backups, { recursive: true, mode: 0o700 });
+  cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
+  for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
+});
 const authorityEpochs = new Map(Object.keys(tree().series).map(sid => [sid, seriesSettings(seriesDir(sid)).epoch]));
 changes.on('change', (id: string, actor?: string) => {
   if (id !== 'tree') return;
@@ -63,7 +66,7 @@ changes.on('change', (id: string, actor?: string) => {
   }
 });
 // A new data root starts with one connection, Microsoft 365's, graph.
-if (!existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
+if (!verifyOnly && !existsSync(join(root, '.rf', 'connections.json'))) writeJson('connections.json', { graph: { type: 'graph', updated_by: 'server', updated_at: new Date().toISOString() } });
 
 // A file's sha256, kept by its inode, size and nanosecond change times once a second old, as each view of an instance compares its
 // files again; streamed, as a run may leave a file of any size.
@@ -108,11 +111,13 @@ function freeName(t: Tree, ws: string, name: string): string {
   return n;
 }
 
-openSkills(root);
 checkConfig();
-for (const dir of [tmpDir, previews]) {
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir);
+if (!verifyOnly) {
+  openSkills(root);
+  for (const dir of [tmpDir, previews]) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir);
+  }
 }
 
 // A request's body, JSON or a screen, of 10 MB at most, refused as it comes past that.
@@ -185,6 +190,10 @@ function mustSee(me: Me, w: Workspace | undefined): Workspace {
   return w;
 }
 
+function mustKeepNotes(sid: string, s = tree().series[sid]) {
+  if (s.single && instances(sid).some(i => i.doc.status === 'deleted')) throw new HttpError(409, `${s.name} was deleted`);
+}
+
 function mustUnarchived(by: string, sid: string, run?: Me) {
   const now = tree(), s = now.series[sid], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
   const who = run ?? asPerson(by);
@@ -219,10 +228,10 @@ function watched(me: Me, id: string, site: string): { browsers: Browsers; id: st
   return { browsers: a!.browsers!, id: b };
 }
 
-function waits(inst: Instance, by?: string): { who: string; e: Entry }[] {
+function waits(inst: Instance, workspace: string, settings = seriesSettings(inst.series())): { who: string; e: Entry }[] {
   if (inst.doc.status !== 'open') return [];
-  const owner = by ?? ownerOf(inst).by;
-  return waitsOn(inst, owner, seen(owner).at[inst.id] ?? 0, active.get(inst.seriesId)?.inst === inst ? active.get(inst.seriesId)!.seen : 0);
+  const by = settings.owner ?? '', a = active.get(inst.seriesId);
+  return waitsOn(inst, by, seen(by).at[inst.id] ?? 0, a?.inst === inst ? a.seen : 0, { epoch: settings.epoch, workspace });
 }
 
 function asked(r: Request): string | null {
@@ -270,12 +279,12 @@ const estimatedOf = (i: Instance) => i.log.slice(i.log.findLastIndex(e => e.op =
 
 // The page lists every instance after each step of a run, so this reads the owner from the series' settings, which a listing reads
 // once for all of a series' instances, not ownerOf's whole tree.json.
-function summary(i: Instance, me: Me, w8 = wakes(), settings = seriesSettings(i.series()), wakesFor = wakesByTarget(w8)) {
+function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings = seriesSettings(i.series()), wakesFor = wakesByTarget(w8)) {
   const email = me.email, by = settings.owner ?? '';
-  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(settings)}:${seen(by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
+  const key = `${i.log.length}:${i.doc.rev}:${JSON.stringify(settings)}:${workspace}:${seen(by).at[i.id]}:${active.get(i.seriesId)?.seen}`;
   const news = i.log.findLast(e => e.by !== email && e.accepted_by !== email && NEWS.includes(e.op)), s = seen(email);
   let k = kept.get(i);
-  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i, by).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
+  if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i, workspace, settings).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
     refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
   return {
@@ -311,11 +320,13 @@ function listing(me: Me) {
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
+      const periods = instancesOf(sid), discussion = seriesConversation(sid, periods, epoch);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
-        wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: openNotes(notes(seriesDir(sid))).length,
+        wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: openNotes(discussion.notes).length,
+        noteNotices: s.archived || w.archived ? [] : notices(discussion.notes, discussion.dismissed, me.email, owner, s.name),
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
-        instances: instancesOf(sid).map(i => summary(i, me, w8, settings, wakesFor)),
+        instances: periods.map(i => summary(i, me, id, w8, settings, wakesFor)),
       };
     });
 
@@ -544,13 +555,14 @@ async function status(me: Me) {
   const t = tree(), w8 = wakes(), path = (i: Instance) => `${named(t, i.seriesId)}/${i.label}`;
   const seen = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
   const open = seen.flatMap(([sid]) => instances(sid).filter(i => i.doc.status === 'open'));
-  const k = me.role === 'admin' ? await keyStatus() : null;
+  const k = !verifyOnly && me.role === 'admin' ? await keyStatus() : null, listed = listing(me);
   return {
     ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
     running: seen.flatMap(([sid]) => active.get(sid) ?? []).map(a => ({ path: path(a.inst), run: a.n, owner: ownerOf(a.inst).by, at: a.inst.log.findLast(e => e.op === 'run')!.at, cost: +a.cost.toFixed(6), ...(a.estimated && { estimated: true }) })),
     queued: open.flatMap(i => { const q = queued(i); return q ? [{ path: path(i), owner: ownerOf(i).by, ...q }] : []; }),
-    ownership: listing(me).filter(w => w.manage && !w.archived).flatMap(w => w.series.filter(s => !s.archived && s.ownerUnavailable).map(s => ({ id: s.id, path: `${w.name}/${s.name}`, text: s.owner ? `${users()[s.owner]?.name ?? s.owner} can no longer run ${s.name}` : `${s.name} has no owner` }))),
-    asks: open.flatMap(i => waits(i).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: isPerson(e) ? `${users()[e.by]?.name ?? e.by} ${e.op === 'create' ? 'started' : 'added a note to'} ${t.series[i.seriesId].name} · ${i.label}` : e.text as string, note: e.by !== 'agent' || !e.ask }))),
+    ownership: listed.filter(w => w.manage && !w.archived).flatMap(w => w.series.filter(s => !s.archived && s.ownerUnavailable).map(s => ({ id: s.id, path: `${w.name}/${s.name}`, text: s.owner ? `${users()[s.owner]?.name ?? s.owner} can no longer run ${s.name}` : `${s.name} has no owner` }))),
+    noteNotices: listed.flatMap(w => w.series.flatMap(s => s.noteNotices.map(n => ({ ...n, path: `${w.name}/${s.name}${n.anchor ? `/${n.anchor.label}` : ''}` })))),
+    asks: open.flatMap(i => waits(i, t.series[i.seriesId].workspace).map(({ who, e }) => ({ who, path: path(i), since: e.at, text: isPerson(e) ? `${users()[e.by]?.name ?? e.by} ${e.op === 'create' ? 'started' : 'added a note to'} ${t.series[i.seriesId].name} · ${i.label}` : e.text as string, note: e.by !== 'agent' || !e.ask }))),
     expired: (me.role === 'admin' ? Object.keys(users()) : [me.email]).flatMap(who => logins(who).filter(l => l.expired).map(l => ({
       who, login: l.name,
       holding: open.filter(i => held(i, l.id, who)).map(path),
@@ -658,6 +670,7 @@ function pullable(me: Me, path: string) {
     for (const [sid, s] of Object.entries(t.series).filter(([, s]) => s.workspace === wid)) for (const l of labels(sid)) {
       const at = `${w.name}/${s.name}/${l.label}`, dir = instanceDir(l.id), inst = instance(l.id);
       if (!near(at)) continue;
+      inst.syncLog();
       if (inst.hole) {
         add(`${at}/instance.json`, join(dir, 'instance.json'), { text: text(join(dir, 'instance.json')) });
         add(`${at}/screen.json`, join(dir, 'screen.json'), { text: JSON.stringify(inst.doc) });
@@ -678,8 +691,29 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const inst = instance(id);
   mustSee(me, tree().workspaces[tree().series[inst.seriesId].workspace]);
   if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
-  const fd = openFile(inst.dir, rel);
+  if (rel === 'log.jsonl') inst.syncLog();
+  const pin = url.searchParams.get('sha256');
+  if (pin !== null) {
+    if (!/^[a-f0-9]{64}$/i.test(pin) || !/^(upload|working)\/.+/.test(rel)) throw new HttpError(400, 'bad attachment pin');
+    res.setHeader('cache-control', 'no-store');
+    url.searchParams.delete('sha256');
+  }
+  let fd = openFile(inst.dir, rel);
   if (fd === undefined) throw new HttpError(404, 'no such file');
+  if (pin !== null) {
+    // Serve the verified bytes, not a second read of a working file that can change after the check.
+    const dir = verifyOnly ? (await import('node:os')).tmpdir() : tmpDir;
+    const name = randomUUID(), tmp = join(dir, name), sum = createHash('sha256');
+    try {
+      await pipeline(createReadStream('', { fd }), async function* (chunks: AsyncIterable<Buffer>) {
+        for await (const c of chunks) { sum.update(c); yield c; }
+      }, createWriteStream(tmp, { flags: 'wx', mode: 0o600 }));
+      if (sum.digest('hex') !== pin.toLowerCase() || inst.doc.status === 'deleted') throw new HttpError(404, 'Attachment unavailable');
+      fd = openFile(dir, name)!;
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+  }
   if (preview) {
     // preview.py runs in the agent's userland, with no network and nothing of the host's, the server's environment included, which
     // bwrap's PID 1 inside would keep: the file, up to 100 MB, streams to its stdin. What it makes is kept, until the server
@@ -736,6 +770,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox",
     'content-disposition': `${image ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(basename(rel))}`,
   });
+  if (res.req.method === 'HEAD') {
+    closeSync(fd);
+    return void res.end();
+  }
   await sendStream(createReadStream('', { fd }), res);
 }
 
@@ -768,6 +806,7 @@ const text = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8') : 
 const brand = () => readJson<{ text?: string; logo?: string; type?: string }>('brand.json', {});
 // Each request's JSON body, as read, for the system's log.
 const bodies = new WeakMap<IncomingMessage, object>();
+const messageWrites = new WeakSet<IncomingMessage>();
 const json = async (req: IncomingMessage) => {
   const text = (await body(req)).toString();
   let parsed;
@@ -845,15 +884,76 @@ async function monitor(me: Me, req: IncomingMessage, res: ServerResponse, url: U
 }
 
 async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: URL) {
-  const [kind, id = '', action, other = ''] = url.pathname.split('/').slice(2).map(decodeURIComponent);
+  let [kind, id = '', action, other = '', ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   // A run reads and writes its own instance's screen and threads, commits its folder, sets wakes, corrects closed instances and leaves
   // notes in other open ones and on series in its own workspace, and finds what a folder it can read names; nothing else here.
   const run = me.run;
-  if (run && !(kind === 'instances' && id === run.inst.id && ['screen', 'commit', 'withdraw'].includes(action)) && !(kind === 'instances' && ['comment', 'correct'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && !(kind === 'series' && action === 'notes' && req.method === 'POST') && kind !== 'resolve')
+  if (action === 'note-state') throw new HttpError(404, 'not found');
+  const unified = url.pathname === '/api/messages' && req.method === 'POST';
+  const legacy = kind === 'series' && action === 'notes' || kind === 'instances' && ['comment', 'signoff', 'reject', 'withdraw'].includes(action);
+  if (legacy && (rest.length || kind === 'instances' && other || kind === 'series' && other && req.method !== 'POST')) throw new HttpError(404, 'not found');
+  if (legacy && !(req.method === 'POST' || kind === 'series' && req.method === 'GET')) throw new HttpError(405, 'POST only');
+  const writing = unified || legacy && req.method === 'POST';
+  if (run && url.pathname === '/api/messages' && req.method === 'GET' && url.searchParams.get('mine') === '1') {
+    const t = tree(), ws = posix.dirname(posix.dirname(run.view.instance));
+    const paths = new Map(Object.entries(run.view.names).map(([path, id]) => [id, path]));
+    return send(res, 200, Object.entries(run.view.series).filter(([path, id]) => posix.dirname(path) === ws && t.series[id]?.workspace === run.workspace)
+      .flatMap(([path, id]) => seriesConversation(id).notes.filter(n => n.by === 'agent' && n.run === run.n && n.runner === run.runner
+        && (n.see as { inst?: string } | undefined)?.inst === run.inst.id && (!n.anchor || paths.has(n.anchor.inst)))
+        .map(n => ({ ...n, path: (n.anchor ? paths.get(n.anchor.inst)! : path).slice('/work/'.length) }))));
+  }
+  if (run && !unified && !(kind === 'instances' && id === run.inst.id && ['screen', 'commit', 'withdraw'].includes(action)) && !(kind === 'instances' && ['comment', 'correct'].includes(action)) && !(kind === 'wakes' && ['PUT', 'DELETE'].includes(req.method!)) && !(kind === 'series' && action === 'notes' && ['GET', 'POST'].includes(req.method!)) && kind !== 'resolve')
     throw new HttpError(404, 'not found');
   // The body before the tree: a request held open must not save a tree from before others' changes, such as an owner's removal.
   const payload = ['upload', 'attach', 'screen'].includes(action) ? {} : await json(req);
   if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
+  if (writing) {
+    recheckRequest(req);
+    messageWrites.add(req);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new HttpError(400, 'a message is an object');
+  }
+  // Installed v0.19.2 clients still use the old public routes. Convert their URL scope to the same message fields.
+  if (legacy && writing) {
+    if (kind === 'series') {
+      payload.series = id;
+      delete payload.instance;
+      if (other) {
+        if (!/^n[1-9]\d*$/.test(other) || !['taken', 'aside'].includes(payload.how)) throw new HttpError(400, 'name a note and how to settle it');
+        Object.assign(payload, { id: other, see: payload.thread ?? undefined, thread: undefined });
+      }
+    } else {
+      payload.instance = id;
+      delete payload.series;
+      if (action !== 'comment') Object.assign(payload, { id: payload.thread, how: action === 'signoff' ? 'approve' : action === 'withdraw' ? 'withdrawn' : 'reject' });
+    }
+  }
+  if (writing) {
+    const inst = payload.instance, sid = payload.series;
+    if ((inst === undefined) === (sid === undefined) || typeof (inst ?? sid) !== 'string' || !/^[\w-]+$/.test(inst ?? sid))
+      throw new HttpError(400, 'name exactly one instance or series id');
+    id = inst ?? sid;
+    kind = inst === undefined ? 'series' : 'instances';
+    const { how, dismiss } = payload;
+    if (how !== undefined || dismiss !== undefined) {
+      other = payload.id;
+      if (typeof other !== 'string' || !/^[cn][1-9]\d*$/.test(other)) throw new HttpError(400, 'name a comment cN or a note nN');
+      if (other[0] === 'c' && inst === undefined) throw new HttpError(400, 'cN needs its instance');
+      if (dismiss !== undefined ? (how !== undefined || !['open', 'settled'].includes(dismiss)) : !['approve', 'reject', 'taken', 'aside', 'withdrawn'].includes(how))
+        throw new HttpError(400, 'invalid message decision');
+      if (['approve', 'reject', 'withdrawn'].includes(how)) {
+        if (other[0] !== 'c') throw new HttpError(400, 'only a question or proposal can be decided or withdrawn');
+        if (how === 'withdrawn' ? run?.inst.id !== inst : !!run) throw new HttpError(403, 'a run withdraws its own asks; people approve or reject');
+        action = how === 'approve' ? 'signoff' : how === 'withdrawn' ? 'withdraw' : 'reject';
+        payload.thread = other;
+      } else action = 'note-state';
+    } else {
+      if (payload.id !== undefined) throw new HttpError(400, 'a new message has no id yet');
+      if (payload.ask !== undefined && !run) throw new HttpError(403, 'only a run asks or proposes');
+      if (kind === 'series' && [payload.ask, payload.to, payload.item, payload.ref, payload.thread, payload.for].some(v => v !== undefined))
+        throw new HttpError(400, 'a series comment is not an ask, proposal, or reply on an item');
+      action = kind === 'series' ? 'notes' : 'comment';
+    }
+  }
   const t = tree(), by = me.email;
   const about = t.series[kind === 'instances' ? instance(id).seriesId : kind === 'series' ? id : ''];
   if (!run && ((kind === 'instances' && ['assign', 'takeover', 'assignees', 'logins'].includes(action)) || (kind === 'series' && id && !action && req.method === 'PUT' && ('share' in payload || 'logins' in payload)))) {
@@ -871,6 +971,33 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (shut && req.method !== 'GET' && !restore && !(kind === 'instances' && action === 'delete')) {
     if (!run) mustSee(me, within);
     throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
+  }
+  if (action === 'note-state') {
+    const on = other[0] === 'c' ? instance(id) : undefined, sid = kind === 'series' ? id : instance(id).seriesId;
+    const s = t.series[sid];
+    if (!s) throw new HttpError(404, 'no such series');
+    const w = t.workspaces[s.workspace];
+    if (!run) mustSee(me, w);
+    if (run && (run.inst.seriesId !== sid || on && run.inst !== on)) throw new HttpError(403, 'a run settles notes on its series or own instance');
+    mustKeepNotes(sid, s);
+    const dir = seriesDir(sid), settings = seriesSettings(dir), thread = seriesConversation(sid, undefined, settings.epoch);
+    const note = thread.notes.find(n => n.id === other && n.anchor?.inst === on?.id);
+    if (!note) throw new HttpError(404, `no open or settled note ${other}`);
+    const { how, text, see: link, dismiss } = payload;
+    if (dismiss !== undefined) {
+      if (run || !notices([note], thread.dismissed, by, settings.owner, s.name).some(n => n.kind === dismiss))
+        throw new HttpError(404, 'this notice does not wait on you');
+      appendMessage(dir, on ? { instance: on.id } : {}, { seq: note.seq, by, at: new Date().toISOString(), op: 'dismiss-note', on: note.seq, notice: dismiss });
+      return send(res, 200, 'dismissed');
+    }
+    if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'say what changed or why it was set aside');
+    if (note.settled) throw new HttpError(409, `${other} is settled already`);
+    if (run ? run.runner !== settings.owner : !(settings.owner === by || canManage(me, w)))
+      throw new HttpError(403, 'the series owner, its runs and workspace managers settle notes');
+    if (note.request || note.proposal) throw new HttpError(409, 'a request settles only when its owner decides its proposal');
+    if (link !== undefined && (!run || !commentAt(run.inst.log, link))) throw new HttpError(400, 'see must name a comment in your own run’s instance');
+    post({ op: how, book: dir, inst: on, by, text, on: note, thread: link, run });
+    return send(res, 200, `${other} ${how === 'taken' ? 'taken' : 'set aside'}`);
   }
   if (kind === 'resolve') {
     if (!run) throw new HttpError(404, 'not found');
@@ -1083,9 +1210,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       instances(id)[0].append(by, 'promote', { series: name });
       return send(res, 200, 'ok');
     }
-    if (s.single) throw new HttpError(400, `${s.name} is a task with one instance; promote it before creating more periods or using series notes`);
-    // Its notes: whoever sees it, and its workspace's runs, leave one, with files a person attaches first, which starts no run but
-    // reaches one going in the series; its owner and workspace managers settle it by hand. Nothing is deleted.
+    // A series or task takes comments even if nothing is running. Their attachments stay in the Notes view.
     const book = seriesDir(id);
     if (action === 'files' && req.method === 'GET') {
       const fd = openFile(join(book, 'notes', 'files'), other);
@@ -1094,36 +1219,35 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return sendStream(createReadStream('', { fd }), res);
     }
     if (action === 'attach' && req.method === 'POST') {
+      mustKeepNotes(id, s);
       const tmp = join(tmpDir, randomUUID());
       try {
         await pipeline(req, capped, createWriteStream(tmp));
         recheckRequest(req);
         mustUnarchived(by, id);
+        mustKeepNotes(id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
         rmSync(tmp, { force: true });
       }
     }
-    if (action === 'notes' && req.method === 'GET') return send(res, 200, notes(book));
+    if (action === 'notes' && req.method === 'GET') return send(res, 200, seriesConversation(id).notes.filter(n => !n.anchor));
     if (action === 'notes' && req.method === 'POST') {
-      const { text, files = [], how, thread } = payload;
+      mustKeepNotes(id, s);
+      const { text, files = [], request } = payload;
       if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
-      if (!other) {
-        for (const f of files) if (!(typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) && existsSync(join(book, 'notes', f)))) throw new HttpError(400, `no attachment ${f}`);
-        const e = post({ op: 'note', book, by, text, files, run });
-        noted(id);
-        return send(res, 200, run ? `noted n${e.seq} on ${named(t, id)}, which its runs read` : { id: `n${e.seq}` });
+      if (!Array.isArray(files)) throw new HttpError(400, 'files is an array');
+      if (request !== undefined && typeof request !== 'boolean') throw new HttpError(400, 'request must be true or false');
+      for (const f of files) {
+        const fd = typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) ? openFile(join(book, 'notes'), f) : undefined;
+        if (fd === undefined) throw new HttpError(400, `no attachment ${f}`);
+        closeSync(fd);
       }
-      const n = notes(book).find(x => `n${x.seq}` === other);
-      if (!n) throw new HttpError(404, `no note ${other} on ${s.name}`);
-      if (n.settled) throw new HttpError(409, `${other} is settled already, ${n.settled.op === 'taken' ? 'taken' : 'set aside'} by ${n.settled.by}`);
-      if (!['taken', 'aside'].includes(how)) throw new HttpError(400, 'how is "taken", acted on, or "aside", set aside');
-      if (run ? run.inst.seriesId !== id : !(canManage(me, t.workspaces[s.workspace]) || seriesSettings(book).owner === by))
-        throw new HttpError(403, run ? "you settle your own series' notes" : "the series owner, the workspace's owners and admins settle its notes");
-      if (thread != null && !run?.inst.threads().includes(thread)) throw new HttpError(400, `no thread ${thread} in ${run?.inst.label ?? 'your instance'}`);
-      post({ op: how, book, by, text, on: n, thread, run });
-      return send(res, 200, run ? `${other} ${how === 'taken' ? 'taken' : 'set aside'}` : 'ok');
+      const e = post({ op: 'note', book, by, text, files, request, run });
+      noted(id);
+      return send(res, 200, run ? `noted n${e.seq} on ${named(t, id)}, which its runs read` : { id: `n${e.seq}` });
     }
+    if (s.single) throw new HttpError(400, `${s.name} is a task with one instance; promote it before creating more periods`);
     if (req.method === 'POST') return inOrder(id, async () => {
       recheckRequest(req);
       mustUnarchived(by, id);
@@ -1210,13 +1334,13 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const quiet = !!payload.quiet, provenance = { from: r.from, text: r.text, inst: r.inst, note: true, quiet };
       const inst = r.target ? wakeWith(instance(r.target), [provenance, { from: by, quiet }])
         : startWith(r.series, r.label, by, [provenance, { from: by, quiet }]);
-      dropRequest(id);
+      dropRequest(id, by, 'started');
       see(by, inst.id, inst.log.at(-1)!.seq);
       if (r.target) res.setHeader('X-RF-Woke', '1');
       return send(res, 200, { id: inst.id });
     });
     if (req.method !== 'DELETE') throw new HttpError(405, 'POST to start it, or DELETE');
-    dropRequest(id);
+    dropRequest(id, by, 'dismissed');
     return send(res, 200, 'ok');
   }
   if (kind !== 'instances') throw new HttpError(404, 'not found');
@@ -1224,12 +1348,30 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (!run) mustSee(me, t.workspaces[t.series[inst.seriesId].workspace]);
   const a = active.get(inst.seriesId);
   const mine = a?.inst === inst ? a : undefined;
-  if (!action) see(by, inst.id, inst.log.at(-1)!.seq);
+  if (!action && !verifyOnly) see(by, inst.id, inst.log.at(-1)!.seq);
   // Each entry's standing, by its seq, a note's entry saying note too; and whether a comment of yours would start a run now.
   const said = !action && new Map(inst.log.flatMap(e => { const s = standing(inst, e); return s ? [[e.seq, s.word]] : []; }));
-  if (said) return send(res, 200, { doc: inst.doc, wakeCheck: wakeCheckStatus(inst), log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said), starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts, run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null, queued: !!queued(inst), owner: owner(inst), previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))), waiting: waits(inst).filter(({ e }) => e.op === 'comment').map(({ who, e }) => ({ who, seq: e.seq })), held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, ownerOf(inst).by)) });
+  if (said) {
+    const s = t.series[inst.seriesId], who = owner(inst), discussion = seriesConversation(inst.seriesId, undefined, who.epoch);
+    const on = discussion.notes.filter(n => n.anchor?.inst === inst.id), own = discussion.notes.filter(n => !n.anchor || n.anchor.inst === inst.id);
+    return send(res, 200, { doc: inst.doc, wakeCheck: wakeCheckStatus(inst), log: inst.log.map(e => said.get(e.seq) === 'note' ? { ...e, note: true } : e), standing: Object.fromEntries(said),
+      starts: inst.doc.status === 'open' && standing(inst, { seq: inst.log.length + 1, at: '', by, op: 'comment' })!.starts,
+      run: mine ? { n: mine.n, cost: +mine.cost.toFixed(6), ...(mine.estimated && { estimated: true }), browsers: [...(mine.browsers?.watchable().keys() ?? [])], yours: mine.browsers?.yours(by) ?? [] } : null,
+      queued: !!queued(inst), owner: who, previous: await previous(inst), sums: Object.fromEntries(await Promise.all(inst.doc.items.filter(i => i.file).map(async i => [i.id, await sha256(inst.dir, i.file!)]))),
+      waiting: waits(inst, s.workspace).filter(({ e }) => e.op === 'comment').map(({ who, e }) => ({ who, seq: e.seq })),
+      staleProposals: inst.log.filter(e => e.op === 'comment' && e.by === 'agent' && (e.ask === 'proposal' || e.ask === true)
+        && !currentMessage(inst.log, e, who)).map(e => e.seq),
+      noteStates: Object.fromEntries(on.map(n => [n.id, { op: n.settled?.op ?? 'open', ...(n.settled && { text: n.settled.text }), ...(n.request && { request: true }), ...(n.proposal && { proposal: n.proposal }) }])),
+      noteNotices: inst.doc.status === 'open' && !archived(t, inst.seriesId) ? notices(own, discussion.dismissed, by, who.by, s.name).filter(n => n.kind === 'open') : [],
+      held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, who.by)) });
+  }
   if (action === 'trace') return send(res, 200, trace(inst));
-  if (action === 'summary') return send(res, 200, summary(inst, me));
+  if (action === 'summary') {
+    const settings = seriesSettings(inst.series()), s = t.series[inst.seriesId], discussion = seriesConversation(inst.seriesId, undefined, settings.epoch);
+    const instance = summary(inst, me, s.workspace, undefined, settings);
+    return send(res, 200, { ...instance, seriesNotes: { notes: openNotes(discussion.notes).length,
+      noteNotices: archived(t, inst.seriesId) ? [] : notices(discussion.notes, discussion.dismissed, by, settings.owner, s.name) } });
+  }
   // The screen: anyone who sees the instance reads it; only its own run writes it.
   if (action === 'screen' && req.method === 'GET') return send(res, 200, inst.doc);
   if (action === 'screen' && req.method === 'PUT' && run) {
@@ -1325,20 +1467,38 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
     // The agent's starts nothing; its questions and proposals wait on their named person or the owner.
-    const { thread, item, ref, text, files = [], ask, to } = payload, under = commentAt(inst.log, thread);
+    const { thread, item, ref, text, files = [], ask, to, request, for: noteFor } = payload, under = commentAt(inst.log, thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
     if (thread === undefined && ref != null && typeof ref !== 'string') throw new HttpError(400, 'ref must be a string');
     if (thread === undefined && item != null && !inst.doc.items.some(i => i.id === item)) throw new HttpError(400, `no item ${item}; the screen's items: ${inst.doc.items.map(i => i.id).join(', ')}`);
-    for (const f of files) if (!(typeof f === 'string' && f.startsWith('upload/attachments/') && !f.includes('..') && existsSync(join(inst.dir, f)))) throw new HttpError(400, `no attachment ${f}`);
+    if (!Array.isArray(files)) throw new HttpError(400, 'files is an array');
+    for (const f of files) {
+      const fd = typeof f === 'string' && /^upload\/attachments\/[^/]+$/.test(f) ? openFile(inst.dir, f) : undefined;
+      if (fd === undefined) throw new HttpError(400, `no attachment ${f}`);
+      closeSync(fd);
+    }
     const who = typeof to === 'string' ? to.toLowerCase() : undefined, p = who && asPerson(who);
     if (who && !(p && canSee(p, t.workspaces[t.series[inst.seriesId].workspace])))
       throw new HttpError(400, `${to} can't see this instance; ask its series owner, ${ownerOf(inst).by}, or someone in its workspace`);
     // Another instance's run leaves a non-executing note with immutable execution provenance.
     const away = run && run.inst !== inst;
-    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only in your own instance: rf ask and rf propose');
-    const said = post({ op: 'comment', inst, by, text, under, item, ref, files, run, ask, to: who, quiet });
+    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only in your own instance: rf comment . --ask or --propose');
+    const seq = inst.log.length + 1;
+    const fields = { ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${seq}`, item: item ?? null, ref: ref ?? null }),
+      text: text.trim(), ...(files.length && { files }), ...(quiet && { quiet: true }) };
+    const word = !run && standing(inst, { seq, at: '', by, op: 'comment', ...fields })?.word;
+    const informs = Boolean(away || word === 'note');
+    if (request !== undefined && (typeof request !== 'boolean' || request && !informs)) throw new HttpError(400, 'only an informing comment can be a request');
+    let linked: ScopedNote | undefined;
+    if (noteFor !== undefined) {
+      if (typeof noteFor !== 'string' || !/^[cn][1-9]\d*$/.test(noteFor) || !run || away || ask !== 'proposal' || (who && who !== run.runner))
+        throw new HttpError(400, 'link an open note only to a proposal to your series owner in your own instance');
+      linked = seriesConversation(inst.seriesId).notes.find(n => n.id === noteFor && (n.anchor?.inst ?? inst.id) === inst.id);
+      if (!linked || linked.settled || linked.proposal) throw new HttpError(409, `${noteFor} is not an open note without a pending proposal`);
+    }
+    const said = post({ op: 'comment', inst, by, text, under, item, ref, files, quiet, ask, to: who, run, word: word || undefined, request, noteFor: linked?.id });
     if (away) {
       if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
       return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its series owner`);
@@ -1380,6 +1540,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const { thread, text, approved } = payload;
       const target = action === 'signoff' || action === 'reject' ? commentAt(inst.log, thread) : undefined;
       const ask = target?.by === 'agent' && (target.ask === true || target.ask === 'proposal') ? target : undefined;
+      const currentProposal = () => {
+        if (!ask) return;
+        const s = seriesSettings(inst.series()), workspace = tree().series[inst.seriesId].workspace;
+        if (!currentMessage(inst.log, ask, { by: s.owner ?? '', epoch: s.epoch, workspace }))
+          throw new HttpError(409, 'the proposal is from an earlier series authority');
+        if (ask.noteFor) {
+          if (by !== s.owner || ask.noteEpoch !== s.epoch) throw new HttpError(403, 'only the current series owner can decide a proposal linked to a note');
+          if (!seriesConversation(inst.seriesId).notes.some(n => n.id === ask.noteFor && (n.anchor?.inst ?? inst.id) === inst.id
+            && !n.settled && n.proposal?.inst === inst.id && n.proposal.seq === ask.seq)) throw new HttpError(409, `${ask.noteFor} no longer waits for this proposal`);
+        }
+      };
       if (action === 'signoff' || action === 'reject') {
         // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
         // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
@@ -1388,6 +1559,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         // with approved false, is refused.
         if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
         if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
+        currentProposal();
         if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
         const decided = ask.ask === 'proposal' && inst.log.find(e => e.on === ask.seq && (e.op === 'signoff' || e.op === 'reject'));
         if (decided) throw new HttpError(409, `${thread} was ${decided.op === 'signoff' ? 'approved' : 'rejected'} already, by ${decided.by}`);
@@ -1409,22 +1581,25 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       }
       const { ws, who, mine } = recheck();
       if (ask) {
+        currentProposal();
         const note = typeof text === 'string' ? text.trim() : '';
-        if (action === 'reject') inst.append(by, 'reject', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }) });
+        const decision = { thread: ask.thread, on: ask.seq, ...(note && { text: note }), ...(quiet && { quiet: true }), ...(ask.noteFor && { noteDecision: true, noteFor: ask.noteFor }) };
+        if (action === 'reject') inst.append(by, 'reject', decision);
         else {
           if (mine) throw new HttpError(409, 'wait for the run to end');
           const hash = await commit(inst.dir, who, [ask.text, note, `Signed-off-by: ${who.name} <${who.email}>`].filter(Boolean).join('\n\n'));
           if (recheck().mine) throw new HttpError(409, 'wait for the run to end');
+          currentProposal();
           if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);
-          inst.append(by, 'signoff', { thread: ask.thread, on: ask.seq, ...(note && { text: note }), commit: hash, ...(quiet && { quiet: true }) });
+          inst.append(by, 'signoff', { ...decision, commit: hash });
         }
         return undefined;
       }
       if (action === 'withdraw' && run) {
         // The agent withdraws a question or proposal of its own still waiting, saying why, and where it was answered, if it was: see, a
         // comment's seq.
-        const { thread, text, see } = payload, ask = inst.asking().find(e => `c${e.seq}` === thread), at = commentAt(inst.log, see);
-        if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${inst.asking().map(e => `c${e.seq}`).join(', ') || 'none'}`);
+        const { thread, text, see } = payload, asks = inst.asking(run.runner), ask = asks.find(e => `c${e.seq}` === thread), at = commentAt(inst.log, see);
+        if (!ask) throw new HttpError(409, `${thread} is no question or proposal of yours still waiting; those that are: ${asks.map(e => `c${e.seq}`).join(', ') || 'none'}`);
         if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a withdrawal says why');
         if (see !== undefined && !at) throw new HttpError(400, `no comment ${see}`);
         post({ op: 'withdraw', inst, by: 'agent', on: ask, text, see: at, run });
@@ -1530,7 +1705,7 @@ async function connectionsRoute(me: Me, req: IncomingMessage, res: ServerRespons
   throw new HttpError(405, 'PUT or DELETE');
 }
 
-serveSandboxes({
+if (!verifyOnly) serveSandboxes({
   agent: async (req, res, url) => {
     try {
       await agent(req, res, url);
@@ -1558,6 +1733,14 @@ serveSandboxes({
 const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) => {
   try {
     const url = new URL(req.url!, 'http://x');
+    if (verifyOnly) {
+      const p = url.pathname;
+      if (req.method !== 'GET' || p === redirectPath && url.searchParams.has('state') ||
+        !(['/', '/me', '/logins', '/brand/logo', '/api', '/api/events', '/api/status', '/api/files', '/api/runs', '/api/activity', '/api/messages'].includes(p)
+          || /^\/(?:css\/|files\/|api\/series\/[\w-]+\/files\/)/.test(p)
+          || /^\/api\/(?:instances\/[\w-]+(?:\/(?:summary|trace))?|series\/[\w-]+\/notes)$/.test(p)))
+        throw new HttpError(503, 'verification only: no work starts and no writes are accepted');
+    }
     const site = req.headers['sec-fetch-site'];
     if (req.method !== 'GET' && site && site !== 'same-origin') throw new HttpError(403, 'cross-site request refused');
     // What the sign-in pages show, before anyone signs in: the stylesheets, the theme's logo and the brand's.
@@ -1578,21 +1761,21 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     // Whether an update may stop the server (scripts/update.ts), its answer alone, to anyone: 200 drained, else 503.
     if (req.method === 'GET' && url.pathname === '/drained') return void res.writeHead(drained() ? 200 : 503).end();
-    const me = await authenticate(req, res, url);
+    const me = await authenticate(req, res, url, !verifyOnly);
     if (!me) {
-      if (url.pathname === redirectPath) { const retired = closeUnlent(); pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await retired; }
+      if (!verifyOnly && url.pathname === redirectPath) { const retired = closeUnlent(); pruneGrants(); await endUnpermittedSignIns(); await dropUnpermittedVpns(); await retired; }
       return;
     }
-    // What a person changes beyond an instance is an act of theirs in the system's log, once it's done.
+    // Conversations live only in their series store. The global audit never copies text or attachment paths from them.
     if (!['GET', 'HEAD'].includes(req.method!) && !url.pathname.startsWith('/api/instances/'))
-      res.on('finish', () => res.statusCode < 400 && act(me.email, { method: req.method, path: url.pathname + url.search, body: bodies.get(req) }));
+      res.on('finish', () => res.statusCode < 400 && !messageWrites.has(req) && act(me.email, { method: req.method, path: url.pathname + url.search, body: bodies.get(req) }));
     if (url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(page));
     } else if (url.pathname === '/me') {
-      const { text, logo } = brand(), k = me.role === 'admin' ? await keyStatus() : null;
+      const { text, logo } = brand(), k = !verifyOnly && me.role === 'admin' ? await keyStatus() : null;
       send(res, 200, {
-        ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version, draining: updating(),
+        ...me, names: names(me), browsers: !!process.env.RF_BROWSER_URL, brand: { text: text || null, logo: !!logo }, themeLogo: !!themeLogo, can: CAPS.filter(c => can(me, c)), version, draining: updating(), ...(verifyOnly && { verifyOnly: true }),
         ...(k?.low_credit && { low_credit: { remaining: k.remaining!, limit: k.limit, usage: k.usage, reset: k.reset, key: k.key } }),
       });
     } else if (url.pathname === '/capabilities') {
@@ -1653,6 +1836,11 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/api/costs') send(res, 200, await costs(me, url.searchParams.get('since') ?? '', url.searchParams.get('tz') ?? ''));
     else if (url.pathname === '/api/activity') send(res, 200, activity(me, url.searchParams.get('since') ?? ''));
     else if (url.pathname === '/api/status') send(res, 200, await status(me));
+    else if (req.method === 'GET' && url.pathname === '/api/messages' && url.searchParams.get('mine') === '1') {
+      const t = tree(), periods = instancesBySeries();
+      send(res, 200, Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([id]) =>
+        seriesConversation(id, periods(id)).notes.filter(n => n.by === me.email).map(n => ({ ...n, path: `${named(t, id)}${n.anchor ? `/${n.anchor.label}` : ''}` }))));
+    }
     // Each index the person can see, admins all, others those they are indexing.
     else if (url.pathname === '/api/indexes') send(res, 200, indexes().filter(x => me.role === 'admin' || x.people.some(p => p.who === me.email)));
     else if (url.pathname.startsWith('/files/')) await file(me, res, url, false);
@@ -1821,6 +2009,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
 // cookie, SameSite=Lax, goes with a sibling subdomain's requests too.
 server.on('upgrade', (req, socket, head) => {
   socket.on('error', () => socket.destroy());
+  if (verifyOnly) return socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
   const me = req.headers.origin === new URL(process.env.RF_PUBLIC_URL!).origin ? session(req) : null, path = URL.parse(req.url!, 'http://x')?.pathname ?? '';
   const signIn = /^\/signins\/(\w+)\/(view\/(?:watch|drive))$/.exec(path), run = /^\/runs\/(\w+)\/([a-z0-9-]+)\/view\/(watch|drive)$/.exec(path);
   let to;
@@ -1845,18 +2034,22 @@ server.on('upgrade', (req, socket, head) => {
 });
 // An update drains the server before it stops it (waker.ts drain()), heard before top-level awaits yield, as Node ends on a
 // SIGUSR2 it doesn't handle.
-process.on('SIGUSR2', drain);
-passAllowed();
-await enrolFlagged();
-if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
-await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart left may still be open, and VPNs fail until it answers', e));
+process.on('SIGUSR2', () => { if (!verifyOnly) drain(); });
+if (!verifyOnly) {
+  passAllowed();
+  await enrolFlagged();
+  if (process.env.RF_BROWSER_URL) await reap().catch(e => console.error('the browser service: browsers a restart left open are still open', e));
+  await reapVpns().catch(e => console.error('the tunnel service: tunnels a restart left may still be open, and VPNs fail until it answers', e));
+}
 // A stop, as an update's, cuts the runs (waker.ts stop()) and exits once what they had sent is answered and logged, within 10 s.
 process.on('SIGTERM', async () => {
+  if (verifyOnly) process.exit();
   stop();
   await Promise.all([callsAnswered(10_000), drainWebsiteChecks(10_000)]);
   process.exit();
 });
 server.listen(port, host, () => {
+  if (verifyOnly) return console.log(`rollforward on http://${host}:${port}, data in ${root} (verification only)`);
   startIndexing();
   startWaking();
   if (process.env.RF_BROWSER_URL) setInterval(() => {

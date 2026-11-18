@@ -269,19 +269,19 @@ test("a run meets its walls, wakes itself, and after a series transfer runs only
       'rf wake ../../../Wide/Close now --label 2026-11 2>&1',
       'rf wake . soon 2>&1',
       'rf wake .. +1d 2>&1',
-      () => `rf say --in ${thread} Walls checked. 2>&1`,
-      'rf say --in c99 x 2>&1',
+      () => `rf comment . --in ${thread} Walls checked. 2>&1`,
+      'rf comment . --in c99 x 2>&1',
       'rf show 2>&1 | head -c 200',
-      'rf ask --to stranger@example.com Which bank? 2>&1',
-      'rf ask Is the bank file coming today? 2>&1',
-      'rf say --on nope x 2>&1',
-      () => `rf say --in ${walls.saw[12].match(/c\d+/)![0]} It came, never mind. 2>&1; rf withdraw ${walls.saw[12].match(/c\d+/)![0]} It came. 2>&1`,
+      'rf comment . --ask --to stranger@example.com "Which bank?" 2>&1',
+      'rf comment . --ask "Is the bank file coming today?" 2>&1',
+      'rf comment . --on nope x 2>&1',
+      () => `rf comment . --in ${walls.saw[12].match(/c\d+/)![0]} It came, never mind. 2>&1; rf settle ${walls.saw[12].match(/c\d+/)![0]} withdrawn It came. 2>&1`,
       `curl -s -m 10 https://openrouter.ai/api/v1/chat/completions -H 'content-type: application/json' -d '{"model": "openai/gpt-5-mini", "messages": [{"role": "user", "content": "Is this right?"}]}'`,
       'curl -s -m 10 https://openrouter.ai/api/v1/credits',
-      'echo 1 > working/x.csv && rf say "Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv)." 2>&1',
+      'echo 1 > working/x.csv && rf comment . "Cited [x](working/x.csv), as [last time](../2026-11/working/x.csv)." 2>&1',
       'curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/close"; echo',
       'curl -s -m 5 -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/workspaces"; echo',
-      'rf ask --sign-off Sure. 2>&1',
+      'rf comment . --ask --sign-off Sure. 2>&1',
       'curl -s -m 5 -w "\\n%{http_code}" -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/$RF_INSTANCE/delete"',
       'for a in assign takeover; do curl -s -m 5 -w " %{http_code};" -X POST -H "authorization: Bearer $RF_TOKEN" -d \'{"to": "bob@demo.test"}\' "$RF_URL/api/instances/$RF_INSTANCE/$a"; done',
     ],
@@ -313,12 +313,12 @@ test("a run meets its walls, wakes itself, and after a series transfer runs only
   assert.match(walls.saw[11], /stranger@example.com can't see this instance; ask its series owner, admin@demo.test/);
   assert.match(walls.saw[12], /^asked c\d+\s*$/);
   assert.match(walls.saw[13], /no item nope/);
-  assert.match(walls.saw[14], new RegExp(`^said c\\d+, under ${walls.saw[12].trim().slice(6)}\\nwithdrew ${walls.saw[12].trim().slice(6)}\\s*$`), 'a reply under its own question withdraws nothing, rf withdraw does');
+  assert.match(walls.saw[14], new RegExp(`^said c\\d+, under ${walls.saw[12].trim().slice(6)}\\nwithdrew ${walls.saw[12].trim().slice(6)}\\s*$`), 'a reply under its own question withdraws nothing, rf settle does');
   assert.match(walls.saw[15], /"content":"A second opinion"/, 'any model, through OpenRouter, with the server\'s key');
   assert.match(walls.saw[16], /^\{\}\s*$/, "any request reaches OpenRouter, with the server's key");
   assert.match(walls.saw[17], /^said c\d+\s*$/, 'a post links files in its text');
   assert.deepEqual([walls.saw[18].trim(), walls.saw[19].trim()], ['not found', 'not found'], "a run's token does only what a run may: not close its instance, nor read what people do"); 
-  assert.match(walls.saw[20], /^rf ask has no --sign-off\nrf ask \[--in cN/, 'an option it has not is no part of the text');
+  assert.match(walls.saw[20], /^Unknown option '--sign-off'/, 'an option it has not is no part of the text');
   assert.equal(walls.saw[21].trim(), 'not found\n404', 'even a workspace manager\'s run cannot delete');
   assert.equal(walls.saw[22].trim(), 'not found 404;not found 404;', 'nor assign, nor take over');
   const asked = log.filter(e => e.op === 'call' && e.name === 'openrouter'), pi = asked.filter(e => (e.path as string).startsWith('/api/v1/messages'));
@@ -362,7 +362,7 @@ test("transferring mid-run retires the old epoch; fresh consent and an owner act
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: false })).json();
   let going!: () => void;
   const sleeping = new Promise<void>(ok => { going = ok; });
-  scripts.push({ bash: [`rf ask 'Which account?'`, () => (going(), 'sleep 60')], report: 'unreached', saw: [] });
+  scripts.push({ bash: [`rf comment . --ask 'Which account?'`, () => (going(), 'sleep 60')], report: 'unreached', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json(), path = `/api/instances/${id}`;
   await sleeping;
   const before = (await (await call('GET', path)).json()).log.find(e => e.op === 'run');
@@ -382,7 +382,8 @@ test("transferring mid-run retires the old epoch; fresh consent and an owner act
   const { log: still, waiting, owner } = await (await call('GET', path, undefined, bob)).json();
   assert.equal(still.filter(e => e.op === 'run').length, 1, 'transfer and a comment without consent start nothing');
   assert.equal(owner.consent, undefined);
-  assert.deepEqual(waiting.map(w => [w.who, still[w.seq - 1].by]), [[BOB, 'agent']], "the new owner's act acknowledges the old-owner comment, not the unnamed agent ask");
+  assert.deepEqual(waiting, [], 'the question from the retired lease is no longer actionable');
+  assert.ok(still.some(e => e.by === 'agent' && e.ask === 'question' && e.text === 'Which account?'), 'the question is kept as history');
   assert.equal((await call('PUT', `/api/series/${series}/credentials`, { logins: [], autonomous: false })).status, 403, 'a manager cannot consent for Bob');
   assert.equal((await call('PUT', `/api/series/${series}/credentials`, { logins: [], autonomous: false }, bob)).status, 200);
   const next: Script = { bash: [], report: 'Taken up.', saw: [] };
@@ -422,14 +423,14 @@ test("from Interrupt on, a run's token opens nothing: what the run still sends a
   // Out of the tool's process group, so the abort leaves it, it keeps writing to the tool's output, which keeps Pi from settling,
   // until what it sends once the interrupt is logged is answered.
   const late = `setsid sh -c 'touch working/waiting; until grep -q op.:.interrupt log.jsonl; do echo .; sleep 0.05; done
-    (rf say Late. > working/late 2>&1; rf wake . +1d >> working/late 2>&1; touch working/sent) &
+    (rf comment . Late. > working/late 2>&1; rf wake . +1d >> working/late 2>&1; touch working/sent) &
     until [ -e working/sent ]; do echo .; sleep 0.05; done' & sleep 60`;
   scripts.push({ bash: [late], report: 'unreached', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json(), dir = join(root, 'instances', id);
   await until('the run waiting', () => existsSync(join(dir, 'working', 'waiting')));
   assert.equal((await call('POST', `/api/instances/${id}/interrupt`)).status, 200);
   const log = await runs(id, 1);
-  assert.equal(readFileSync(join(dir, 'working', 'late'), 'utf8'), 'no run for this token\n'.repeat(2), 'rf say, then rf wake, sent once the interrupt is logged');
+  assert.equal(readFileSync(join(dir, 'working', 'late'), 'utf8'), 'no run for this token\n'.repeat(2), 'rf comment, then rf wake, sent once the interrupt is logged');
   assert.deepEqual(log.filter(e => e.op === 'comment'), [], 'nothing it said');
   const wakes = join(root, '.rf', 'wakes.json');
   assert.ok(!existsSync(wakes) || !readFileSync(wakes, 'utf8').includes(id), 'nor a wake set');
@@ -463,7 +464,7 @@ test('people rename the instance, its series and its workspace mid-run: the run 
       assert.equal((await call(body ? 'PUT' : 'POST', path, body)).status, 200, path);
     return 'pwd; cat names.tsv';
   };
-  const during: Script = { bash: [rename, 'rf wake . +1d 2>&1; rf say Cited. 2>&1'], report: 'Renamed under me.', saw: [] };
+  const during: Script = { bash: [rename, 'rf wake . +1d 2>&1; rf comment . Cited. 2>&1'], report: 'Renamed under me.', saw: [] };
   const next: Script = { bash: ['pwd; cat names.tsv'], report: 'New names.', saw: [] };
   scripts.push(during, next);
   assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Go.' })).status, 200);
@@ -563,19 +564,19 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
       'echo 100 > working/pack.csv && rf commit Draft pack built 2>&1',
       "git log --format='%an|%s' 2>&1; echo 200 > working/pack.csv; git status --short 2>&1",
       'git commit --allow-empty -qm mine 2>&1 | head -1',
-      'rf propose "The pack is ready to send to the bank: [pack](working/pack.csv)" 2>&1',
-      'rf ask "Which bank account does it go to?" 2>&1',
-      'rf propose "Send a copy to the auditors too?" 2>&1',
+      'rf comment . --propose "The pack is ready to send to the bank: [pack](working/pack.csv)" 2>&1',
+      'rf comment . --ask "Which bank account does it go to?" 2>&1',
+      'rf comment . --propose "Send a copy to the auditors too?" 2>&1',
     ],
     report: 'Built the pack; proposed sending it.', saw: [],
   };
   const question = () => ask.saw[4].match(/c\d+/)![0];
   const again: Script = {
     bash: [
-      'echo 250 > working/pack.csv && rf propose "The rate is fixed: send it now?" 2>&1',
-      () => `rf withdraw ${question()} --see ${ask.saw[3].match(/c\d+/)![0]} The file names the account. 2>&1`,
-      () => `rf withdraw ${question()} Again. 2>&1`,
-      'rf withdraw c1 2>&1',
+      'echo 250 > working/pack.csv && rf comment . --propose "The rate is fixed: send it now?" 2>&1',
+      () => `rf settle ${question()} withdrawn --see ${ask.saw[3].match(/c\d+/)![0]} The file names the account. 2>&1`,
+      () => `rf settle ${question()} withdrawn Again. 2>&1`,
+      'rf settle c1 withdrawn 2>&1',
     ],
     report: 'Fixed the rate in place; proposed again.', saw: [],
   };
@@ -615,7 +616,7 @@ test("approvals are git commits: the agent commits a moment worth keeping and pr
   assert.match(again.prompt!, /"op":"signoff".*"note":true[^]*"op":"reject".*"text":"Use the new rate\."/, 'the run reads the note, then the rejection');
   assert.match(again.saw[1], new RegExp(`^withdrew ${question()}\\s*$`));
   assert.match(again.saw[2], new RegExp(`${question()} is no question or proposal of yours still waiting; those that are: c\\d+`), 'once');
-  assert.match(again.saw[3], /^rf withdraw cN \[--see cM\] REASON/, 'a withdrawal says why');
+  assert.match(again.saw[3], /^rf settle ID taken\|aside\|withdrawn \[--see cN\] TEXT/, 'a withdrawal says why');
   const withdrawn = log.find(e => e.op === 'withdraw')!;
   assert.deepEqual([withdrawn.by, withdrawn.run, `c${withdrawn.on}`, withdrawn.text, withdrawn.see], ['agent', 3, question(), 'The file names the account.', first.seq]);
 
@@ -692,8 +693,13 @@ test("a run learns nothing of an instance in another workspace by acting on it, 
   assert.equal((await call('POST', `/api/instances/${open}/comment`, { text: 'List of names', quiet: true }, carol)).status, 200);
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Probing' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Probe', logins: [], autonomous: false })).json();
-  const probe = (action: string, body: object) => `curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL/api/instances/${open}/${action}" -d '${JSON.stringify(body)}'; echo`;
-  const s: Script = { bash: [probe('comment', { text: 'x', to: 'nobody@demo.test' }), probe('comment', { text: 'x', thread: 'c99' }), probe('comment', { text: 'x', item: 'zzz' }), probe('correct', {})], report: 'Probed.', saw: [] };
+  const probe = (path: string, body: object) => `curl -s -m 5 -X POST -H "authorization: Bearer $RF_TOKEN" "$RF_URL${path}" -d '${JSON.stringify(body)}'; echo`;
+  const s: Script = { bash: [
+    probe('/api/messages', { instance: open, text: 'x', ask: 'question', to: 'nobody@demo.test' }),
+    probe('/api/messages', { instance: open, text: 'x', thread: 'c99' }),
+    probe('/api/messages', { instance: open, text: 'x', item: 'zzz' }),
+    probe(`/api/instances/${open}/correct`, {}),
+  ], report: 'Probed.', saw: [] };
   scripts.push(s);
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   await runs(id, 1);
@@ -717,7 +723,7 @@ test("a run's cancelling a person's wake is recorded in the system's log, with t
 test("a proposal still waiting as its instance closes is accepted, so it waits on no one", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Accepted' })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Pack', logins: [], autonomous: false })).json();
-  scripts.push({ bash: ['rf propose "Send the pack to the bank." 2>&1'], report: 'Proposed.', saw: [] });
+  scripts.push({ bash: ['rf comment . --propose "Send the pack to the bank." 2>&1'], report: 'Proposed.', saw: [] });
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
   const thread = (await runs(id, 1)).find(e => e.ask === 'proposal')!.thread;
   assert.equal((await call('POST', `/api/instances/${id}/close`)).status, 200);
@@ -860,7 +866,7 @@ const draining = async () => (await (await call('GET', '/me')).json()).draining;
 async function drainSeries(name: string, mode: boolean | 'ask' = false) {
   let reached = false, go!: () => void;
   const gate = new Promise<void>(ok => (go = ok));
-  scripts.push({ bash: mode === true ? [async () => { reached = true; await gate; return 'echo ok'; }] : mode === 'ask' ? ["rf ask 'Which rate?'"] : [], report: 'Done.', saw: [] });
+  scripts.push({ bash: mode === true ? [async () => { reached = true; await gate; return 'echo ok'; }] : mode === 'ask' ? ["rf comment . --ask 'Which rate?'"] : [], report: 'Done.', saw: [] });
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: `Drain-${name}` })).json();
   const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name, logins: [], autonomous: true })).json();
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
@@ -1025,7 +1031,7 @@ test("a later run corrects a closed instance, never changing it, linking the thr
   await runs(first, 1);
   assert.equal((await call('POST', `/api/instances/${first}/close`)).status, 200);
   const fixing: Script = {
-    bash: ["t=$(rf say m1 used a stale rate. | cut -d' ' -f2); rf correct ../m1 --wrong --in $t The rate was a day stale. 2>&1", 'rf correct ../m1 --wrong 2>&1', 'rf correct . --superseded x 2>&1'],
+    bash: ["t=$(rf comment . m1 used a stale rate. | cut -d' ' -f2); rf correct ../m1 --wrong --in $t The rate was a day stale. 2>&1", 'rf correct ../m1 --wrong 2>&1', 'rf correct . --superseded x 2>&1'],
     report: 'Corrected m1.', saw: [],
   };
   scripts.push(fixing);
@@ -1050,30 +1056,31 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
   const { id: feed } = await (await call('POST', '/api/series', { workspace: ws, name: 'Feed', logins: [], autonomous: false }, bob)).json();
   const { id: fed } = await (await call('POST', `/api/series/${feed}`, { label: 'f1' })).json();
-  const { id: n } = await (await call('POST', `/api/series/${rec}/notes`, { text: 'Use the new bank from now on.' })).json();
+  const { id: n } = await (await call('POST', '/api/messages', { series: rec, text: 'Parse the bank file only once.' })).json();
   const noting: Script = {
     bash: [
-      'rf say --at ../../Feed/f1 The rec is done: 1,200 matched. 2>&1',
-      'rf ask --at ../../Feed/f1 Shall I? 2>&1',
-      'rf say --at ../../Feed Rates. 2>&1',
-      'rf note ../../Feed The feed should carry the rates. 2>&1',
-      `rf note --taken ${n} Using the new bank, in the process. 2>&1`,
-      `rf note --aside ${n} again 2>&1`,
+      'rf comment ../../Feed/f1 The rec is done: 1,200 matched. 2>&1',
+      'rf comment ../../Feed/f1 --ask "Shall I?" 2>&1',
+      'rf comment ../../Feed --on rate x 2>&1',
+      'rf comment ../../Feed --request The feed should carry the rates. 2>&1',
+      `rf settle ${n} taken Reused the parsed file in process.md. 2>&1`,
+      `rf settle ${n} aside again 2>&1`,
       'wc -l < ../.notes/log.jsonl',
-      `rf ask --to ${BOB} Which feed rate? 2>&1`,
+      `rf comment . --ask --to ${BOB} "Which feed rate?" 2>&1`,
+      'rf comment --mine --json',
     ],
     report: 'Noted.', saw: [],
   };
   scripts.push(noting);
   const { id } = await (await call('POST', `/api/series/${rec}`, { label: 'r1' })).json();
   const log = await runs(id, 1);
-  assert.match(noting.prompt!, new RegExp(`Open notes on the series: ${n}, from Demo Admin <admin@demo\\.test> at [^,]+, "Use the new bank from now on\\."\\. New log entries:`));
+  assert.match(noting.prompt!, new RegExp(`Open notes on the series: ${n}, from Demo Admin <admin@demo\\.test> at [^,]+, "Parse the bank file only once\\."\\. New log entries:`));
   assert.match(noting.saw[0], /^said c\d+ in Notes\/Feed\/f1, a note for its series owner\s*$/);
   assert.match(noting.saw[1], /you ask and propose only in your own instance/);
-  assert.match(noting.saw[2], /Feed is a series: say it in one of its open instances, or rf note it/);
+  assert.match(noting.saw[2], /^Use an instance for --in, --on, --ask or --propose/);
   assert.match(noting.saw[3], /^noted n1 on Notes\/Feed, which its runs read\s*$/);
   assert.match(noting.saw[4], new RegExp(`^${n} taken\\s*$`));
-  assert.match(noting.saw[5], new RegExp(`${n} is settled already, taken by agent`));
+  assert.match(noting.saw[5], new RegExp(`${n} is settled already`));
   assert.equal(noting.saw[6].trim(), '2', "its series' notes, as the run started, read where it reads its series");
   const there = (await (await call('GET', `/api/instances/${fed}`)).json()).log, note = there.find((e: { op: string }) => e.op === 'comment');
   assert.deepEqual([note.by, note.note, note.run, note.runner, note.see.inst, note.see.label], ['agent', true, 1, ADMIN, id, 'r1']);
@@ -1082,9 +1089,14 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   const [taken] = await (await call('GET', `/api/series/${rec}/notes`)).json();
   assert.deepEqual([taken.settled.op, taken.settled.by, taken.settled.runner, taken.settled.see.inst], ['taken', 'agent', ADMIN, id]);
   const [left] = await (await call('GET', `/api/series/${feed}/notes`)).json();
-  assert.deepEqual([left.by, left.text, left.run, left.see.inst], ['agent', 'The feed should carry the rates.', 1, id]);
+  assert.deepEqual([left.by, left.text, left.request, left.run, left.see.inst], ['agent', 'The feed should carry the rates.', true, 1, id]);
   const detail = await (await call('GET', `/api/instances/${fed}`)).json();
   assert.deepEqual([detail.log[0].by, detail.owner.by], [ADMIN, BOB], 'an instance creator never changes its canonical series owner');
+  const own = JSON.parse(noting.saw[8]) as { path: string; id: string; text: string }[];
+  assert.deepEqual(own.map(n => [n.path, n.id, n.text]), [
+    ['Notes/Feed/f1', `c${note.seq}`, 'The rec is done: 1,200 matched.'],
+    ['Notes/Feed', 'n1', 'The feed should carry the rates.'],
+  ]);
   const thread = noting.saw[7].match(/c\d+/)![0];
   const takenUp: Script = { bash: ['cat upload/rate.csv'], report: 'Used the feed rate.', saw: [] };
   scripts.push(takenUp);
@@ -1100,6 +1112,66 @@ test("a run leaves notes elsewhere in its workspace, in another instance and on 
   assert.deepEqual([last.runner, last.initiator, last.authority.owner], [ADMIN, BOB, ADMIN]);
   assert.equal(takenUp.saw[0].trim(), '7.82');
   assert.match(takenUp.prompt!, /Use 7\.82\./);
+});
+
+test('a scheduled run picks up its own informing notes, taking method advice and proposing a request only the owner can decide', async () => {
+  const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Scheduled notes' })).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, { members: [BOB] })).status, 200);
+  const { id: series } = await (await call('POST', '/api/series', { workspace: ws, name: 'Rec', logins: [], autonomous: true })).json();
+  const { id } = await (await call('POST', `/api/series/${series}`, { label: 'March', quiet: true })).json();
+  const { id: sibling } = await (await call('POST', `/api/series/${series}`, { label: 'April', quiet: true })).json();
+  const advice = 'Parse the CSV once and reuse the rows for both checks.';
+  const comment = await call('POST', '/api/messages', { instance: id, text: advice }, bob);
+  assert.equal(comment.status, 200);
+  const c = `c${comment.headers.get('X-RF-Comment-Seq')}`;
+  const { id: n } = await (await call('POST', '/api/messages', { series, text: 'Send a copy to the reviewers.', request: true }, bob)).json();
+  assert.equal((await call('POST', '/api/messages', { instance: sibling, text: 'Try a second parser.' }, bob)).status, 200);
+
+  const path = `/api/instances/${id}`;
+  await until('the instance to be idle after the notes', async () => {
+    const { log, queued } = await (await call('GET', path, undefined, bob)).json();
+    assert.ok(!log.some((e: { op: string }) => e.op === 'run'), 'the notes initiate no run');
+    return !queued;
+  });
+  const pickup: Script = {
+    bash: [
+      `printf '%s\\n' '${advice}' > working/process.md && rf comment . 'Reused the rows; see [process.md](working/process.md).' 2>&1`,
+      () => `rf settle ${c} taken --see ${pickup.saw[0].match(/c\d+/)![0]} In process.md. 2>&1`,
+      `rf settle ${n} taken Use the reviewers. 2>&1`,
+      `rf comment . --propose --for ${n} Send a copy to the reviewers. 2>&1`,
+    ],
+    report: 'Took advice and proposed the request.', saw: [],
+  };
+  scripts.push(pickup);
+  const { id: wake } = await (await call('PUT', `/api/wakes/${id}`, { at: 'now' })).json();
+  const log = await runs(id, 1);
+  assert.ok(log.some(e => e.op === 'wake' && e.schedule === wake), 'the schedule, not an owner reply, starts the run');
+  assert.match(pickup.prompt!, new RegExp(`Open notes on this instance: ${c}, on March.*Parse the CSV once`));
+  assert.match(pickup.prompt!, new RegExp(`Open notes on the series: ${n}.*Send a copy to the reviewers.*\\[request\\]`));
+  assert.doesNotMatch(pickup.prompt!, /Try a second parser/, "the sibling's open note is not this run's");
+  assert.equal(pickup.saw[1].trim(), `${c} taken`);
+  assert.match(pickup.saw[2], /a request settles only when its owner decides its proposal/);
+  assert.match(pickup.saw[3], /^proposed c\d+\s*$/);
+  const p = pickup.saw[3].trim().slice('proposed '.length);
+  for (const how of ['approve', 'reject'])
+    assert.equal((await call('POST', '/api/messages', { instance: id, id: p, how }, bob)).status, 403);
+  assert.equal((await call('POST', '/api/messages', { instance: id, thread: p, text: 'Yes.', quiet: true })).status, 200);
+  const pending = await (await call('GET', path)).json();
+  assert.deepEqual(pending.waiting, [{ who: ADMIN, seq: Number(p.slice(1)) }], 'reading or replying leaves the proposal pending');
+  assert.equal((await call('POST', '/api/messages', { instance: id, id: p, how: 'reject', quiet: true })).status, 200);
+  const seriesNotes = async () => (await call('GET', `/api/series/${series}/notes`, undefined, bob)).json();
+  const [request] = await seriesNotes();
+  assert.deepEqual([request.id, request.settled.op, request.settled.by], [n, 'aside', ADMIN]);
+  assert.equal(request.settled.see.inst, id);
+  assert.equal((await call('POST', `${path}/delete`, {})).status, 200);
+  const [kept] = await seriesNotes();
+  assert.deepEqual([kept.id, kept.settled.op, kept.settled.by, kept.settled.see], [n, 'aside', ADMIN, undefined]);
+  const { noteNotices } = await (await call('GET', '/api/status', undefined, bob)).json();
+  const notices = noteNotices.filter(k => k.id === n && k.path === 'Scheduled notes/Rec');
+  assert.deepEqual(notices.map(k => [k.kind, k.text, k.anchor]), [['settled', 'The owner rejected the proposal.', undefined]]);
+  const raw = readFileSync(join(root, 'series', series, 'messages.jsonl'), 'utf8');
+  assert.ok(!raw.includes(advice) && !raw.includes(id));
+  assert.match(raw, /Try a second parser/, "the sibling's note remains");
 });
 
 // A websocket's opening, as a page at `origin` asks for it, and all that came back.

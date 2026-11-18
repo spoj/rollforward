@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, openStore } from '../src/store.ts';
+import { startMessageStore } from '../src/message-store.ts';
 
 import { authority } from '../src/logins.ts';
 import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
@@ -16,7 +17,7 @@ const running = (label: string, logins: string[], n = 1, by = 'alice@demo.test')
   const seriesId = `s-${label}`;
   saveTree({ ...tree(), series: { ...tree().series, [seriesId]: { name: 'Portal pull', workspace: 'w' } } });
   const dir = join(tmp, 'series', seriesId);
-  mkdirSync(dir, { recursive: true });
+  startMessageStore(dir);
   const inst = createInstance(seriesId, label, by);
   // Browser grant checks are tested independently of the consent-change observer.
   writeFileSync(join(dir, 'series.json'), JSON.stringify({ version: 1, owner: by, epoch: 1, since: '', consent: { by, at: '', workspace: 'w', logins, autonomous: false } }));
@@ -104,7 +105,7 @@ const tmp = mkdtempSync(join(tmpdir(), 'rf-shots-'));
 initSystem(tmp);
 openStore(tmp);
 saveTree({ workspaces: { w: { name: 'Acme', owners: ['alice@demo.test'], members: [] } }, series: { s: { name: 'Portal pull', workspace: 'w' } } });
-mkdirSync(join(tmp, 'series', 's'), { recursive: true });
+saveSeriesSettings(join(tmp, 'series', 's'), { version: 1, epoch: 0, since: '' });
 writeJson('users.json', { 'alice@demo.test': { role: 'admin' } });
 writeJson('capabilities.json', { });
 // Everyone the tests run as has an approved grant to each website they use, in Acme (grants.ts), but where a test says otherwise.

@@ -1,5 +1,6 @@
 import { after, before, test } from 'node:test';
-import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
+import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
+import { fireFixtureRequests, readFixtureTree, writeLegacyFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -18,6 +19,8 @@ const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-page-')), root = join(tmp, 'data');
 let proc: ChildProcess, browser: Browser, page: Page, entra: Awaited<ReturnType<typeof idp>>;
 const native: string[] = [];
+const pinnedCsv = 'year,total\n2025,123\n';
+const pin = { inst: 'a5c0ff5e1f0d', path: 'working/bank copy.csv', sha256: createHash('sha256').update(pinnedCsv).digest('hex') };
 
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
@@ -25,7 +28,6 @@ before(async () => {
   const tree = readFixtureTree(root), signed = join(root, 'instances', 'a5c0ff5e1f00');
   tree.workspaces['1b3031035ff6'].members = ['bob@demo.test'];
   tree.series.a5c0ff5e1fee = { name: 'Year-end pack', workspace: '1b3031035ff6' };
-  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fee'));
   mkdirSync(join(signed, 'working'), { recursive: true });
   writeFileSync(join(signed, 'instance.json'), JSON.stringify({ label: '2026-12', series: 'a5c0ff5e1fee' }));
@@ -55,6 +57,15 @@ before(async () => {
     { seq: 7, at: '2026-08-01T09:04:30.000Z', by: 'agent', op: 'comment', thread: 'c10', item: null, ref: null, text: 'The ledger by month.\n\n| ![Ledger](working/months.png) | ![Months](../2026-11/working/months.png) |', files: [{ inst: 'a5c0ff5e1f01', path: 'working/months.png' }, { inst: 'a5c0ff5e1f01', path: 'working/ledger.csv' }] },
     { seq: 8, at: '2026-08-01T09:05:00.000Z', by: 'admin@demo.test', op: 'close' },
   ].map(e => JSON.stringify(e) + '\n').join(''));
+  // Another workspace's instance has the same label, but only the admin can read it.
+  tree.workspaces.a5c0ff5e1f10 = { name: 'Private archive', owners: ['admin@demo.test'], members: [], archived: true };
+  tree.series.a5c0ff5e1f11 = { name: 'Historical pack', workspace: 'a5c0ff5e1f10' };
+  const historical = join(root, 'instances', pin.inst);
+  mkdirSync(join(historical, 'working'), { recursive: true });
+  writeFileSync(join(historical, 'instance.json'), JSON.stringify({ label: '2026-11', series: 'a5c0ff5e1f11' }));
+  writeFileSync(join(historical, 'screen.json'), JSON.stringify({ rev: 1, status: 'closed', items: [] }));
+  writeFileSync(join(historical, 'log.jsonl'), JSON.stringify({ seq: 1, at: '2026-08-01T09:00:00.000Z', by: 'admin@demo.test', op: 'create' }) + '\n');
+  writeFileSync(join(historical, pin.path), pinnedCsv);
   // An open instance of the same series with two steps, notes in markdown and a tie-out.
   const reviewed = join(root, 'instances', 'a5c0ff5e1f02');
   mkdirSync(join(reviewed, 'working'), { recursive: true });
@@ -68,11 +79,12 @@ before(async () => {
     { seq: 2, at: '2026-08-01T09:05:00.000Z', by: 'agent', op: 'comment', thread: 'c2', text: 'Review the October notes.' },
     // A note from the agent of 2026-12, for its captured executor.
     { seq: 3, at: '2026-08-01T09:06:00.000Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'The pack went to the bank.', run: 2, runner: 'admin@demo.test', see: { inst: 'a5c0ff5e1f00', label: '2026-12', thread: 'c2' }, note: true },
+    { seq: 4, at: '2026-08-01T09:07:00.000Z', by: 'agent', op: 'comment', thread: 'c4', item: 'tie', text: 'The historical pack.',
+      files: [pin, { inst: 'gone', path: 'working/deleted.png' }] },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A series of its own, quiet since July.
   const sampled = join(root, 'instances', 'a5c0ff5e1f05');
   tree.series.a5c0ff5e1fef = { name: 'Invoice checks', workspace: '1b3031035ff6' };
-  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1fef'));
   mkdirSync(join(sampled, 'working'), { recursive: true });
   writeFileSync(join(sampled, 'instance.json'), JSON.stringify({ label: '2026-07', series: 'a5c0ff5e1fef' }));
@@ -84,7 +96,6 @@ before(async () => {
   // A series of its own whose open instance's agent asks a question, proposes to send the pack, citing the closed one's comment, and
   // withdrew a question.
   tree.series.a5c0ff5e1ff0 = { name: 'Bank pack', workspace: '1b3031035ff6' };
-  writeFixtureTree(root, tree);
   mkdirSync(join(root, 'series', 'a5c0ff5e1ff0'));
   const october = [
     { by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'I will email the pack to the bank.', ask: 'proposal' },
@@ -140,6 +151,8 @@ before(async () => {
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: series.workspace, logins: [], autonomous: false } }));
   }
+  writeLegacyFixtureTree(root, tree);
+  migrateMessageCopy(root, true);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(tmp, 'home'), RF_SCRATCH: join(tmp, 'scratch') };
   mkdirSync(env.HOME!);
   delete env.OPENROUTER_API_KEY;
@@ -149,7 +162,7 @@ before(async () => {
   const port = (probe.address() as { port: number }).port;
   await new Promise(ok => probe.close(ok));
   entra = await idp();
-  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test', RF_DRAIN_MIN: '0.05', RF_MIN_FREE_GB: '0' });
+  Object.assign(env, entra.env(`http://127.0.0.1:${port}`), { RF_ADMINS: 'admin@demo.test', RF_DRAIN_MIN: '0.05', RF_MIN_FREE_GB: '0', RF_WAKE_TICK_MS: '200' });
   proc = spawn(process.execPath, [join(app, 'src', 'server.ts'), root, String(port)], { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok, fail) => {
     proc.stdout!.on('data', d => String(d).includes('rollforward on') && ok(null));
@@ -304,7 +317,7 @@ test("the workspace's + explicitly selects task consent, then its first prompt n
     await page.click('[data-act=comment]');
     await page.waitForSelector(`#bar h1 .t:text-is("${prompt}")`);
   }
-  assert.equal(await page.textContent('#bar .crumb'), 'larkfield · Ungrouped');
+  assert.equal(await page.textContent('#bar .crumb'), 'larkfield · Ungrouped · Notes');
   assert.deepEqual(await page.locator('.row.grp ~ a.row.inst .l').allTextContents(), ['Zebra crossing survey', 'Apple orchard audit for 2026']);
   await page.waitForSelector('#bar .state .bad:text("Run 1 failed")');
   await page.click('#bar [data-act=close]');
@@ -443,6 +456,54 @@ test("a post's images show side by side, by their paths in the instance; a threa
   await page.click('#log .seg [data-act=audit]');
 });
 
+test('historical attachments use the stored instance and digest for preview and download', async () => {
+  const base = new URL(page.url()).origin, show = `${base}/#/a5c0ff5e1f02`;
+  const tab = await browser.newPage({ storageState: await page.context().storageState() }), bob = await browser.newPage();
+  const source = join(root, 'instances', pin.inst, pin.path);
+  try {
+    await tab.goto(show);
+    await tab.click('.tile[data-item=tie]');
+    const [preview] = await Promise.all([
+      tab.waitForResponse('**/preview/**/bank%20copy.csv*'),
+      tab.click('#card .cites a:text-is("bank copy.csv")'),
+    ]);
+    assert.equal(preview.status(), 200);
+    assert.equal(new URL(preview.url()).pathname, `/preview/${pin.inst}/working/bank%20copy.csv`);
+    assert.equal(new URL(preview.url()).searchParams.get('sha256'), pin.sha256);
+    await tab.waitForSelector('#pv td:text-is("123")');
+    const download = new URL((await tab.getAttribute('#pv .pvh a', 'href'))!, base);
+    assert.equal(download.searchParams.get('sha256'), pin.sha256);
+    assert.equal(await (await tab.request.get(download.href)).text(), pinnedCsv);
+    await tab.click('#pv [data-act=unpv]');
+    await tab.click('#card [data-act=uncard]');
+
+    entra.who.as = 'bob@demo.test';
+    await bob.goto(`${base}/auth/login`);
+    await bob.goto(show);
+    await bob.click('#conv .f a:text-is("bank copy.csv")');
+    await bob.waitForSelector('#pv .empty:text-is("Attachment unavailable")');
+    for (const url of [download.href, preview.url()]) assert.equal((await bob.request.get(url)).status(), 404);
+
+    writeFileSync(source, 'year,total\n2025,456\n');
+    await tab.click('#ins .also a:text-is("bank copy.csv")');
+    await tab.waitForSelector('#pv .empty:text-is("Attachment unavailable")');
+    assert.equal((await tab.request.get(download.href)).status(), 404);
+    await tab.click('#pv [data-act=unpv]');
+    await tab.click('#conv .f a:text-is("deleted.png · unavailable")');
+    await tab.waitForSelector('#pv .empty:text-is("Attachment unavailable")');
+    await tab.click('#pv [data-act=unpv]');
+
+    rmSync(source);
+    await tab.click('#conv .f a:text-is("bank copy.csv")');
+    await tab.waitForSelector('#pv .empty:text-is("Attachment unavailable")');
+  } finally {
+    entra.who.as = 'admin@demo.test';
+    writeFileSync(source, pinnedCsv);
+    await tab.close();
+    await bob.close();
+  }
+});
+
 test("a row's chevron folds and opens it, selected or not, and selects nothing", async () => {
   const title = await page.textContent('#bar h1');
   await page.click('.row.ws.on .chev');
@@ -540,7 +601,7 @@ test("Ctrl+Enter pressed again while a comment is still sending sends it once", 
   try {
     await tab.goto(new URL('/#/a5c0ff5e1f00', page.url()).href);
     await tab.waitForSelector('#newcomment');
-    await tab.route('**/comment', async r => { await new Promise(ok => setTimeout(ok, 1500)); await r.continue(); });
+    await tab.route('**/api/messages', async r => { await new Promise(ok => setTimeout(ok, 1500)); await r.continue(); });
     await tab.fill('#newcomment', 'Sent once with keys');
     await tab.press('#newcomment', 'Control+Enter');
     await tab.waitForSelector('#log [data-act=comment][aria-busy]', { state: 'attached' });
@@ -885,14 +946,19 @@ test("people show by name, with their email on hover, and Entra groups by label;
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: 'The bank wants it by Friday.' }), headers: { cookie: bobs } })).status, 200);
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector(`#log .thread .post b.p span[title="${bob}"]:text-is("Bob")`);
-  assert.equal(await page.locator('#needs').isHidden(), true, 'opening acknowledges the collaborator note');
+  const notice = page.locator('#needs .note-notice', { hasText: 'The bank wants it by Friday.' });
+  await notice.waitFor();
+  await notice.getByRole('button', { name: 'Dismiss note notice' }).click();
+  await notice.waitFor({ state: 'detached' });
   await page.click('#log [data-act=audit]');
   await page.locator('#audit .e', { hasText: 'Bob left a note for you' }).waitFor();
   await page.click('#log .seg [data-act=audit]');
   const long = `Wide${'_'.repeat(400)}`;
   assert.equal((await fetch(url('/api/instances/a5c0ff5e1f00/comment'), { method: 'POST', body: JSON.stringify({ text: long }), headers: { cookie: bobs } })).status, 200);
   await page.waitForSelector(`#log .pb:text-is("${long}")`);
-  assert.equal(await page.locator('#needs').isHidden(), true);
+  const added = page.locator('#needs .note-notice', { hasText: long });
+  await added.getByRole('button', { name: 'Dismiss note notice' }).click();
+  await added.waitFor({ state: 'detached' });
   assert.equal(await page.locator('#log').evaluate(e => e.scrollWidth <= e.clientWidth), true, 'the panel keeps its width with a long note');
 });
 
@@ -1004,7 +1070,7 @@ test("a comment's twisty collapses it, with what hangs under it, to its first li
 
 test("a name two people share shows with their email, a group among a workspace's people is marked as one, and a person's request to start a series names them", async () => {
   const bob = 'bob@demo.test', users = join(root, '.rf', 'users.json'), group = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
-  writeFileSync(join(root, '.rf', 'wakes.json'), JSON.stringify({ pending: {}, fired: {}, requests: { r9: { series: 'a5c0ff5e1fee', label: '2027-01', from: bob, at: new Date().toISOString() } } }));
+  await fireFixtureRequests(root, { r9: { target: 'a5c0ff5e1fee', label: '2027-01', from: bob } });
   await page.reload();
   await page.click('[data-act=waiting]');
   await page.waitForSelector(`#pv .wt span[title="${bob}"]:text-is("Bob")`);
@@ -1468,7 +1534,7 @@ test("a comment or reply uploading attachments posts to its original instance af
         if (paths.length === 1) { started(); await held; }
         await r.continue();
       });
-      const posted = tab.waitForRequest(r => r.method() === 'POST' && r.url().endsWith('/comment'));
+      const posted = tab.waitForRequest(r => r.method() === 'POST' && r.url().endsWith('/api/messages'));
       await tab.click(`${box} [data-act=${reply ? 'reply-post' : 'comment'}]`);
       await uploading;
       await tab.evaluate(() => { location.hash = '#/a5c0ff5e1f02'; });
@@ -1476,7 +1542,8 @@ test("a comment or reply uploading attachments posts to its original instance af
       await tab.fill('#newcomment', 'Do not clear this draft');
       release();
       const request = await posted;
-      assert.equal(new URL(request.url()).pathname, '/api/instances/a5c0ff5e1f07/comment');
+      assert.equal(request.postDataJSON().instance, 'a5c0ff5e1f07');
+      assert.equal(request.postDataJSON().series, undefined);
       assert.deepEqual(paths, ['/api/instances/a5c0ff5e1f07/attach', '/api/instances/a5c0ff5e1f07/attach']);
       assert.equal(request.postDataJSON().thread, reply ? 'c2' : undefined);
       await tab.waitForResponse(r => r.request() === request);
@@ -2055,13 +2122,13 @@ test("series header Notes is hover- and keyboard-accessible, targets an empty se
     await tab.evaluate(() => document.querySelector<HTMLElement>('.app')!.style.setProperty('--side-w', '180px'));
     const target = await notes.boundingBox(), sidebar = await tab.locator('#side').boundingBox();
     assert.ok(target!.x >= sidebar!.x && target!.x + target!.width <= sidebar!.x + sidebar!.width, 'Notes fits the narrow sidebar');
-    const url = tab.url(), expanded = await tab.evaluate(() => localStorage.expanded);
+    const url = tab.url(), expanded = await tab.evaluate(() => localStorage.expanded), crumb = await tab.locator('#bar .crumb').innerText();
     for (const key of ['Enter', 'Space']) {
-      await notes.focus();
-      await tab.keyboard.press(key);
+      await notes.press(key);
       await tab.waitForSelector('#pv .pvh b:text-is("Notes on ' + name + '")');
       assert.match(await tab.locator('#pv .pvb').innerText(), /No open notes/);
       await tab.keyboard.press('Escape');
+      await tab.locator('#pv').waitFor({ state: 'hidden' });
       assert.equal(tab.url(), url);
       assert.equal(await tab.evaluate(() => localStorage.expanded), expanded);
     }
@@ -2075,11 +2142,14 @@ test("series header Notes is hover- and keyboard-accessible, targets an empty se
     assert.equal(await tab.evaluate(() => localStorage.expanded), expanded);
     assert.equal(await row.locator('.n').innerText(), '', 'notes are not an open-instance status');
     assert.equal(await row.locator('.tally.open').count(), 0);
+    await tab.locator('#find').focus();
+    await tab.mouse.move(1000, 50);
+    assert.equal(await notes.locator('.note-count').innerText(), '1');
+    assert.equal(await notes.evaluate(el => getComputedStyle(el).opacity), '1', 'the open-note count is visible without hover or focus');
     await tab.reload();
-    await notes.focus();
-    await tab.keyboard.press('Enter');
+    await notes.press('Enter');
     await tab.waitForSelector('#pv .note .pb:text-is("Created on the empty series, not the instance shown")');
-    assert.equal(await tab.locator('#bar .crumb a[data-act=notes]').count(), 0, 'the series shown still has no notes');
+    assert.equal(await tab.locator('#bar .crumb').innerText(), crumb, 'the series shown did not change');
   } finally {
     await tab.close();
   }
@@ -2105,16 +2175,17 @@ test("a wake carries a message; a series' notes thread takes notes from the side
     await tab.locator('#pv .wakerow[data-id]:not([data-id=""]) [data-act=wake-delete]').click();
     await tab.mouse.click(5, 5);
 
-    assert.equal(await tab.locator('#bar .crumb a').count(), 0, 'no open notes, no link');
+    const count = await tab.evaluate(() => cur.s.notes);
+    const inBar = (n: number) => `#bar [data-act=notes]:text-is("${n} open note${n === 1 ? '' : 's'}")`;
     await tab.click('.row.ser.on > [data-act=notes]');
     await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
     assert.match(await tab.locator('#pv .pvb').innerText(), /No open notes/);
     await tab.fill('#notetext', 'From January the pack goes to the new bank');
     await tab.click('#pv [data-act=note-post]');
     await tab.waitForSelector('#pv .note .pb:text-is("From January the pack goes to the new bank")');
-    await tab.waitForSelector('#bar .crumb a:text-is("1 open note")');
+    await tab.waitForSelector(inBar(count + 1));
     await tab.mouse.click(5, 5);
-    await tab.click('#bar .crumb a:text-is("1 open note")');
+    await tab.click(inBar(count + 1));
     await tab.waitForSelector('#pv .pvh b:text-is("Notes on Year-end pack")');
     await tab.click('#pv [data-act=note-taken]');
     assert.equal(await tab.locator('#pv details.note').count(), 0, 'settling takes a why');
@@ -2125,10 +2196,91 @@ test("a wake carries a message; a series' notes thread takes notes from the side
     await tab.click('#pv details.note summary');
     assert.match(await tab.locator('#pv details.note').innerText(), /Acted on by Demo Admin · .+: In the process now/);
     await tab.mouse.click(5, 5);
-    await tab.waitForSelector('#bar .crumb a', { state: 'detached' });
+    if (count) await tab.waitForSelector(inBar(count));
+    else await tab.waitForSelector('#bar [data-act=notes]', { state: 'detached' });
     assert.equal(await tab.locator('#tree [data-act=notes]:not(.row.ser > button)').count(), 0);
   } finally {
     await tab.close();
+  }
+});
+
+test("task notes use one write API, arrive as nonblocking FYIs, and notify the writer of settlement without clearing a draft", async () => {
+  const origin = new URL(page.url()).origin, bob = 'bob@demo.test';
+  const owner = await browser.newPage({ storageState: await page.context().storageState() }), writer = await browser.newPage();
+  const message = async (tab: Page, selector: string) => {
+    const [response] = await Promise.all([
+      tab.waitForResponse(r => r.request().method() === 'POST' && r.url() === origin + '/api/messages'),
+      tab.click(selector),
+    ]);
+    assert.equal(response.status(), 200, await response.text());
+    return response;
+  };
+  try {
+    const { id: workspace } = await (await owner.request.post(origin + '/api/workspaces', { data: { name: 'Message FYIs' } })).json();
+    assert.ok((await owner.request.put(origin + '/api/workspaces/' + workspace, { data: { add: bob, as: 'member' } })).ok());
+    const { id: series, instance } = await (await owner.request.post(origin + '/api/series', { data: { workspace, single: true } })).json();
+    assert.notEqual(series, instance, "the task's Notes use the series id, not its instance id");
+    assert.ok((await owner.request.post(origin + `/api/instances/${instance}/rename?as=Messages`)).ok());
+    entra.who.as = bob;
+    await writer.goto(origin + '/auth/login');
+    await Promise.all([owner.goto(origin + '/#/' + instance), writer.goto(origin + '/#/' + instance)]);
+
+    await writer.click('#bar [data-act=notes]:text-is("Notes")');
+    const advice = 'Use the <i>tie-out</i> file.';
+    await writer.fill('#notetext', advice);
+    const told = await message(writer, '#pv [data-act=note-post]'), { id: n } = await told.json();
+    assert.deepEqual(told.request().postDataJSON(), { series, text: advice, files: [] });
+    await writer.locator('#pv .note .pb', { hasText: advice }).waitFor();
+    assert.equal(await writer.locator('#pv .note .pb i').count(), 0, 'note text is escaped');
+    await writer.fill('#notetext', 'Ask before changing the report');
+    await writer.check('#note-request');
+    const asked = await message(writer, '#pv [data-act=note-post]');
+    assert.deepEqual(asked.request().postDataJSON(), { series, text: 'Ask before changing the report', files: [], request: true });
+    await writer.locator('#pv .note', { hasText: 'Ask before changing the report' }).waitFor();
+    await writer.keyboard.press('Escape');
+    await owner.locator('#bar [data-act=notes]:text-is("2 open notes")').waitFor();
+
+    const request = 'Change the recipient';
+    await writer.fill('#newcomment', request);
+    await writer.check('#comment-request');
+    const commented = await message(writer, '#conv [data-act=comment]'), c = 'c' + commented.headers()['x-rf-comment-seq'];
+    assert.deepEqual(commented.request().postDataJSON(), { instance, text: request, files: [], request: true });
+    const chip = writer.locator(`#conv .post[data-seq="${c.slice(1)}"] .note-chip`);
+    await chip.waitFor();
+    assert.equal(await chip.innerText(), 'Request · Open');
+
+    await owner.locator('#bar [data-act=notes]:text-is("3 open notes")').waitFor();
+    const note = `#needs .note-notice[data-note-id="${c}"]`;
+    await owner.locator(note).waitFor();
+    assert.equal(await owner.locator(`${note} a`).getAttribute('href'), `#/${instance}/${c}`);
+    assert.equal(await owner.locator(`${note} > b`).innerText(), 'FYI');
+    const dismissed = await message(owner, `${note} [data-act=note-dismiss]`);
+    assert.deepEqual(dismissed.request().postDataJSON(), { instance, id: c, dismiss: 'open' });
+    await owner.locator(note).waitFor({ state: 'detached' });
+    assert.equal(await owner.locator('#bar [data-act=notes]').innerText(), '3 open notes', 'dismissing an FYI does not settle a note');
+
+    await owner.click('#bar [data-act=notes]');
+    await owner.locator('#pv .note .pb', { hasText: advice }).waitFor();
+    assert.equal(await owner.locator('#pv .note').count(), 2, 'the Notes panel only shows series-anchored notes');
+    await owner.fill('#pv .note input', 'In the <process> now.');
+    await writer.fill('#newcomment', 'Draft while the other tab settles my note');
+    await writer.check('#comment-request');
+    await writer.setInputFiles('#newfiles', { name: 'draft.txt', mimeType: 'text/plain', buffer: Buffer.from('draft') });
+    const settled = await message(owner, '#pv [data-act=note-taken]');
+    assert.deepEqual(settled.request().postDataJSON(), { series, id: n, how: 'taken', text: 'In the <process> now.' });
+    await writer.click('#tree [data-act=waiting]');
+    await writer.locator('#pv .note-notice', { hasText: 'In the <process> now.' }).waitFor();
+    assert.equal(await writer.locator('#pv .note-notice process').count(), 0);
+    assert.equal(await writer.inputValue('#newcomment'), 'Draft while the other tab settles my note');
+    assert.ok(await writer.isChecked('#comment-request'));
+    assert.equal(await writer.locator('#newfiles').evaluate((el: HTMLInputElement) => el.files?.[0].name), 'draft.txt');
+
+    const thanked = await message(writer, `#pv .note-notice[data-note-id="${n}"] [data-act=note-dismiss]`);
+    assert.deepEqual(thanked.request().postDataJSON(), { series, id: n, dismiss: 'settled' });
+    await writer.locator('#pv .note-notice', { hasText: 'In the <process> now.' }).waitFor({ state: 'detached' });
+  } finally {
+    entra.who.as = 'admin@demo.test';
+    await Promise.all([owner.close(), writer.close()]);
   }
 });
 
@@ -2185,8 +2337,7 @@ test("Transfer series changes every instance without credentials; only its owner
   await handed.click('#pv [data-act=series-credentials]');
   await handed.waitForSelector('#pv .saved:text-is("Saved")');
   await handed.keyboard.press('Escape');
-  const wakes = join(root, '.rf', 'wakes.json'), w = JSON.parse(readFileSync(wakes, 'utf8'));
-  writeFileSync(wakes, JSON.stringify({ ...w, requests: { ...w.requests, handing: { series: sid, label: 'H1', target: theirs, from: 'admin@demo.test', at: new Date().toISOString(), text: 'the statement is due' } } }));
+  await fireFixtureRequests(root, { handing: { target: theirs, from: 'admin@demo.test', text: 'the statement is due' } });
   await page.reload();
   await page.waitForSelector('#tree .row.ws');
   assert.equal(await page.locator('#tree [data-act=req-start][data-id=handing]').count(), 0, 'a non-owner manager cannot Start');

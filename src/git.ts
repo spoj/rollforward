@@ -5,6 +5,7 @@ import { chmodSync, closeSync, constants, createReadStream, existsSync, fstatSyn
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
+import { syncInstanceLog } from './store.ts';
 
 // Each run's end, each sign-off, each Close, each rf commit and each upload or comment that starts no run commits the whole instance
 // folder to its own repository, .git in the folder, which only the server writes and runs read. The server reads every file itself
@@ -34,7 +35,10 @@ export function pack(dir: string) {
 // `after`, such as a run's sandbox stopping, comes first: the commit, and those queued after it, wait for it.
 export function commit(dir: string, who: Who, message: string, after?: Promise<unknown>): Promise<string> {
   if (gone.has(dir)) return Promise.reject(new Error('the instance was deleted, with its history'));
-  const next = (queue.get(dir) ?? Promise.resolve()).then(() => after).then(() => snapshot(dir, who, message));
+  const next = (queue.get(dir) ?? Promise.resolve()).then(() => after).then(() => {
+    syncInstanceLog(dir);
+    return snapshot(dir, who, message);
+  });
   queue.set(dir, next.catch(() => {}));
   return next;
 }

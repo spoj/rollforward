@@ -59,8 +59,9 @@ function took(e) {
 }
 const when = iso => new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 const hhmm = iso => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
-const fname = f => f.split('/').pop();
+const fname = f => (typeof f === 'string' ? f : f.path).split('/').pop();
 function fileUrl(path, kind = 'files') {
+  if (typeof path !== 'string') return `/${kind}/${enc(path.inst)}/${path.path.split('/').map(enc).join('/')}${path.sha256 ? `?sha256=${enc(path.sha256)}` : ''}`;
   const m = path.match(/^\.\.\/([^/]+)\/(.*)$/), id = m ? cur.s.instances.find(i => i.label === m[1])?.id : cur.i.id;
   return `/${kind}/${id}/${(m ? m[2] : path).split('/').map(enc).join('/')}`;
 }
@@ -119,9 +120,10 @@ async function api(path, opts) {
   const r = await fetch(path, opts);
   const t = await r.text();
   if (r.status === 401) location.reload();
-  if (!r.ok) throw new Error(t);
+  if (!r.ok) throw new Error(t, { cause: r.status });
   try { return JSON.parse(t); } catch { return t; }
 }
+const writeMessage = body => api('/api/messages', { method: 'POST', body: JSON.stringify(body) });
 addEventListener('unhandledrejection', e => toast(e.reason?.message ?? String(e.reason)));
 
 // The page's address is #/ID, of an instance, a series or a workspace, or #/ID/cN, at a comment of an instance; cur holds the tree's
@@ -221,19 +223,20 @@ function showComment(seq) {
   setTimeout(() => el.classList.remove('flash'), 2000);
 }
 
-// Instances changed: each one's row in the sidebar, and the open one's data. One the sidebar lacks takes a full refresh.
+// An instance event updates its sidebar row and its series' note count and FYIs. A new row takes a full refresh.
 async function patch(ids) {
-  const rows = tree.flatMap(w => w.series.flatMap(s => s.instances)), others = ids.filter(id => id !== cur?.i?.id);
-  const n = others.length === ids.length ? refreshes : ++refreshes;
-  const sums = await Promise.all(others.map(id => api(`/api/instances/${id}/summary`)));
+  const periods = new Map(tree.flatMap(w => w.series.flatMap(s => s.instances.map(i => [i.id, { s, i }]))));
+  if (ids.some(id => !periods.has(id))) return refresh();
+  const path = shown, current = ids.includes(cur?.i?.id), n = current ? ++refreshes : refreshes;
+  const [sums, detail] = await Promise.all([Promise.all(ids.map(id => api(`/api/instances/${id}/summary`))), current ? fetchInstance(path) : null]);
   if (n !== refreshes) return;
-  if (sums.some(x => !rows.some(r => r.id === x.id))) return refresh();
-  for (const x of sums) Object.assign(rows.find(r => r.id === x.id), x);
-  if (others.length === ids.length) return render();
-  const path = shown, [[d, st], sum] = await Promise.all([fetchInstance(path), api(`${path}/summary`)]);
-  if (n !== refreshes) return;
-  Object.assign(cur.i, sum);
-  land(cur, path, d, st);
+  for (const { seriesNotes, ...summary } of sums) {
+    const { s, i } = periods.get(summary.id);
+    Object.assign(i, summary);
+    if (seriesNotes) Object.assign(s, seriesNotes);
+  }
+  if (detail) land(cur, path, ...detail);
+  else render();
 }
 
 // An instance's data, and its trace while the audit shows and the trace may have moved.
@@ -340,17 +343,17 @@ function renderSide() {
     const st = i.queued ? '\u29D7 queued' : i.asks.length ? `<span class="cnt" title="${i.asks.length} to answer">${i.asks.length}</span>` : i.wakes[0] ? `<span title="${when(i.wakes[0].at)}">wakes ${soon(i.wakes[0].at)}</span>` : i.status === 'open' ? ''
       : i.deleted ? `<span title="Deleted by ${esc(nameOf(i.deleted.by))} ${when(i.deleted.at)}">deleted</span>`
       : i.corrections ? `<span class="corr" title="Read with ${plural(i.corrections, 'correction')}">corrected</span>` : i.status;
-    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${!i.owner ? '<span class="who" title="No series owner selected">?</span>' : i.owner === me.email || i.deleted ? '' : `<span class="who" title="${esc(nameOf(i.owner))} owns the series">${esc(initials(me.names[i.owner] ?? i.owner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}</span>${age(i.active, i.running)}</a>`;
+    return `<a class="row inst ${i.status} ${cur?.i?.id === i.id ? 'on' : ''}" href="#/${i.id}" title="${esc(i.label)}"><span class="nm ${i.unread ? 'b' : ''}"><span class="l">${esc(i.label)}</span>${!i.owner ? '<span class="who" title="No series owner selected">?</span>' : i.owner === me.email || i.deleted ? '' : `<span class="who" title="${esc(nameOf(i.owner))} owns the series">${esc(initials(me.names[i.owner] ?? i.owner))}</span>`}${i.unread && !i.asks.length ? '<span class="dot u"></span>' : ''}</span><span class="n">${st}${i.notes ? ` <span class="note-count">${esc(plural(i.notes, 'open note'))}</span>` : ''}</span>${age(i.active, i.running)}</a>`;
   };
-  const waits = waiting().length;
-  let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="q"> ${waits}</span></a></div>` : '';
+  const { count: waits, actionable } = waiting();
+  let h = waits ? `<div class="row waits"><a class="nm" data-act="waiting">Waiting on you<span class="${actionable ? 'q' : 'fyi'}"> ${waits}</span></a></div>` : '';
   let shown = 0;
   for (const w of sorted(side, wAct, w => w.name)) {
     const won = cur?.w.id === w.id, wHit = !q || hit(w.name);
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
     // Each series with the instances that match, where only they do.
     const series = sorted(w.series.filter(s => !s.single && listed(s, cur?.s?.id === s.id)), sAct, s => s.name).map(s => [s, wHit || hit(s.name) ? null : s.instances.filter(i => hit(i.label))]).filter(([, found]) => !found || found.length);
-    const tasks = sorted(w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances), recent, i => i.label).filter(i => wHit || hit(i.label));
+    const tasks = sorted(w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances.map(i => ({ ...i, notes: s.notes }))), recent, i => i.label).filter(i => wHit || hit(i.label));
     if (!wHit && !series.length && !tasks.length) continue;
     shown++;
     if (!wHit) opened.add(w.id);
@@ -363,7 +366,7 @@ function renderSide() {
       if (found) opened.add(s.id);
       const note = s.archived ? 'archived' : s.requests.length ? `<span class="q">${s.requests.length} to start</span>` : open.length && shut(s.id) ? `<span class="tally open" title="${open.length} open">${open.length}</span>` : s.wakes[0] && shut(s.id) ? `<span title="${when(s.wakes[0].at)}">wakes ${soon(s.wakes[0].at)}</span>` : '';
       h += `<div class="row ser ${on ? 'on' : ''} ${s.archived ? 'archived' : ''}">${chev(s.id)}<a class="nm" href="#/${s.id}" title="${esc(s.name)}"><span class="l">${esc(s.name)}</span>${dot(s.id, [s])}</a>`
-        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}">${ICON.chat}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
+        + `<span class="n">${note}</span>${age(sAct(s), s.instances.some(i => i.running))}` + `<button class="add notes" data-act="notes" data-id="${s.id}" title="Notes on ${esc(s.name)}" aria-label="Notes on ${esc(s.name)}"${s.notes ? ` aria-description="${esc(plural(s.notes, 'open note'))}"` : ''}>${ICON.chat}${s.notes ? `<span class="note-count">${esc(s.notes)}</span>` : ''}</button>` + btn('settings', 'Settings', '\u2699', s.id) + (archived(w, s) ? '' : btn('new-instance', 'New instance', '+', s.id)) + '</div>';
       if (shut(s.id)) continue;
       if (found) {
         h += `<div class="tree">${found.map(row).join('')}</div>`;
@@ -394,15 +397,18 @@ function renderSide() {
     + (archivedCount ? opt('toggle-archived', '', showArchived, `Archived (${archivedCount})`) : '') + '<div class="head">Sort</div>' + opt('order', 'activity', !byName, 'Newest activity') + opt('order', 'name', byName, 'Name'));
   $('#sorter').classList.toggle('on', only || localStorage.workspaces === 'all' || showArchived || byName);
   put($('#newws'), me.can.includes('create') ? btn('new-workspace', 'New workspace', '+') : '');
-  // Keys move a focus through the rows' links (j, k), which a new drawing keeps.
-  const kf = $('#tree').contains(document.activeElement) && document.activeElement.getAttribute('href');
+  const focused = document.activeElement, inTree = $('#tree').contains(focused);
+  const href = inTree && focused.getAttribute('href'), note = inTree && focused.dataset.act === 'notes' && focused.dataset.id;
   put($('#tree'), h);
-  if (kf) $(`#tree [href="${kf}"]`)?.focus();
+  if (document.activeElement !== focused) {
+    if (href) $(`#tree [href="${CSS.escape(href)}"]`)?.focus();
+    if (note) $(`#tree [data-act="notes"][data-id="${CSS.escape(note)}"]`)?.focus();
+  }
   // The foot: Settings, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
   const folded = $('.app').classList.contains('folded');
   put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Settings<span class="go-on">\u203A</span></button>`
     + (me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
-    + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? '<span class="dot"></span>' : ''}</button>`);
+    + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? `<span class="dot${actionable ? '' : ' fyi'}"></span>` : ''}</button>`);
 }
 
 function lastDone() { return data.log.findLast(e => e.op === 'done'); }
@@ -415,7 +421,7 @@ function renderBar() {
   if (editing) return;
   const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${open && cur.s.notes ? ` · <a data-act="notes" data-id="${cur.s.id}">${plural(cur.s.notes, 'open note')}</a>` : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${cur?.s && (cur.s.notes || cur.s.single && !gone()) ? ` · <button class="quiet series-notes" data-act="notes" data-id="${esc(cur.s.id)}">${cur.s.notes ? esc(plural(cur.s.notes, 'open note')) : 'Notes'}</button>` : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
     const state = gone() ? `Deleted by ${esc(nameOf(gone().by))} · ${when(gone().at)}`
@@ -495,10 +501,13 @@ function renderPanes() {
   const ins = items.filter(i => i.kind === 'input'), outs = items.filter(i => i.kind === 'output'), steps = items.filter(i => i.kind === 'step');
   const head = (title, list, pane, count = list.length ? `${list.filter(i => i.file).length} of ${list.length}` : '') => `<div class="ph"><h2>${title}</h2><span class="c">${count}</span>${open && pane ? `<button class="btn" data-act="add" data-pane="${pane}">${ICON.files}Add files</button>` : ''}</div>`;
   const adding = pane => uploads.filter(u => u.pane === pane && u.path === instPath()).map(u => `<div class="tile ghost"><div class="ext"><span>UPLOADING</span></div><div class="fn">${esc(u.f.name)}</div><div class="prog"><i style="width:${u.pct}%"></i></div></div>`).join('');
-  const files = new Set(items.map(i => i.file)), also = new Map();
-  for (const t of threads) for (const p of t.posts) for (const f of p.by === 'agent' ? p.files ?? [] : []) if (!files.has(f) && !also.has(f)) also.set(f, t);
+  const files = new Set(items.filter(i => i.file).map(i => fileUrl(i.file))), also = new Map();
+  for (const t of threads) for (const p of t.posts) for (const f of p.by === 'agent' ? p.files ?? [] : []) {
+    const url = fileUrl(f);
+    if (!files.has(url) && !also.has(url)) also.set(url, [f, t]);
+  }
   const via = t => t.item ? `on <a data-act="opencard" data-item="${esc(t.item)}">${esc(items.find(i => i.id === t.item)?.name ?? t.item)}</a>` : `in <a data-act="thread" data-thread="${esc(t.id)}">a comment</a>`;
-  const alsoUsed = also.size ? `<div class="also"><div class="ah">Also used</div>${[...also].map(([f, t]) => `<div><a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a> <span class="via">· cited ${via(t)}</span></div>`).join('')}</div>` : '';
+  const alsoUsed = also.size ? `<div class="also"><div class="ah">Also used</div>${[...also.values()].map(([f, t]) => `<div>${attachmentHtml(f)} <span class="via">· cited ${via(t)}</span></div>`).join('')}</div>` : '';
   const body = (pane, xs) => `${list ? listHtml(pane, xs) : ''}<div class="tiles">${list ? '' : xs.map(tile).join('')}${adding(pane)}</div>`;
   $('#panes').classList.toggle('list', list);
   put($('#view'), `<span class="seg">${[['tiles', 'Tiles'], ['list', 'List']].map(([v, name]) => `<button class="${list === (v === 'list') ? 'sel' : ''}" data-act="view" data-id="${v}">${name}</button>`).join('')}</span>`);
@@ -609,15 +618,17 @@ function logText(e) {
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
 
-// What this instance waits on you for, above it: the threads that wait on you, a question, a proposal, an ask from before those, or
-// a note, and your logins that expired under it. Most of the time there is nothing.
+const canDecideProposal = e => !data.staleProposals?.includes(e.seq) && (!e.noteFor || data.owner.by === me.email);
+
+// Threads and expired logins that need you, with nonblocking note notices alongside.
 function renderNeeds() {
   $('#draining').hidden = me.draining == null;
   put($('#draining'), me.draining == null ? '' : `An update is waiting for ${plural(me.draining, 'run')} to finish; new runs start after it.`);
   const held = data?.owner.by === me.email ? (data.held ?? []).map(l => data.log.findLast(e => e.op === 'expired' && !e.left && e.login === l && e.runner === me.email)).filter(Boolean) : [];
   const act = (e, mode, name) => `<button class="btn ${mode === 'reply' ? 'reply-to' : ''}" data-act="reply" data-mode="${mode}" data-seq="${e.seq}">${name}</button>`;
   const h = (data ? data.waiting.filter(w => w.who === me.email).map(w => data.log[w.seq - 1]) : []).map(e => `<div><b class="${e.ask === 'proposal' ? 'propose' : ''}">${{ question: 'Question', proposal: 'Proposal', true: 'Ask' }[e.ask] ?? 'Note'}</b><span>${esc(firstLine(e.text))}</span>`
-    + (!editable() ? `<button class="btn" data-act="thread" data-thread="${e.thread}">Open</button>` : e.ask === 'proposal' || e.ask === true ? act(e, 'approve', 'Approve\u2026') + act(e, 'reject', 'Reject\u2026') : act(e, 'reply', 'Reply')) + '</div>').join('')
+    + (!editable() || !canDecideProposal(e) ? `<button class="btn" data-act="thread" data-thread="${esc(e.thread)}">Open</button>` : e.ask === 'proposal' || e.ask === true ? act(e, 'approve', 'Approve\u2026') + act(e, 'reject', 'Reject\u2026') : act(e, 'reply', 'Reply')) + '</div>').join('')
+    + (data?.noteNotices ?? []).map(n => noteNoticeHtml(cur.s, n)).join('')
     + (cur?.s ? ownershipHtml(cur.w, cur.s) : '')
     + (editable() && data.owner.by && data.owner.by !== me.email && data.log[0].by === me.email && !data.log.some(e => e.op === 'run') ? `<div>${person(data.owner.by)} starts this series' runs.</div>` : '')
     + held.map(e => `<div><b>Login</b><span>${e.login === 'openrouter' ? 'Your OpenRouter key is out of credits' : `Your ${esc(e.name)} login has expired`}: this instance waits for it</span>${signInHtml(e.login, e.name)}</div>`).join('');
@@ -638,16 +649,17 @@ function renderLog() {
   if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
   if (!data || !ui.open) return;
-  // This instance's half-written comment or reply, or files picked for one, holds its conversation still until sent or cleared; a
-  // closed box's, hidden, doesn't.
+  $('#log').classList.toggle('not-owner', data.owner.by !== me.email);
+  // A half-written comment or reply holds the conversation still, but note states and ownership still update.
   const shown = s => [...$('#conv').querySelectorAll(s)].filter(f => !f.closest('.reply[hidden]'));
-  const drafting = shown('textarea, input[type=text]').some(t => t.value.trim()) || shown('input[type=file]').some(f => f.files.length);
+  const drafting = shown('textarea, input[type=text]').some(t => t.value.trim()) || shown('input[type=file]').some(f => f.files.length) || data.owner.by !== me.email && !!$('#comment-request:checked');
   const focused = document.activeElement?.id === 'newcomment';
   // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
   put($('#lh'), `<span class="seg">${[['Conversation', !ui.audit], ['Audit', ui.audit]].map(([side, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="audit"'}>${ICON[side === 'Audit' ? 'person' : 'chat']}${side}</button>`).join('')}</span>`
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
   if (!drafting) put($('#conv'), conversationHtml());
+  else for (const el of $('#conv').querySelectorAll('.post > .tm > .note-state')) put(el, noteChip(data.noteStates?.[`c${el.closest('.post').dataset.seq}`]));
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
     if (box) { box.value = v; delete draft.kept[k]; }
@@ -742,9 +754,16 @@ function md(text, threads) {
   table();
   return h.trimEnd();
 }
+function attachmentHtml(file, inline = false) {
+  const name = esc(fname(file)), attrs = typeof file === 'string' ? `data-file="${esc(file)}"` : `data-pin="${esc(JSON.stringify(file))}"`;
+  return inline && /\.(png|jpe?g|gif|webp|svg)$/i.test(name)
+    ? `<img src="${fileUrl(file)}" loading="lazy" alt="${name}" title="${name}" data-act="preview" ${attrs}>`
+    : `<a data-act="preview" ${attrs}>${name}</a>`;
+}
+
 // Threads from the log: a comment starts one, on an item (at a ref) or the instance, and later comments reply in it. In an open
 // instance it waits on a person while the server says so, on whom the agent's ask names or else the series owner, and on the agent while
-// its last word is a person's. A file a run cited is kept by its instance's id, and shown by that instance's label now.
+// its last word is a person's.
 function threadsOf() {
   const out = new Map(), open = editable(), waiting = new Map((data?.waiting ?? []).map(w => [w.seq, w.who]));
   for (const e of data?.log ?? []) {
@@ -757,7 +776,7 @@ function threadsOf() {
     // Where it hangs: under its parent, an approval or a rejection under its proposal; from before replies named what they answer,
     // under the first.
     const under = e.parent ?? e.on ?? (e.seq === root ? undefined : root);
-    if (e.op === 'comment') t.posts.push({ ...e, under, waits: waiting.get(e.seq), files: e.files?.map(f => !f.inst ? f : f.inst === cur.i.id ? f.path : `../${cur.s.instances.find(i => i.id === f.inst)?.label}/${f.path}`) });
+    if (e.op === 'comment') t.posts.push({ ...e, under, waits: waiting.get(e.seq) });
     // A sign-off with approved false is rf 0.12's reject.
     else t.posts.push({ ...e, under, text: `${e.op === 'reject' || e.approved === false ? 'Rejected' : 'Approved'}${e.text ? `: ${e.text}` : ''}` });
   }
@@ -776,6 +795,10 @@ function threadHtml(t) {
     + data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('') + postHtml(t, t.posts[0], 0) + '</div>';
 }
 
+function noteChip(state) {
+  return state ? `<span class="note-chip"${state.text ? ` title="${esc(state.text)}"` : ''}>${state.request ? 'Request · ' : ''}${{ open: 'Open', taken: 'Taken', aside: 'Set aside' }[state.op]}</span>` : '';
+}
+
 // A comment, with its reactions, its cN, which copies a link to it, and Reply, or, for a proposal this person hasn't approved or
 // rejected, Approve and Reject, each opening a box of its own, there all along so that it opens where it is, and how many runs went
 // since, which may have changed what it links; then what hangs under it, three levels deep, past which a link opens the rest as a
@@ -785,16 +808,17 @@ function postHtml(t, p, depth) {
   const kids = t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
   // An ask from before questions and proposals, ask true, may have been either.
   const proposal = p.ask === 'proposal' || p.ask === true, kind = p.ask === 'proposal' ? 'propose' : p.ask ? 'ask' : '';
-  const decides = open && proposal && p.seq > copied() && !p.withdrawn && !t.posts.some(k => k.on === p.seq && k.by === me.email), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
+  const decides = open && proposal && canDecideProposal(p) && p.seq > copied() && !p.withdrawn && !t.posts.some(k => k.on === p.seq && (p.noteFor || k.by === me.email)), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
+  const chip = `<span class="note-state">${noteChip(data.noteStates?.[`c${p.seq}`])}</span>`;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
   const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${p.see ? agentOf(p) : who(p.by)}</b> <span class="tm">`;
   const gone = p.withdrawn && `withdrawn: ${esc(p.withdrawn.text)}${p.withdrawn.see ? ` \u00b7 see ${cref(p.withdrawn.see, `c${p.withdrawn.see}`)}` : ''}`;
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
-  if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
+  if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}${chip}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
-  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}">${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${data.standing[p.seq] === 'note' ? ` \u00b7 a note${data.doc.status === 'open' ? ` for ${who(data.owner.by)}` : ''}` : ''}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"${p.noteFor ? ' data-note-proposal' : ''}>${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${chip}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
-    + (p.files ?? []).map(f => `<div class="f">${/\.(png|jpe?g|gif|webp|svg)$/i.test(f) ? `<img src="${fileUrl(f)}" loading="lazy" alt="${esc(fname(f))}" title="${esc(fname(f))}" data-act="preview" data-file="${esc(f)}">` : `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`}</div>`).join('');
+    + (p.files ?? []).map(f => `<div class="f">${attachmentHtml(f, true)}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open && !proposal ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
     + `${decides ? `<button class="quiet" data-act="reply" data-mode="approve" data-seq="${p.seq}">Approve\u2026</button><button class="quiet" data-act="reply" data-mode="reject" data-seq="${p.seq}">Reject\u2026</button>` : ''}</div>`;
   if (open && p.op === 'comment' && !proposal) h += box('reply', '', 'Reply', `<button class="btn" data-act="reply-post" data-seq="${p.seq}">Reply</button>`);
@@ -841,7 +865,7 @@ function conversationHtml() {
   h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`}"></textarea><input type="file" id="newfiles" multiple><div><button class="btn primary" data-act="comment">Comment</button></div></div>`;
+    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`}"></textarea><input type="file" id="newfiles" multiple><div class="row2"><button class="btn primary" data-act="comment">Comment</button>${mine ? '' : '<label class="note-request"><input type="checkbox" id="comment-request"> Request a proposal</label>'}</div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -875,8 +899,8 @@ function renderCard() {
   for (const t of talkOn(item.id)) {
     const p = t.posts[0], more = t.posts.length - 1, reply = open && p.ask !== 'proposal' && p.ask !== true;
     h += `<div class="nb ${t.waits ? 'waits' : ''}">${t.ref ? `<span class="ref">${esc(t.ref)}</span>` : ''}${p.by === 'agent' ? '' : `<b>${who(p.by)}</b>: `}${esc(p.text)}`
-      + (p.files?.length ? `<div class="cites">${p.files.map(f => `<a data-act="preview" data-file="${esc(f)}">${esc(fname(f))}</a>`).join('')}</div>` : '')
-      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}"${reply ? ' class="reply-to"' : ''}>${reply ? 'Reply' : 'Open'}</a></div></div>`;
+      + (p.files?.length ? `<div class="cites">${p.files.map(f => attachmentHtml(f)).join('')}</div>` : '')
+      + `<div class="by">${more ? `${more} repl${more > 1 ? 'ies' : 'y'} \u00b7 ` : ''}${t.waits ? `Waits on ${who(t.waits)} \u00b7 ` : t.pending ? '<span class="spin"></span> the agent picks it up next \u00b7 ' : ''}<a data-act="thread" data-thread="${esc(t.id)}"${reply ? ' class="reply-to"' : ''}>${reply ? 'Reply' : 'Open'}</a>${noteChip(data.noteStates?.[`c${p.seq}`])}</div></div>`;
   }
   h += '<div class="acts">';
   if (item.file) h += `<button class="btn" data-act="preview" data-file="${esc(item.file)}" data-item="${esc(item.id)}">Open full</button><a class="btn" href="${fileUrl(item.file)}">Download</a>`;
@@ -956,7 +980,7 @@ function renderPv() {
   // Your account's dialog: Logins and Tokens, as tabs.
   const account = [['logins', 'Logins'], ['tokens', 'Tokens']], mine = account.some(([k]) => k === pv.settings?.kind);
   d.className = 'pv' + (pv.settings ? ' small' : '') + (mine || ['workspace', 'waiting'].includes(pv.settings?.kind) ? ' wide' : '');
-  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.path ? `<a class="btn" href="${fileUrl(pv.path)}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired || pv.saving ? ' disabled' : ''}>${pv.saving ? 'Saving…' : pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv"${pv.saving ? ' disabled' : ''}>${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
+  let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.download ? `<a class="btn" href="${pv.download}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired || pv.saving ? ' disabled' : ''}>${pv.saving ? 'Saving…' : pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv"${pv.saving ? ' disabled' : ''}>${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
   else if (pv.path) h += previewBody(pv);
@@ -968,7 +992,7 @@ function renderPv() {
   else if (pv.settings?.kind === 'logins') h += `<div class="pvb vl">${loginsHtml(pv.settings)}</div>`;
   else if (pv.settings?.kind === 'wakes') h += `<div class="pvb vl">${wakesHtml(cur.i.id, cur.i.wakes, false)}</div>`;
   else if (pv.settings?.kind === 'notes') h += `<div class="pvb vl">${notesHtml(pv.settings)}</div>`;
-  else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().join('') || '<div class="sub">Nothing waits on you.</div>'}</div>`;
+  else if (pv.settings?.kind === 'waiting') h += `<div class="pvb vl">${waiting().html || '<div class="sub">Nothing waits on you.</div>'}</div>`;
   else if (pv.settings?.kind === 'start') h += `<div class="pvb vl">${startHtml(pv.settings)}</div>`;
   else if (pv.settings) {
     const s = pv.settings;
@@ -1030,23 +1054,27 @@ function startsHtml(s) {
 // A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
 // something. The series owner and workspace managers settle one by hand.
 async function openNotes(id) {
-  const [w, s] = tree.flatMap(w => w.series.filter(s => s.id === id).map(s => [w, s]))[0];
-  pv = { title: `Notes on ${s.name}`, settings: { kind: 'notes', id, w, s, list: await api(`/api/series/${id}/notes`) } };
+  const before = pv, at = location.hash;
+  const list = await api(`/api/series/${id}/notes`);
+  if (pv !== before || location.hash !== at) return;
+  const w = tree.find(w => w.series.some(s => s.id === id)), s = w.series.find(s => s.id === id);
+  pv = { title: `Notes on ${s.name}`, settings: { kind: 'notes', id, w, s, list } };
   renderPv();
 }
 
 function notesHtml({ id, w, s, list }) {
   const shut = archived(w, s), settles = !shut && (w.manage || s.owner === me.email);
-  const by = e => e.by === 'agent' ? agentOf(e) : person(e.by), how = e => e.op === 'taken' ? 'Acted on' : 'Set aside';
-  const body = n => `<div class="pb">${esc(n.text)}</div>` + (n.files ?? []).map(f => `<div class="f"><a href="/api/series/${id}/${f.split('/').map(enc).join('/')}">${esc(fname(f))}</a></div>`).join('');
+  const by = e => e.by === 'agent' ? e.see ? agentOf(e) : 'Agent' : person(e.by), how = e => e.op === 'taken' ? 'Acted on' : 'Set aside';
+  const body = n => `<div class="pb">${esc(n.text)}</div>` + (n.files ?? []).map(f => `<div class="f"><a href="/api/series/${enc(id)}/${f.split('/').map(enc).join('/')}">${esc(fname(f))}</a></div>`).join('');
   const open = list.filter(n => !n.settled), done = list.filter(n => n.settled);
-  return `<div class="sub">Something for this series' agent to know: about the series as a whole, or while no period is open. A note doesn't start the agent. Each time it next works on ${esc(s.name)}, it reads the open notes, acts on them, and marks each one done or set aside, saying why.</div>`
-    + (open.length ? '' : '<div class="sub">No open notes.</div>')
-    + open.map(n => `<div class="note"><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
-      + (settles ? `<div class="row2"><input type="text" placeholder="What was done, or why not"><button class="btn" data-act="note-taken" data-seq="${n.seq}">Mark done</button><button class="quiet" data-act="note-aside" data-seq="${n.seq}">Set aside</button></div>` : '') + '</div>').join('')
-    + done.map(n => `<details class="note"><summary>${esc(firstLine(n.text))} \u00b7 ${how(n.settled)} by ${by(n.settled)}</summary><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}</div>${body(n)}`
+  return `<div class="sub">Notes here are for the series as a whole. Notes on an instance stay in its conversation. Notes don't start the agent. The agent can act on advice about its method; requests go to the series owner as proposals.</div>`
+    + (open.length ? '' : '<div class="sub">No open notes on the series itself.</div>')
+    + open.map(n => `<div class="note"><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}${noteChip({ op: 'open', request: n.request })}</div>${body(n)}`
+      + (n.proposal ? `<div class="sub">Waiting for the owner to decide · <a href="#/${enc(n.proposal.inst)}/c${enc(n.proposal.seq)}">Proposal on ${esc(n.proposal.label)}</a></div>` : '')
+      + (settles && !n.request && !n.proposal ? `<div class="row2"><input type="text" placeholder="What was done, or why not"><button class="btn" data-act="note-taken" data-seq="${n.seq}">Mark done</button><button class="quiet" data-act="note-aside" data-seq="${n.seq}">Set aside</button></div>` : '') + '</div>').join('')
+    + done.map(n => `<details class="note"><summary>${esc(firstLine(n.text))} \u00b7 ${how(n.settled)} by ${by(n.settled)}</summary><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}${noteChip({ op: n.settled.op, request: n.request })}</div>${body(n)}`
       + `<div class="sub">${how(n.settled)} by ${by(n.settled)} \u00b7 ${when(n.settled.at)}: ${esc(n.settled.text)}${seeHtml(n.settled.see)}</div></details>`).join('')
-    + (shut ? '' : '<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button></div>');
+    + (shut ? '' : '<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button><label class="note-request"><input type="checkbox" id="note-request"> Request a proposal</label></div>');
 }
 
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
@@ -1269,12 +1297,21 @@ function ownershipHtml(w, s) {
   return `<div class="wt">${esc(w.name)} · ${problem}. ${w.manage ? `<button class="btn" data-act="series-owner" data-id="${esc(s.id)}">Pick an owner…</button>` : `Ask ${w.owners.length ? w.owners.map(person).join(', ') : 'an admin'} to pick an owner.`}</div>`;
 }
 
-// What waits on you: the agent's asks and the notes for you, requests to start a series you can see, proposals to merge or move
-// into a workspace you manage, and requests to use a website there, and your expired logins.
+function noteNoticeHtml(s, n) {
+  const instance = n.id.startsWith('c') ? n.anchor.inst : undefined;
+  const label = esc(n.label), link = instance ? `<a href="#/${enc(instance)}/c${enc(n.anchor.seq)}">${label}</a>` : `<button class="quiet series-notes" data-act="notes" data-id="${esc(s.id)}">${label}</button>`;
+  const line = n.kind === 'open' ? `${who(n.by)} left a note on ${link}` : `Your note on ${link} was settled`;
+  return `<div class="note-notice" data-note-id="${esc(n.id)}"><b>FYI</b><span title="${esc(`${when(n.at)} · ${n.text}`)}">${line}: ${esc(n.text)}</span>`
+    + `<button class="quiet" data-act="note-dismiss" data-series="${esc(s.id)}"${instance ? ` data-instance="${esc(instance)}"` : ''} data-id="${esc(n.id)}" data-kind="${esc(n.kind)}" aria-label="Dismiss note notice">Dismiss</button></div>`;
+}
+
+// Asks and other actions, followed by nonblocking note notices.
 function waiting() {
   const out = tree.filter(w => !w.archived && w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => `<div class="wt">${person(p.by)} proposes ${proposalText(p)}`
     + ` <button class="btn" data-act="accept" data-id="${p.id}">Accept…</button><button class="btn" data-act="proposal-drop" data-id="${p.id}">Decline</button></div>`), at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
+  const notices = [];
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
+    for (const n of s.noteNotices ?? []) notices.push(noteNoticeHtml(s, n));
     if (w.manage && s.ownerUnavailable) out.push(ownershipHtml(w, s));
     for (const i of s.instances) {
       const n = ['question', 'proposal', 'ask', 'note'].map(k => [k, i.asks.filter(a => a.who === me.email && a.kind === k && !a.from).length]).filter(([, c]) => c);
@@ -1288,7 +1325,8 @@ function waiting() {
     for (const r of s.requests.filter(() => s.owner === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
   }
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
-  return [...out, ...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`)];
+  out.push(...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`));
+  return { html: out.join('') + notices.join(''), count: out.length + notices.length, actionable: out.length };
 }
 
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.
@@ -1406,7 +1444,7 @@ function previewBody(p) {
       + (m.attachments.length ? `<div class="atts">${m.attachments.map(a => `<a data-act="attachment" data-k="${a.k}">${esc(a.name)}</a>`).join('')}</div>` : '') + '</div>'
       + (m.html == null ? `<div class="pvb"><pre>${esc(m.text)}</pre></div>` : `<iframe class="pvb mail" sandbox="allow-popups allow-popups-to-escape-sandbox" srcdoc="${esc(MAIL + m.html)}"></iframe>`);
   }
-  if (p.image) return `<div class="pvb"><img src="${esc(p.image)}" alt=""></div>`;
+  if (p.image) return `<div class="pvb"><img src="${esc(p.image)}" alt=""${p.pinned ? ' data-pin' : ''}></div>`;
   if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
@@ -1430,26 +1468,30 @@ function watchPages(at, p) {
 const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><base target="_blank"><style>body { font: 14px/1.5 system-ui, sans-serif; margin: 14px 18px; }</style>`;
 
 // A preview of a file, an item's or not, before what it shows is fetched (load), for the dialog or an item's card.
-function previewOf(path, item) {
+function previewOf(file, item) {
+  const pinned = typeof file !== 'string', path = pinned ? file.path : file, download = fileUrl(file);
   return {
-    title: fname(path), path, src: fileUrl(path, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && fileUrl(path),
-    was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx|md|txt|json|py|sql|log)$/i.test(path),
+    title: fname(path), path, pinned, download, src: fileUrl(file, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && download,
+    was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: pinned || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx|md|txt|json|py|sql|log)$/i.test(path),
   };
 }
 
 // What a preview shows: a text file as it is, a file of a kind the server reads, or any attachment, as the server reads it.
 async function load(p) {
   try {
-    if (/\.(md|txt|json|py|sql|log)$/i.test(p.path)) {
-      const r = await fetch(fileUrl(p.path)), t = await r.text();
+    const text = /\.(md|txt|json|py|sql|log)$/i.test(p.path);
+    if (!p.path || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(p.path)) Object.assign(p, await api(p.src));
+    else if (text || p.pinned && !p.image) {
+      const r = await fetch(p.download, text ? undefined : { method: 'HEAD' });
       if (r.status === 401) location.reload();
-      if (!r.ok) throw new Error(t);
-      p.text = t;
+      if (!r.ok) throw new Error((await r.text()) || r.statusText, { cause: r.status });
+      if (text) p.text = await r.text();
     }
-    else if (!p.path || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx)$/i.test(p.path)) Object.assign(p, await api(p.src));
     if (p.sheets) p.sheet = p.sheets.findIndex(s => s.rows);
   } catch (e) {
-    p.error = e.message;
+    const unavailable = p.pinned && e.cause === 404;
+    if (unavailable) p.download = null;
+    p.error = unavailable ? 'Attachment unavailable' : e.message;
   } finally {
     p.loading = false;
   }
@@ -1559,36 +1601,45 @@ async function onAct(act, el) {
   if (act === 'interrupt') { await api(`${instPath()}/interrupt`, { method: 'POST' }); await refresh(); }
   if (act === 'comment-on') { Object.assign(ui, { open: true, audit: false }); Object.assign(draft, { on: el.dataset.item, ref: null }); renderLog(); renderBar(); renderAudit(); $('#newcomment')?.focus(); }
   if (act === 'notes') await openNotes(el.dataset.id);
+  if (act === 'note-dismiss') {
+    const { id, kind, instance, series } = el.dataset;
+    await writeMessage({ ...(instance ? { instance } : { series }), id, dismiss: kind });
+    await refresh();
+  }
   if (act === 'note-post') {
-    const { id } = pv.settings, text = $('#notetext').value.trim(), files = [];
+    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), request = $('#note-request').checked, files = [];
     if (!text) return;
     for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    await api(`/api/series/${id}/notes`, { method: 'POST', body: JSON.stringify({ text, files }) });
-    await openNotes(id);
+    await writeMessage({ series: id, text, files, ...(request && { request: true }) });
+    if (pv === p) await openNotes(id);
+    await refresh();
   }
   if (act === 'note-taken' || act === 'note-aside') {
-    const box = el.closest('.row2').querySelector('input');
-    if (!box.value.trim()) return box.focus();
-    await api(`/api/series/${pv.settings.id}/notes/n${el.dataset.seq}`, { method: 'POST', body: JSON.stringify({ how: act === 'note-taken' ? 'taken' : 'aside', text: box.value.trim() }) });
-    await openNotes(pv.settings.id);
+    const p = pv, series = p.settings.id, box = el.closest('.row2').querySelector('input'), text = box.value.trim();
+    if (!text) return box.focus();
+    await writeMessage({ series, id: `n${el.dataset.seq}`, how: act === 'note-taken' ? 'taken' : 'aside', text });
+    if (pv === p) await openNotes(series);
+    await refresh();
   }
   if (act === 'comment' || act === 'reply-post') {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
     if (!text) return;
-    const path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
+    const instance = cur.i.id, path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
+    const check = at ? null : own.el.querySelector('#comment-request'), request = data.owner.by !== me.email && check?.checked;
     for (const f of picked.files) files.push((await api(`${path}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    await api(`${path}/comment`, { method: 'POST', body: JSON.stringify({ ...place, text, files }) });
+    await writeMessage({ instance, ...place, text, files, ...(request && { request: true }) });
     box.value = '';
+    if (check) check.checked = false;
     thumbs(picked, new DataTransfer().files);
     own.replying.delete(+el.dataset.seq);
     own.on = own.ref = null;
     await refresh();
   }
-  // Approving a proposal is a sign-off, by the route's name.
   if (act === 'approve' || act === 'reject') {
+    if (!canDecideProposal(data.log[+el.dataset.seq - 1])) return;
     const box = el.closest('.reply'), own = draft;
-    await api(`${instPath()}/${act === 'approve' ? 'signoff' : 'reject'}`, { method: 'POST', body: JSON.stringify({ thread: `c${el.dataset.seq}`, text: box.querySelector('textarea').value.trim() }) });
+    await writeMessage({ instance: cur.i.id, id: `c${el.dataset.seq}`, how: act, text: box.querySelector('textarea').value.trim() });
     for (const t of box.parentElement.querySelectorAll(':scope > .reply textarea')) t.value = '';
     own.replying.delete(+el.dataset.seq);
     await refresh();
@@ -1646,7 +1697,7 @@ async function onAct(act, el) {
     renderPanes();
   }
   if (act === 'opencard') { openItem = el.dataset.item; markSeen(data.doc.items.filter(i => i.id === openItem)); renderPanes(); renderCard(); }
-  if (act === 'preview') await preview(el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
+  if (act === 'preview') await preview(el.dataset.pin ? JSON.parse(el.dataset.pin) : el.dataset.file, data.doc.items.find(i => i.id === el.dataset.item));
   if (act === 'unpv') closePv(true);
   if (act === 'settings') await openSeriesSettings();
   if (act === 'workspace-settings') openWorkspaceSettings();
@@ -2103,6 +2154,15 @@ async function onAct(act, el) {
   }
 }
 
+document.addEventListener('error', ({ target: img }) => {
+  if (!img.matches?.('img[data-pin]')) return;
+  const label = document.createElement(img.dataset.act ? 'a' : 'div');
+  Object.assign(label.dataset, img.dataset);
+  label.className = img.dataset.act ? '' : 'empty';
+  label.textContent = img.alt ? `${img.alt} · unavailable` : 'Attachment unavailable';
+  img.replaceWith(label);
+}, true);
+
 $('#picker').addEventListener('change', e => upload([...e.target.files], e.target.dataset.pane, e.target.dataset.onto));
 // Settings save as they change: a name once it's left or Enter is pressed, a tick at once.
 document.addEventListener('change', async ev => {
@@ -2122,9 +2182,8 @@ document.addEventListener('change', async ev => {
   if (pv === own) saved();
   await refresh();
 });
-// The dialog closes on Escape and on a click beside it, but a sign-in's only on Escape or its buttons. Its close event comes after,
-// when another may have opened in it.
-$('#pv').addEventListener('cancel', e => { if (pv?.saving) e.preventDefault(); });
+// Clear the dialog's state as it hides on Escape; its native close event arrives after another dialog may already be opening.
+$('#pv').addEventListener('cancel', e => { e.preventDefault(); closePv(true); });
 $('#pv').addEventListener('close', () => pv && !$('#pv').open && closePv(true));
 $('#pv').addEventListener('click', e => {
   const r = $('#pv').getBoundingClientRect();

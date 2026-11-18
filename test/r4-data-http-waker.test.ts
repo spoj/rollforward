@@ -1,5 +1,5 @@
 import { after, before, test } from 'node:test';
-import { readFixtureTree } from './owner-fixture.ts';
+import { fireFixtureRequests, migrateFixtureMessages, readFixtureTree } from './owner-fixture.ts';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -64,6 +64,7 @@ before(async () => {
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
   }
+  migrateFixtureMessages(root);
 
   const probe = createServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
@@ -89,11 +90,8 @@ test('Start keeps another instance request text a note', async () => {
   assert.equal((await call('PUT', `/api/workspaces/${ws.id}`, JSON.stringify({ members: [BOB] }))).status, 200);
   const ser = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws.id, name: 'S', logins: [], autonomous: false }))).json();
   const source = await (await call('POST', `/api/series/${ser.id}`, JSON.stringify({ label: 'source', quiet: true }), bobCookie)).json();
-  const wakesFile = join(root, '.rf', 'wakes.json');
-  const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
-  const id = 'source-request';
-  w.requests[id] = { series: ser.id, label: 'next', from: `${name}/S/source`, inst: source.id, at: new Date().toISOString(), text: 'Original source instruction.' };
-  writeFileSync(wakesFile, JSON.stringify(w));
+  const wakesFile = join(root, '.rf', 'wakes.json'), id = 'source-request';
+  await fireFixtureRequests(root, { [id]: { target: ser.id, label: 'next', from: `${name}/S/source`, inst: source.id, text: 'Original source instruction.' } });
   const started = await call('POST', `/api/requests/${id}`, '{}');
   assert.equal(started.status, 200);
   const { id: next } = await started.json();
@@ -276,7 +274,7 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
       import { createServer } from 'node:net';
       import { join } from 'node:path';
       import { idp } from './test/idp.ts';
-      import { readFixtureTree } from './test/owner-fixture.ts';
+      import { migrateFixtureMessages, readFixtureTree } from './test/owner-fixture.ts';
       const subTmp = ${JSON.stringify(subTmp)}, root = join(subTmp, 'data');
       cpSync('./test/fixture', root, { recursive: true });
       const t = readFixtureTree(root);
@@ -284,6 +282,7 @@ test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse movi
         mkdirSync(join(root, 'series', id), { recursive: true });
         writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, epoch: 0, since: '' }));
       }
+      migrateFixtureMessages(root);
 
       const probe = createServer();
       await new Promise(ok => probe.listen(0, '127.0.0.1', ok));

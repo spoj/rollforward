@@ -1,11 +1,12 @@
 import { after, before, test } from 'node:test';
-import { readFixtureTree, writeFixtureTree } from './owner-fixture.ts';
+import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
+import type { Tree } from '../src/system.ts';
 import assert from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer as createHttpServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -70,19 +71,20 @@ async function runRf(home: string, args: string[], extraEnv: Record<string, stri
 before(async () => {
   cpSync(join(app, 'test', 'fixture'), root, { recursive: true });
 
-  const tree = readFixtureTree(root);
+  const manifest = join(root, '.rf', 'tree.json'), envelope = JSON.parse(readFileSync(manifest, 'utf8'));
+  const tree: Tree = envelope.tree;
   tree.workspaces['1b3031035ff6'].owners = ['carol@demo.test'];
   tree.workspaces['1b3031035ff6'].members = ['bob@demo.test'];
   tree.workspaces['wsbeta000001'] = { name: 'beta-ws', owners: ['admin@demo.test'], members: [] };
   tree.workspaces['wsseeddup001'] = { name: 'seeded-dup', owners: ['carol@demo.test', 'bob@demo.test'], members: ['bob@demo.test'] };
   tree.series['serbank00001'] = { name: 'Bank pack', workspace: '1b3031035ff6' };
   tree.series['serbeta00001'] = { name: 'Beta series', workspace: 'wsbeta000001' };
-  writeFixtureTree(root, tree);
+  writeFileSync(manifest, JSON.stringify(envelope));
   mkdirSync(join(root, 'series', 'serbank00001'), { recursive: true });
   mkdirSync(join(root, 'series', 'serbeta00001'), { recursive: true });
   writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(Object.fromEntries(['admin', 'carol', 'bob'].map(name => [`${name}@demo.test`, { role: name === 'admin' ? 'admin' : 'user', name, created: '2026-11-15T08:00:00.000Z' }]))));
 
-  for (const [id, series] of Object.entries(tree.series) as [string, { workspace: string }][]) {
+  for (const [id, series] of Object.entries(tree.series)) {
     const owner = series.workspace === 'wsbeta000001' ? 'admin@demo.test' : 'carol@demo.test', at = '2026-11-15T08:00:00.000Z';
     mkdirSync(join(root, 'series', id), { recursive: true });
     writeFileSync(join(root, 'series', id, 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: series.workspace, logins: [], autonomous: false } }));
@@ -122,6 +124,8 @@ before(async () => {
     { at: '2026-11-15T08:02:00.000Z', by: 'server', kind: 'website-check', site: 'erp', person: 'admin@demo.test', service: 'openrouter', cost: 0.09 },
     { at: '2026-11-16T08:01:00.000Z', inst: 'instbet00002', run: 1, service: 'openrouter', cost: 0.50 },
   ].map(x => JSON.stringify(x) + '\n').join(''));
+
+  migrateMessageCopy(realpathSync(root), true);
 
   orMock = createHttpServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
@@ -369,7 +373,7 @@ test('R4-PEOPLE-07: rf comment --wait exits on terminal states and steered/stopp
     const send = (val: unknown, code = 200, hdrs: Record<string, string> = {}) =>
       res.writeHead(code, { 'content-type': 'application/json', ...hdrs }).end(JSON.stringify(val));
     if (req.url === '/api') return send([{ id: 'w', name: 'ws', series: [{ id: 's', name: 'ser', instances: [{ id: 'i', label: 'lbl' }] }] }]);
-    if (req.url === '/api/instances/i/comment') return send('ok', 200, { 'X-RF-Comment-Seq': '2' });
+    if (req.method === 'POST' && req.url === '/api/messages') return send('ok', 200, { 'X-RF-Comment-Seq': '2' });
     if (req.url === '/api/instances/i') {
       polls++;
       const baseLog: any[] = [{ seq: 1, op: 'create' }, { seq: 2, op: 'comment', by: 'alice@demo.test', text: 'Run please' }];
@@ -479,6 +483,166 @@ test('R4-PEOPLE-07: rf comment --wait exits on terminal states and steered/stopp
   }
 });
 
+test('removed rf message verbs give one replacement line without signing in', async () => {
+  const offline = join(tmp, 'not-signed-in');
+  for (const [verb, replacement] of [
+    ['note', /rf comment SERIES.*rf comment --mine/],
+    ['say', /rf comment TARGET TEXT/],
+    ['ask', /rf comment TARGET --ask TEXT/],
+    ['propose', /rf comment TARGET --propose TEXT/],
+    ['withdraw', /rf settle TARGET#cN withdrawn TEXT/],
+  ] as const) {
+    const r = await runRf(offline, [verb, '--missing-value']);
+    assert.equal(r.code, 1);
+    assert.equal(r.stdout, '');
+    assert.equal(r.stderr.trim().split('\n').length, 1);
+    assert.match(r.stderr, replacement);
+  }
+  const help = await runRf(offline, ['help', 'settle']);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /WORKSPACE\/SERIES\/INSTANCE#cN or WORKSPACE\/SERIES#nN/);
+});
+
+test('rf comment and settle use the message API, with local IDs qualified by target', async t => {
+  const w = { id: 'w', name: 'ws', grants: [], series: [
+    { id: 's', name: 'ser', requests: [], instances: [{ id: 'i', label: 'p', refused: [] }] },
+    { id: 'task', name: 'task', single: true, requests: [], instances: [] },
+  ] };
+  const person = 'carol@demo.test', by = 'bob@demo.test', at = '2026-11-15T08:00:00.000Z';
+  const legacy = { seq: 3, at, by: person, op: 'note', text: 'Keep an audit copy', settled: { op: 'aside', by: 'agent', text: 'Not needed' } };
+  const own = { id: 'c7', seq: 7, at, by: person, path: 'ws/ser/p', anchor: 'item:balance', request: true, text: 'Ask before filing' };
+  const notice = [
+    { id: 'n3', path: 'ws/ser', kind: 'settled', by: 'agent', at, text: 'Not needed' },
+    { id: 'c4', path: 'ws/ser/p', kind: 'open', by, at, text: 'Check the rate' },
+  ];
+  let mineStatus = 200, hasNotices = true, starts = true;
+  let standing: string | undefined;
+  const requests: string[] = [], posted: unknown[] = [];
+  const stub = createHttpServer(async (req, res) => {
+    const send = (value: unknown, status = 200, headers = {}) =>
+      res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(value));
+    requests.push(`${req.method} ${req.url}`);
+    if (req.headers.authorization !== 'Bearer test') return send('sign in', 401);
+    if (req.method === 'POST' && req.url === '/api/messages') {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      posted.push(body);
+      if (body.id) return send('ok');
+      return body.series ? send({ id: 'n8' }) : send('ok', 200, { 'X-RF-Comment-Seq': '7' });
+    }
+    if (req.url === '/api') return send([w]);
+    if (req.url === '/me') return send({ email: person });
+    if (req.url === '/api/series/s/notes') return send([legacy, { ...legacy, seq: 4, by }]);
+    if (req.url === '/api/messages?mine=1') return send(mineStatus === 200 ? [own] : 'unavailable', mineStatus);
+    if (req.url === '/api/indexes') return send([]);
+    if (req.url === '/api/status') return send({
+      ownership: [], requests: [], proposals: [], expired: [], running: [], queued: [], failed: [],
+      asks: [{ who: person, path: 'ws/ser/p', since: at, note: true, text: 'Legacy note' }],
+      ...(hasNotices ? { noteNotices: notice } : {}),
+    });
+    if (req.url === '/api/instances/i') return send({
+      doc: { status: 'open' }, log: [{ seq: 7, op: 'comment' }], owner: { by: person }, starts,
+      ...(standing && { standing: { 7: standing } }),
+    });
+    return send('unexpected request', 404);
+  });
+  await new Promise<void>(ok => stub.listen(0, '127.0.0.1', ok));
+  t.after(() => { stub.close(); });
+  const home = join(tmp, 'home-messages');
+  mkdirSync(join(home, '.config'), { recursive: true });
+  writeFileSync(join(home, '.config', 'rollforward.json'), JSON.stringify({
+    url: `http://127.0.0.1:${(stub.address() as { port: number }).port}`, token: 'test',
+  }));
+  const cli = (...args: string[]) => runRf(home, args);
+  const ok = async (...args: string[]) => {
+    const r = await cli(...args);
+    assert.equal(r.code, 0, r.stderr);
+    return r.stdout;
+  };
+  const instance = 'ws/ser/p', series = 'ws/ser';
+  assert.match(await ok('comment', series, '--request', 'Put this in a proposal'), /noted n8 on ws\/ser/);
+  assert.match(await ok('comment', instance, '--on', 'balance@Sheet!C22', '--propose', '--for', 'n3', '--to', by, 'File it'), /commented, seq 7/);
+  await ok('comment', instance, '--in', 'c2', '--ask', 'Which balance?');
+  starts = false;
+  standing = 'answer';
+  assert.match(await ok('comment', instance, '--in', 'c2', '--wake', 'Use the net balance'), /commented, seq 7/);
+  standing = undefined;
+  assert.match(await ok('comment', instance, '--wait', 'A note, even on the old read shape'), /no run starts/);
+
+  assert.match(await ok('settle', `${series}#n3`, 'taken', 'Added a copy'), /ws\/ser#n3 taken/);
+  assert.match(await ok('settle', `${instance}#c7`, 'aside', 'No change'), /ws\/ser\/p#c7 set aside/);
+  await ok('settle', `${instance}#c2`, 'withdrawn', 'Already answered');
+  assert.deepEqual(posted, [
+    { series: 's', text: 'Put this in a proposal', request: true },
+    { instance: 'i', quiet: true, item: 'balance', ref: 'Sheet!C22', ask: 'proposal', to: by, for: 'n3', text: 'File it' },
+    { instance: 'i', quiet: true, thread: 'c2', ask: 'question', text: 'Which balance?' },
+    { instance: 'i', quiet: false, thread: 'c2', text: 'Use the net balance' },
+    { instance: 'i', quiet: false, text: 'A note, even on the old read shape' },
+    { series: 's', id: 'n3', how: 'taken', text: 'Added a copy' },
+    { instance: 'i', id: 'c7', how: 'aside', text: 'No change' },
+    { instance: 'i', id: 'c2', how: 'withdrawn', text: 'Already answered' },
+  ]);
+
+  const calls = requests.length;
+  for (const args of [
+    ['settle', 'c7', 'taken', 'No target'],
+    ['settle', `${series}#n3`, 'done', 'Unknown settlement'],
+    ['comment', instance, '--for', 'n3', 'No proposal'],
+    ['comment', instance, '--on', 'balance', '--in', 'c2', 'Two anchors'],
+    ['comment', instance, '--ask', '--propose', 'Two kinds'],
+    ['comment', instance, '--in', '--ask', 'Missing thread'],
+  ]) assert.equal((await cli(...args)).code, 1);
+  assert.equal(requests.length, calls);
+
+  assert.match(await ok('comment', series), /n3 .*set aside by agent: Not needed/);
+  assert.deepEqual(JSON.parse(await ok('comment', series, '--json'))[0], legacy);
+  assert.match(await ok('comment', '--mine'), /ws\/ser\/p#c7 .*open \(request to propose\)/);
+  assert.deepEqual(JSON.parse(await ok('comment', '--mine', '--json')), [own]);
+  mineStatus = 404;
+  assert.deepEqual(JSON.parse(await ok('comment', '--mine', '--json')), [{ ...legacy, id: 'n3', path: 'ws/ser' }]);
+  mineStatus = 403;
+  const refused = requests.length;
+  assert.match((await cli('comment', '--mine')).stderr, /403/);
+  assert.deepEqual(requests.slice(refused), ['GET /api/messages?mine=1']);
+
+  assert.match(await ok('waiting'), /note settled +ws\/ser#n3 by agent/);
+  assert.match(await ok('waiting'), /note open +ws\/ser\/p#c4 by bob/);
+  assert.deepEqual(JSON.parse(await ok('waiting', '--json')).filter(n => ['open', 'settled'].includes(n.kind)), notice);
+  assert.match(await ok('status'), /Note notices \(FYI\)[\s\S]+ws\/ser\/p#c4/);
+  assert.deepEqual(JSON.parse(await ok('status', '--json')).noteNotices, notice);
+  hasNotices = false;
+  assert.match(await ok('waiting'), /note .*Legacy note/);
+  assert.match(await ok('status'), /Waiting on 1 person[\s\S]+Legacy note/);
+});
+
+test('people can settle series and instance notes and the writer sees both notices', async () => {
+  const series = 'larkfield/Bank pack', instance = `${series}/January`;
+  const ok = async (actor: Actor, ...args: string[]) => {
+    const r = await runRf(actor.home, args);
+    assert.equal(r.code, 0, r.stderr);
+    return r.stdout;
+  };
+  const note = await ok(bob, 'comment', series, 'Keep a ledger copy');
+  assert.match(note, /noted n\d+/);
+  const n = note.match(/\bn\d+\b/)![0];
+  const said = await ok(bob, 'comment', instance, '--on', 'u1', 'Check the source');
+  assert.match(said, /seq \d+: no run starts/);
+  const c = `c${said.match(/seq (\d+)/)![1]}`;
+  assert.ok(JSON.parse(await ok(bob, 'comment', series, '--json')).some(r => r.id === n));
+  const waiting = JSON.parse(await ok(carol, 'waiting', '--json'));
+  assert.ok(waiting.some(r => r.id === n && r.path === series && r.kind === 'open'));
+  assert.ok(waiting.some(r => r.id === c && r.path === instance && r.kind === 'open'));
+  await ok(carol, 'settle', `${series}#${n}`, 'aside', 'Already filed');
+  await ok(carol, 'settle', `${instance}#${c}`, 'taken', 'Source checked');
+  const own = JSON.parse(await ok(bob, 'comment', '--mine', '--json'));
+  assert.equal(own.find(r => r.id === n && r.path === series)?.settled.op, 'aside');
+  assert.equal(own.find(r => r.id === c && r.path === instance)?.settled.op, 'taken');
+  const notices = JSON.parse(await ok(bob, 'status', '--json')).noteNotices;
+  assert.ok(notices.some(r => r.id === n && r.path === series && r.kind === 'settled'));
+  assert.ok(notices.some(r => r.id === c && r.path === instance && r.kind === 'settled'));
+});
+
 test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding labels before creating Untitled tasks', async () => {
   const wRes = await fetch(`${base}/api/workspaces`, { method: 'POST', headers: { cookie: admin.cookie }, body: JSON.stringify({ name: 'task-labels' }) });
   const { id: wid } = await wRes.json() as { id: string };
@@ -500,9 +664,10 @@ test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding lab
   const lsAfterBad = await runRf(carol.home, ['ls']);
   assert.doesNotMatch(lsAfterBad.stdout, /task-labels\/Untitled/);
 
-  const good = await runRf(carol.home, ['new', 'task', 'task-labels', 'Q4 Audit']);
-  assert.equal(good.code, 0);
+  const good = await runRf(carol.home, ['new', 'task', 'task-labels', 'Q4 Audit', '--comment', 'Review Q4']);
+  assert.equal(good.code, 0, good.stderr);
   assert.match(good.stdout, /made task-labels\/Q4 Audit\/Q4 Audit/);
+  assert.match((await runRf(carol.home, ['log', 'task-labels/Q4 Audit/Q4 Audit'])).stdout, /comment .*Review Q4/);
 
   const explicitUntitled = await runRf(carol.home, ['new', 'task', 'task-labels', 'Untitled']);
   assert.equal(explicitUntitled.code, 0);

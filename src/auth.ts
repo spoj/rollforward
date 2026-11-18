@@ -373,7 +373,7 @@ const nextOf = (url: URL | URLSearchParams) => {
 };
 
 // Who is asking. Answers the sign-in routes itself, and shows the sign-in page to anyone not signed in, then returns null.
-export async function authenticate(req: IncomingMessage, res: ServerResponse, url: URL): Promise<Me | null> {
+export async function authenticate(req: IncomingMessage, res: ServerResponse, url: URL, record = true): Promise<Me | null> {
   if (url.pathname === '/auth/login') await microsoft(res, nextOf(url));
   else if (url.pathname === redirectPath && url.searchParams.has('state') && (url.searchParams.has('code') || url.searchParams.has('error'))) {
     // Microsoft's return, which may be the site's own root if that is what the app registers.
@@ -385,7 +385,7 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
-    const me = bearer(req, url) ?? session(req);
+    const me = bearer(req, url, record) ?? session(req);
     if (me) {
       admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)) });
       return me;

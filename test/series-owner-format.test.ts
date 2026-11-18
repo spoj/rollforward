@@ -64,6 +64,8 @@ test('a complete envelope cannot hide absent, legacy or mismatched series author
     assert.deepEqual(snapshotFiles(root), before);
   }
   writeFileSync(join(root, 'series/s/series.json'), JSON.stringify({ version: 1, epoch: 1, since: '' }));
+  assert.throws(() => checkAuthorityFormat(root), /missing canonical message log/);
+  writeFileSync(join(root, 'series/s/messages.jsonl'), '');
   checkAuthorityFormat(root);
   writeFileSync(join(root, 'series/s/series.json'), JSON.stringify({ version: 1, epoch: 1, since: '', owner: 'alice@example.test', consent: { by: 'alice@example.test', at: '', workspace: 'w', logins: [], autonomous: false } }));
   checkAuthorityFormat(root);

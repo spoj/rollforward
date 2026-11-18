@@ -108,7 +108,7 @@ import errno, json, os, subprocess
 from pathlib import Path
 screen = json.loads(subprocess.check_output(['rf', 'show']))
 assert screen['status'] == 'open'
-for cmd in (['rf', 'say', 'should not get posted'], ['rf', 'wake', '.', 'now']):
+for cmd in (['rf', 'comment', '.', 'should not get posted'], ['rf', 'wake', '.', 'now']):
     denied = subprocess.run(cmd, capture_output=True, text=True)
     assert denied.returncode != 0 and 'read-only' in denied.stderr
 try:

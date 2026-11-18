@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { Script, runInNewContext } from 'node:vm';
 import { chromium } from 'playwright';
 import { idp } from './idp.ts';
-import { writeFixtureTree } from './owner-fixture.ts';
+import { migrateFixtureMessages, writeLegacyFixtureTree } from './owner-fixture.ts';
 
 const page = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const code = page.split('<script>')[1].split('</script>')[0];
@@ -30,9 +30,9 @@ const server = createServer(async (req, res) => {
     : req.url === '/api/status' ? { ownership: [{ id: 's1', path: 'Finance/Monthly', text: 'Monthly has no owner' }], asks: [], requests: [], proposals: [], expired: [], running: [], queued: [], failed: [] }
     : req.url === '/api/indexes' ? []
     : req.url === '/logins' ? []
-    : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false, standing: { 2: calls.some(c => c.path.endsWith('/comment') && c.body.thread === 'c1') ? 'answer' : 'note' } }
+    : req.url === '/api/instances/i1' && req.method === 'GET' ? { doc: { status: 'open', items: [] }, log: [{ seq: 1, op: 'create', by: colleague }, { seq: 2, op: 'comment', by: colleague }], owner: { by: owner }, waiting: [], starts: false, standing: { 2: calls.some(c => c.path === '/api/messages' && c.method === 'POST' && c.body.thread === 'c1') ? 'answer' : 'note' } }
     : req.url === '/api/series' ? { instance: 'i1' } : { id: 'i1' };
-  if (req.url?.endsWith('/comment')) res.setHeader('X-RF-Comment-Seq', '2');
+  if (req.url === '/api/messages' && req.method === 'POST') res.setHeader('X-RF-Comment-Seq', '2');
   res.end(JSON.stringify(value));
 });
 
@@ -92,7 +92,7 @@ test('series selection is owner-only, explicit empty, series-wide and autonomous
 });
 
 test('missing ownership names managers to viewers and opens transfer for managers', () => {
-  const source = code.slice(code.indexOf('function ownershipHtml('), code.indexOf('// What waits on you:'));
+  const source = code.slice(code.indexOf('function ownershipHtml('), code.indexOf('function noteNoticeHtml('));
   const html = (manage: boolean, owner: string | null = null, archived = false) => runInNewContext(`${source}\nownershipHtml(w, s)`, {
     w: { name: 'Finance', owners: ['Manager'], manage }, s: { id: 's2', name: 'Monthly', owner, ownerUnavailable: true }, archived: () => archived,
     person: (x: string) => x, esc: (x: string) => x,
@@ -228,8 +228,9 @@ test('CLI live JSON exposes owner, and collaborator --wait does not wait for una
 });
 
 test('CLI recognizes a named answer as a run trigger', async () => {
-  const r = await cli('comment', 'Finance/Monthly/Jan', 'The new rate', '--thread', 'c1', '--wake');
+  const r = await cli('comment', 'Finance/Monthly/Jan', 'The new rate', '--in', 'c1', '--wake');
   assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(calls.filter(c => c.method === 'POST'), [{ path: '/api/messages', method: 'POST', body: { instance: 'i1', quiet: false, text: 'The new rate', thread: 'c1' } }]);
   assert.match(r.stdout, /commented, seq 2/);
   assert.doesNotMatch(r.stdout, /no run starts/);
 });
@@ -239,7 +240,7 @@ test('real owner clients preserve terminal history and task execution settings',
   const cases = ['closed-zero', 'closed-post', 'abandoned-zero', 'abandoned-post'];
   const at = '2026-11-01T00:00:00.000Z', bob = 'bob@example.test';
   mkdirSync(join(root, '.rf'), { recursive: true });
-  writeFixtureTree(root, { workspaces: { w: { name: 'Finance', owners: [owner], members: [colleague, bob] } }, series: { s: { name: 'History', workspace: 'w' } } });
+  writeLegacyFixtureTree(root, { workspaces: { w: { name: 'Finance', owners: [owner], members: [colleague, bob] } }, series: { s: { name: 'History', workspace: 'w' } } });
   mkdirSync(join(root, 'series', 's'), { recursive: true });
   writeFileSync(join(root, 'series', 's', 'series.json'), JSON.stringify({ version: 1, owner, epoch: 1, since: at, consent: { by: owner, at, workspace: 'w', logins: [], autonomous: true } }));
   for (const id of cases) {
@@ -257,6 +258,7 @@ test('real owner clients preserve terminal history and task execution settings',
     for (let n = 0; n < 4; n++) log.push({ by: 'agent', op: 'comment', thread: `c${log.length + 1}`, text: `Proposal ${n}`, ask: 'proposal' });
     writeFileSync(join(dir, 'log.jsonl'), log.map((e, n) => JSON.stringify({ seq: n + 1, at, ...e }) + '\n').join(''));
   }
+  migrateFixtureMessages(root);
   const probe = netServer();
   await new Promise<void>(ok => probe.listen(0, '127.0.0.1', ok));
   const port = (probe.address() as { port: number }).port;
@@ -291,10 +293,10 @@ test('real owner clients preserve terminal history and task execution settings',
       const detail = await (await api('GET', `/api/instances/${id}`)).json();
       const asks = detail.log.filter(e => e.ask);
       for (const [n, who] of [owner, colleague].entries()) {
-        await api('POST', `/api/instances/${id}/comment`, { text: `Post-run information from ${who}`, quiet: true }, who);
+        await api('POST', '/api/messages', { instance: id, text: `Post-run information from ${who}`, quiet: true }, who);
         const upload = await fetch(`${base}/api/instances/${id}/upload?quiet&name=${n}.txt`, { method: 'POST', headers: { cookie: cookies[who] }, body: 'fixture' });
         assert.equal(upload.status, 200, await upload.text());
-        for (const [k, action] of ['signoff', 'reject'].entries()) await api('POST', `/api/instances/${id}/${action}`, { thread: `c${asks[n * 2 + k].seq}`, quiet: true }, who);
+        for (const [k, how] of ['approve', 'reject'].entries()) await api('POST', '/api/messages', { instance: id, id: `c${asks[n * 2 + k].seq}`, how, quiet: true }, who);
       }
       await api('POST', `/api/instances/${id}/${id.startsWith('closed') ? 'close' : 'abandon'}`, { quiet: true });
     }
@@ -316,9 +318,13 @@ test('real owner clients preserve terminal history and task execution settings',
         await page.locator('#lh').getByRole('button', { name: 'Conversation', exact: true }).click();
         await page.waitForSelector('#conv .post');
         const conversation = await page.locator('#conv').innerText();
+        const notes = detail.log.filter(e => e.op === 'comment' && (e.note || e.informs));
+        assert.deepEqual(notes.map(e => e.text), ['Persisted legacy note; recipient unknown.', `Post-run information from ${colleague}`]);
+        assert.deepEqual(detail.noteStates, Object.fromEntries(notes.map(e => [`c${e.seq}`, { op: 'open' }])));
+        for (const { seq } of notes) assert.equal(await page.locator(`#conv .post[data-seq="${seq}"] .note-state`).innerText(), 'Open');
         await page.click('#lh [data-act=audit]');
         await page.waitForSelector('#audit .e');
-        result[id] = { disk, log: detail.log, standing: detail.standing, cli: cli.stdout, conversation, audit: await page.locator('#audit').innerText() };
+        result[id] = { disk, log: detail.log, standing: detail.standing, noteStates: detail.noteStates, cli: cli.stdout, conversation, audit: await page.locator('#audit').innerText() };
       }
       return result;
     };
@@ -335,7 +341,7 @@ test('real owner clients preserve terminal history and task execution settings',
       assert.deepEqual(record.log, record.disk.trim().split('\n').map(JSON.parse));
       assert.deepEqual(record.cli.trim().split('\n').map(JSON.parse), record.log);
       assert.deepEqual(record.standing, Object.fromEntries(record.log.filter(e => e.note).map(e => [e.seq, 'note'])));
-      assert.match(record.conversation, /a note/);
+      assert.match(record.conversation, /Persisted legacy note; recipient unknown\./);
       assert.match(record.audit, /left a note/);
       assert.doesNotMatch(record.conversation + record.audit, /a note for/);
     }

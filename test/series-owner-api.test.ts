@@ -10,7 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { idp } from './idp.ts';
-import { writeFixtureTree } from './owner-fixture.ts';
+import { writeLegacyFixtureTree } from './owner-fixture.ts';
+import { migrateMessageCopy } from '../scripts/migrate-messages.ts';
 
 const admin = 'admin@demo.test', alice = 'alice@demo.test', bob = 'bob@demo.test', colleague = 'colleague@demo.test';
 const tmp = mkdtempSync(join(tmpdir(), 'rf-owner-api-')), root = join(tmp, 'data');
@@ -34,7 +35,7 @@ async function series(name: string, who = alice, extra = {}) {
 
 before(async () => {
   mkdirSync(join(root, '.rf'), { recursive: true });
-  writeFixtureTree(root, {
+  writeLegacyFixtureTree(root, {
     workspaces: { ws: { name: 'Workspace', owners: [admin], members: [alice, bob, colleague] }, dest: { name: 'Destination', owners: [admin], members: [alice, bob] } },
     series: { history: { name: 'History', workspace: 'ws' }, unowned: { name: 'Unowned', workspace: 'ws' } },
   });
@@ -70,6 +71,7 @@ before(async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'logins.json'), JSON.stringify([{ id: 'synthetic', kind: 'synthetic', name: 'Synthetic', since: at, offers: [{ id: 'source:x', name: 'X' }, { id: 'source:y', name: 'Y' }, { id: 'web:unapproved', name: 'Unapproved' }] }]));
   }
+  migrateMessageCopy(root, true);
   const probe = createServer();
   await new Promise<void>(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = (probe.address() as { port: number }).port;
@@ -129,7 +131,7 @@ test('managers are told about missing and ineligible series owners', async () =>
   assert.equal((await ownership()).some(s => s.id === sid), false);
 });
 
-test('unread collaborator creations, comments and uploads wait until the owner opens or acts', async () => {
+test('creations and uploads still wait on read; informing comments wait for settlement', async () => {
   const sid = await series('Inbox');
   const { id } = await (await ok('POST', `/api/series/${sid}`, { label: 'Jan', quiet: true }, colleague)).json();
   const attention = async () => (await json('/api')).flatMap(w => w.series).find(s => s.id === sid).instances.find(i => i.id === id).asks;
@@ -138,23 +140,23 @@ test('unread collaborator creations, comments and uploads wait until the owner o
   assert.equal((await attention()).length, 1, 'the creator opening it does not acknowledge for its owner');
   await json(`/api/instances/${id}`, alice);
   assert.deepEqual(await attention(), []);
-  await ok('POST', `/api/instances/${id}/comment`, { text: 'Rate changed' }, colleague);
+  const noted = await ok('POST', '/api/messages', { instance: id, text: 'Rate changed' }, colleague);
+  const note = 'c' + noted.headers.get('X-RF-Comment-Seq');
+  const notices = async () => (await json('/api/status', alice)).noteNotices.filter(n => n.path === 'Workspace/Inbox/Jan');
   await ok('POST', `/api/instances/${id}/upload?name=note.txt`, { text: 'New input' }, colleague);
-  assert.equal((await attention()).length, 2);
+  assert.equal((await attention()).length, 1, 'only the upload uses the read cutoff');
   const detail = await json(`/api/instances/${id}`, colleague);
   assert.ok(detail.waiting.every(w => detail.log[w.seq - 1].op === 'comment'));
-  assert.ok((await json('/api/status', alice)).asks.filter(a => a.path === 'Workspace/Inbox/Jan').every(a => a.text === `${colleague} added a note to Inbox · Jan`));
-  await ok('POST', `/api/instances/${id}/comment`, { text: 'Thanks', quiet: true }, alice);
+  assert.ok((await json('/api/status', alice)).asks.some(a => a.path === 'Workspace/Inbox/Jan' && a.text === `${colleague} added a note to Inbox · Jan`));
+  assert.deepEqual((await notices()).map(n => n.id), [note]);
+  await ok('POST', '/api/messages', { instance: id, text: 'Thanks', quiet: true }, alice);
   assert.deepEqual(await attention(), []);
-  await ok('POST', `/api/instances/${id}/comment`, { text: 'One more thing' }, colleague);
-  assert.equal((await attention()).length, 1);
   await json(`/api/instances/${id}`, alice);
-  assert.deepEqual(await attention(), []);
-  await ok('POST', `/api/instances/${id}/comment`, { text: 'For a scheduled run' }, colleague);
   await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: true }, alice);
-  assert.equal((await attention()).length, 1, 'series authority events do not acknowledge instance work');
   await ok('PUT', `/api/wakes/${id}`, { at: '2099-01-01' }, alice);
-  assert.deepEqual(await attention(), []);
+  assert.deepEqual((await notices()).map(n => n.id), [note], 'viewing, unrelated acts and scheduling do not settle the note');
+  await ok('POST', '/api/messages', { instance: id, id: note, how: 'taken', text: 'Checked the rate' }, alice);
+  assert.deepEqual(await notices(), []);
   const historical = (await json('/api')).flatMap(w => w.series).find(s => s.id === 'history').instances.find(i => i.id === 'historical');
   assert.equal(historical.asks.some(a => a.started), false, 'a run has read the historical creation');
   await ok('POST', '/api/instances/historical/react', { on: 4, up: true }, colleague);
@@ -391,31 +393,25 @@ test('disable revokes even empty owned series and enabling never restores old co
   await ok('PUT', `/api/series/${sid}/credentials`, { logins: [], autonomous: false }, bob);
 });
 
-test('run-read notes disappear, quiet answers wait, and agent asks and notes keep their reply lifecycle', () => {
-  const source = readFileSync('src/server.ts', 'utf8'), messages = readFileSync('src/messages.ts', 'utf8');
+test('run-read legacy notes disappear, quiet answers wait, and agent asks and notes keep their reply lifecycle', async () => {
+  const { waitsOn } = await import('../src/messages.ts');
   const log = [
     { seq: 1, op: 'create', by: colleague },
     { seq: 2, op: 'comment', by: colleague },
     { seq: 3, op: 'upload', by: colleague },
-    { seq: 4, op: 'comment', by: 'agent', ask: 'question' },
-    { seq: 5, op: 'comment', by: 'agent', note: true },
+    { seq: 4, op: 'comment', by: 'agent', ask: 'question', thread: 'c4' },
+    { seq: 5, op: 'comment', by: 'agent', note: true, thread: 'c5' },
     { seq: 6, op: 'done', by: 'server', seen: 3 },
     { seq: 7, op: 'comment', by: colleague },
   ];
-  const inst = { id: 'i', seriesId: 's', doc: { status: 'open' }, copied: 0, log };
-  const code = messages.slice(messages.indexOf('function waitsOn('), messages.indexOf('\n// notes/:'))
-    + '\n' + source.slice(source.indexOf('function waits('), source.indexOf('\nfunction asked('));
-  const waits = runInNewContext(stripTypeScriptTypes(code) + '\nwaits', {
-    ownerOf: () => ({ by: alice }), seen: () => ({ at: {} }), active: new Map(),
-    isPerson: e => e.by.includes('@'), answered: () => false,
-  });
-  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  const waiting = () => waitsOn({ copied: 0, log }, alice, 0, 0).map(x => x.e.seq);
+  assert.deepEqual(waiting(), [4, 5, 7]);
   log.push({ seq: 8, op: 'authority', by: alice });
-  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  assert.deepEqual(waiting(), [4, 5, 7]);
   log.push({ seq: 9, op: 'wake', by: 'server' });
-  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5, 7]);
+  assert.deepEqual(waiting(), [4, 5, 7]);
   log.push({ seq: 10, op: 'react', by: alice });
-  assert.deepEqual(Array.from(waits(inst), x => x.e.seq), [4, 5]);
+  assert.deepEqual(waiting(), [4, 5]);
 });
 
 test('authority mutation persists epoch and revokes tokens synchronously before waiting for physical retirement', async () => {

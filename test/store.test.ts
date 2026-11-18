@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createInstance, instance, keep, openFile, openStore, safeName } from '../src/store.ts';
 import { commit, forget } from '../src/git.ts';
 import { addNote, notes } from '../src/messages.ts';
+import { messagesFile } from '../src/message-store.ts';
 import { act, initSystem } from '../src/system.ts';
 
 const alex = { email: 'alex', name: 'Alex' };
@@ -134,13 +135,14 @@ test("an ask from before questions and proposals waits on people until someone r
   assert.deepEqual(inst.log.at(-1)!.accepted, ['c2', `c${deeper.seq}`]);
   rmSync(tmp, { recursive: true, force: true });
 });
-test("a question waits until a person replies under it, a proposal until someone approves or rejects it, and either until the agent withdraws it", () => {
+test("a question waits until its recipient replies, a proposal until someone decides it, and either until the agent withdraws it", () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), sam = 'sam@example.com';
   openStore(tmp);
   const inst = createInstance('weekly', 'w1', 'alex');
-  const ask = (kind: string) => inst.append('agent', 'comment', { thread: `c${inst.log.length + 1}`, item: null, ref: null, text: 'Which?', ask: kind });
+  const ask = (kind: string) => inst.append('agent', 'comment', { thread: `c${inst.log.length + 1}`, item: null, ref: null, text: 'Which?', ask: kind, to: sam });
   const q1 = ask('question'), q2 = ask('question'), q3 = ask('question'), p1 = ask('proposal'), p2 = ask('proposal'), p3 = ask('proposal'), p4 = ask('proposal');
   inst.append('agent', 'comment', { thread: q1.thread, parent: q1.seq, text: 'Never mind.' });
+  inst.append('other@example.com', 'comment', { thread: q1.thread, parent: q1.seq, text: 'An opinion, not the answer.' });
   inst.append(sam, 'comment', { thread: q2.thread, parent: q2.seq, text: 'This one.' });
   inst.append('agent', 'withdraw', { thread: q3.thread, on: q3.seq, text: 'Found it.' });
   inst.append(sam, 'comment', { thread: p1.thread, parent: p1.seq, text: 'Go ahead.' });
@@ -230,7 +232,7 @@ test("closing commits the folder in the runner's name, files and folders a run m
 // A file size limit stands in for a full disk: writes past it fail part-way, as with ENOSPC.
 const cutShort = (script: string) => execFileSync('bash', ['-c', `trap '' XFSZ; ulimit -f 64; exec "${process.execPath}" --input-type=module -e "$0"`, script], { encoding: 'utf8' });
 
-test("an append a full disk cuts short is taken back, and a torn last line a kill left is dropped as the log is read, said in the server's log: the instance still loads", t => {
+test('a partial append rolls back, and a torn canonical line is dropped on restart without using the projection', t => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-'));
   openStore(tmp);
   const id = createInstance('monthly', 'torn', 'alex').id, log = join(tmp, 'instances', id, 'log.jsonl');
@@ -243,23 +245,27 @@ test("an append a full disk cuts short is taken back, and a torn last line a kil
   openStore(tmp);
   assert.equal(instance(id).log.length, Number(kept), 'what memory holds is what the log holds');
   assert.ok(readFileSync(log, 'utf8').endsWith('\n'));
-  appendFileSync(log, '{"seq":99,"by":"ser');
+  const raw = messagesFile(join(tmp, 'series', 'monthly'));
+  appendFileSync(raw, '{"id":99,"anchor":');
+  writeFileSync(log, 'damaged projection\n');
   const said = t.mock.method(console, 'error', () => {});
   openStore(tmp);
   assert.equal(instance(id).log.length, Number(kept));
-  assert.match(said.mock.calls[0].arguments[0], /log\.jsonl: dropped a torn last line, 19 bytes: \{"seq":99/);
+  assert.match(said.mock.calls[0].arguments[0], /messages\.jsonl: dropped a torn last line/);
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, Number(kept));
   assert.equal(instance(id).append('alex', 'comment', { text: 'After.' }).seq, Number(kept) + 1);
   openStore(tmp);
   assert.equal(instance(id).log.at(-1)!.text, 'After.');
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("a series' notes and the system's log drop a torn last line as they're read, and go on by seq", t => {
+test("a series' canonical notes and the system's log drop a torn last line and go on by seq", t => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-')), book = join(tmp, 'series', 's1'), system = join(tmp, '.rf', 'log.jsonl');
   initSystem(tmp);
   t.mock.method(console, 'error', () => {});
   addNote(book, 'alex', 'note', { text: 'First.' });
-  appendFileSync(join(book, 'notes', 'log.jsonl'), '{"seq":2,"by":"al');
+  appendFileSync(messagesFile(book), '{"id":2,"anch');
+  openStore(tmp);
   assert.deepEqual(notes(book).map(n => n.seq), [1]);
   assert.equal(addNote(book, 'alex', 'note', { text: 'Second.' }).seq, 2);
   assert.deepEqual(notes(book).map(n => n.text), ['First.', 'Second.']);
@@ -322,10 +328,12 @@ test('a createInstance cut short leaves no instance behind, and openStore remove
   writeFileSync(join(torn, 'instance.json'), JSON.stringify({ label: 'torn', series: 'monthly' }));
   writeFileSync(join(torn, 'log.jsonl'), '{"seq":1,"by":"al');
   const said = t.mock.method(console, 'error', () => {});
+  assert.throws(() => openStore(tmp), /ENOENT.*events\.jsonl/, 'published instances cannot fall back to old projections');
+  assert.equal(readFileSync(join(torn, 'log.jsonl'), 'utf8'), '{"seq":1,"by":"al');
+  rmSync(torn, { recursive: true });
   openStore(tmp);
   assert.equal(instance(hole.id).hole, true);
   assert.throws(() => instance('deadbeef0001'), /no instance/);
-  assert.throws(() => instance('deadbeef0002'), /no instance/);
   assert.ok(said.mock.calls.some(c => String(c.arguments[0]).includes('removed an uncreated instance')));
   rmSync(tmp, { recursive: true, force: true });
 });
