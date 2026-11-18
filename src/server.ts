@@ -1595,11 +1595,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     } else if (url.pathname === '/capabilities') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
-        const { cap, people } = await json(req);
+        const payload = await json(req), { cap } = payload;
         if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
-        if (!isPeople(people)) throw new HttpError(400, `${cap}: a list of emails and Entra group ids: ${JSON.stringify(people)}`);
-        const selected = people.map(p => p.toLowerCase());
-        writeJson('capabilities.json', { ...capabilities(), [cap]: selected });
+        const edits = ['people', 'add', 'remove'].filter(key => Object.hasOwn(payload, key)), [key] = edits, people = payload[key];
+        if (edits.length !== 1 || !isPeople(people)) throw new HttpError(400, `${cap}: give one list of emails and Entra group ids, in people, add or remove`);
+        const selected = people.map(p => p.toLowerCase()), all = capabilities(), before = all[cap] ?? [];
+        all[cap] = key === 'add' ? [...new Set([...before, ...selected])] : key === 'remove' ? before.filter(p => !selected.includes(p)) : selected;
+        writeJson('capabilities.json', all);
         if (cap === 'vpn') {
           await endUnpermittedSignIns();
           await dropUnpermittedVpns();

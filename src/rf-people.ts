@@ -158,11 +158,10 @@ rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top
                                   the sidebar and are the page's title and icon; --clear goes back to the plain look, and with
                                   no option it prints them
-rf can [CAP [EMAIL|GROUP,...] [--clear]]   what users may do beyond the rest, as admins may: publish, push skills;
-                                  create, make workspaces; and keepalive, keep their website logins alive for up to a
-                                  week as they sign in; a list grants CAP to those
-                                  emails and Entra group ids in place of whom it had, --clear to no one, and with neither it
-                                  prints whom each is granted to${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT [--servercert pin-sha256:HASH]   admins with vpn add a client VPN definition, which each\n                                  person signs in to on the page; --servercert pins the gateway key, as a refusal names it\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
+rf can [CAP [EMAIL|GROUP,... | --add EMAIL|GROUP,... | --remove EMAIL|GROUP,... | --clear]]
+                                  grants to emails and Entra group ids. A bare list replaces the grants; --add and --remove
+                                  change only the named grantees; --clear grants to no one. With no change it lists them.
+                                  publish, create and keepalive are implicit for admins; wake-check needs an explicit grant${vpn ? '\n                                  vpn, using client VPNs, needs an explicit grant even for admins' : ''}${vpn && admin ? '\nrf vpn add NAME fortinet HOST:PORT [--servercert pin-sha256:HASH]   admins with vpn add a client VPN definition, which each\n                                  person signs in to on the page; --servercert pins the gateway key, as a refusal names it\nrf vpn remove NAME               admins with vpn remove a client VPN definition' : ''}`;
   return (c && all.split(/\n(?=\S)/).map(e => e.trimEnd()).filter(e => e.split(/\s/)[1] === c).join('\n')) || all;
 };
 
@@ -1051,8 +1050,18 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
     console.log(flags.json ? JSON.stringify(brand) : text || logo ? `${text ?? 'no text'}, ${logo ? 'with a logo' : 'no logo'}` : 'no brand: the plain look');
   }
 } else if (cmd === 'can' && args.length <= 2) {
-  const [cap, list] = args, people = flags.clear ? [] : list?.split(',').map(p => p.trim()).filter(Boolean);
-  const all: Record<string, string[]> = await (await (people ? post('/capabilities', { cap, people }, 'PUT') : api('/capabilities'))).json();
+  const [cap, list] = args, edits = [list, flags.add, flags.remove, flags.clear].filter(x => x !== undefined);
+  if (edits.length > 1 || (edits.length && !cap)) {
+    console.error(usage(cmd));
+    process.exit(2);
+  }
+  const people = flags.clear ? [] : String(edits[0] ?? '').split(',').map(p => p.trim()).filter(Boolean);
+  if ((flags.add || flags.remove) && !people.length) {
+    console.error(usage(cmd));
+    process.exit(2);
+  }
+  const key = flags.add ? 'add' : flags.remove ? 'remove' : 'people';
+  const all: Record<string, string[]> = await (await (edits.length ? post('/capabilities', { cap, [key]: people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
   else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' || c === 'wake-check' ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {

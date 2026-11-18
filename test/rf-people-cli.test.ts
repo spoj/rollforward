@@ -554,6 +554,20 @@ test('A-R4-PEOPLE-07: rf new task rejects deterministic invalid or colliding lab
   assert.match(lsAfterCommentErr.stdout, /task-labels\/Untitled 2\/Untitled 2/);
 });
 
+test('rf can adds and removes grants without replacing other grantees', async () => {
+  const can = (...args: string[]) => runRf(admin.home, ['can', 'wake-check', ...args]);
+  assert.equal((await can('carol@demo.test')).code, 0);
+  const additions = await Promise.all([can('--add', 'BOB@demo.test'), can('--add', 'admin@demo.test')]);
+  assert.deepEqual(additions.map(r => r.code), [0, 0]);
+  const get = async () => JSON.parse((await can('--json')).stdout)['wake-check'].sort();
+  assert.deepEqual(await get(), ['admin@demo.test', 'bob@demo.test', 'carol@demo.test']);
+  assert.equal((await can('--remove', 'CAROL@demo.test')).code, 0);
+  assert.deepEqual(await get(), ['admin@demo.test', 'bob@demo.test']);
+  assert.equal((await can('--remove', 'bob@demo.test', '--add', 'carol@demo.test')).code, 2);
+  assert.deepEqual(await get(), ['admin@demo.test', 'bob@demo.test']);
+  assert.equal((await can('--clear')).code, 0);
+});
+
 
 
 
