@@ -173,7 +173,7 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
   for (const d of startupDirectory(seriesRoot)) {
     const dir = join(seriesRoot, d.name);
     if (!d.isDirectory() || !/^[\w-]+$/.test(d.name)) throw new Error(`${dir}: invalid series directory`);
-    if (!ids.has(d.name) && readdirSync(dir).length) ids.add(d.name);
+    if (!ids.has(d.name) && readdirSync(dir, { withFileTypes: true }).some(e => !(e.name === '.pylib' && e.isDirectory()))) ids.add(d.name);
   }
   for (const sid of ids) {
     const dir = join(seriesRoot, sid), b = readBook(dir, readMessages(dir, tails));

@@ -239,6 +239,17 @@ for (const [problem, diagnostic] of [
   });
 }
 
+test('startup ignores orphan series directories holding only .pylib while still rejecting other orphan data', t => {
+  const { root } = fixture(t);
+  const empty = seriesDir('orphan-empty'), pylibOnly = seriesDir('orphan-pylib'), bad = seriesDir('orphan-bad');
+  mkdirSync(empty, { recursive: true });
+  mkdirSync(join(pylibOnly, '.pylib'), { recursive: true });
+  openStore(root);
+  mkdirSync(bad, { recursive: true });
+  writeFileSync(join(bad, 'series.json'), '{}');
+  assert.throws(() => openStore(root), /ENOENT.*messages\.jsonl/);
+});
+
 test('historical attachment shapes are read-only compatibility, not new upload paths', t => {
   const { dir, inst } = fixture(t);
   for (const file of ['working/report.csv', 'upload/input.csv', '../prev/upload/input.csv', 'upload/attachments/subdir/file', { inst: inst.id, path: 'upload/attachments/file' }]) {
