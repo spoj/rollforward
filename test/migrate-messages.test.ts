@@ -293,15 +293,17 @@ test('legacy requests for or from a tombstone drop their bodies, but corrupt sch
   assert.deepEqual(snapshotFiles(copy), stale);
 });
 
-test('legacy pinned objects and local upload/working paths preserve entry bytes', t => {
+test('legacy pinned objects and local or sibling upload/working paths preserve entry bytes', t => {
   const { copy, b } = fixture(t);
   const path = join(copy, 'instances/b/log.jsonl');
   const e = { ...b[1], files: [
     { inst: 'a', path: 'working/report.csv', sha256: 'a'.repeat(64) }, { inst: 'gone', path: 'upload/old.csv' },
     'upload/input.csv', 'working/local.csv',
+    '../w1/upload/data process 2026-10-20.mp4', '../Candy update/working/2604 对税.xlsx',
   ] };
-  for (const invalid of ['working/../secret', 'upload/dir/', 'working/bad\\name', '/working/file', { inst: '../a', path: 'upload/a' },
-    { inst: 'a', path: 'working/a', sha256: 'broken' }, { inst: 'a', path: '../a' }, { inst: 'a', path: 'session/run' }]) {
+  for (const invalid of ['working/../secret', 'upload/dir/', 'working/bad\\name', '/working/file',
+    '../../other/upload/a.csv', '.././upload/a.csv', '../a/session/run', '../a/upload/../secret', '../upload/a.csv', '../a/upload/',
+    { inst: '../a', path: 'upload/a' }, { inst: 'a', path: 'working/a', sha256: 'broken' }, { inst: 'a', path: '../a' }, { inst: 'a', path: 'session/run' }]) {
     writeFileSync(path, jsonLines([b[0], { ...e, files: [invalid] }]));
     const before = snapshotFiles(copy);
     assert.throws(() => migrateMessageCopy(copy, true), /invalid message attachment/);
@@ -325,7 +327,7 @@ test('run prompts only present migrated pins whose bytes still match in the capt
   const legacy = { inst: 'a', path: 'working/process.md' }, local = 'upload/input.csv';
   mkdirSync(join(copy, 'instances/b/upload'));
   writeFileSync(join(copy, 'instances/b', local), 'input');
-  const files = [pin, legacy, local, { ...pin, path: 'working/missing.csv' }, { ...pin, inst: 'gone' }];
+  const files = [pin, legacy, local, '../A/upload/legacy.csv', { ...pin, path: 'working/missing.csv' }, { ...pin, inst: 'gone' }];
   writeFileSync(join(copy, 'instances/b/log.jsonl'), jsonLines([
     b[0], { ...b[1], by: 'agent', note: true, run: 1, runner: owner, text: 'Historical advice', files },
     { ...b[2], thread: 'c3', parent: undefined, files },

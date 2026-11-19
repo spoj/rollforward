@@ -241,7 +241,7 @@ for (const [problem, diagnostic] of [
 
 test('historical attachment shapes are read-only compatibility, not new upload paths', t => {
   const { dir, inst } = fixture(t);
-  for (const file of ['working/report.csv', 'upload/input.csv', 'upload/attachments/subdir/file', { inst: inst.id, path: 'upload/attachments/file' }]) {
+  for (const file of ['working/report.csv', 'upload/input.csv', '../prev/upload/input.csv', 'upload/attachments/subdir/file', { inst: inst.id, path: 'upload/attachments/file' }]) {
     assert.throws(() => inst.append(by, 'comment', { text: 'Bad attachment', files: [file] }), /invalid message attachment/);
   }
   assert.deepEqual(messagesAt(dir), []);
@@ -249,9 +249,9 @@ test('historical attachment shapes are read-only compatibility, not new upload p
   assert.deepEqual(inst.append(by, 'comment', { text: 'Good attachment', files }).files, files);
 });
 
-test('private agent files omit inaccessible and orphan pins without changing the public entry', () => {
+test('private agent files omit inaccessible, orphan and legacy sibling paths without changing the public entry', () => {
   const files = ['working/local.csv', { inst: 'within', path: 'upload/doc.csv' },
-    { inst: 'removed', path: 'working/removed.csv' }, { inst: 'outside', path: 'working/private.csv' }];
+    '../prev/upload/doc.csv', { inst: 'removed', path: 'working/removed.csv' }, { inst: 'outside', path: 'working/private.csv' }];
   const e = { seq: 2, at, by, op: 'comment', text: 'Legacy attachment refs', files };
   const before = JSON.stringify(e);
   const reach = new Set(['own/working/local.csv', 'within/upload/doc.csv']);

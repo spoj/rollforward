@@ -84,6 +84,11 @@ export function readEntries(path: string, tails?: TornTails): Entry[] {
 const pathIsSafe = (p: unknown): p is string => typeof p === 'string' && posix.normalize(p) === p
   && !p.startsWith('/') && !p.endsWith('/') && !p.split('/').includes('..') && !/[\0\\]/.test(p);
 const instancePath = (p: unknown): p is string => pathIsSafe(p) && /^(upload|working)\/.+/.test(p);
+const legacySiblingPath = (p: unknown): p is string => {
+  if (typeof p !== 'string' || !p.startsWith('../') || posix.normalize(p) !== p) return false;
+  const rest = p.slice(3), slash = rest.indexOf('/');
+  return slash > 0 && rest.slice(0, slash) !== '.' && pathIsSafe(rest.slice(0, slash)) && instancePath(rest.slice(slash + 1));
+};
 type InstanceFile = string | { inst: string; path: string; sha256?: string };
 
 function instanceFile(f: unknown): f is InstanceFile {
@@ -124,7 +129,7 @@ export function validateMessage(m: unknown, where: string, live = false): assert
     throw new Error(`${where}: invalid message text`);
   if (e.files !== undefined && (!Array.isArray(e.files) || e.files.some(f => !(
     note ? pathIsSafe(f) && /^files\/[^/]+$/.test(f)
-    : local && (live ? pathIsSafe(f) && /^upload\/attachments\/[^/]+$/.test(f) : instanceFile(f))))))
+    : local && (live ? pathIsSafe(f) && /^upload\/attachments\/[^/]+$/.test(f) : instanceFile(f) || legacySiblingPath(f))))))
     throw new Error(`${where}: invalid message attachment`);
 }
 
