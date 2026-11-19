@@ -184,3 +184,20 @@ test('old verbs only point to their replacement and help advertises the new comm
   assert.doesNotMatch(stdout, /^rf (note|say|ask|propose|withdraw)\b/m);
   assert.deepEqual(calls, []);
 });
+
+test('rf commit accepts an optional -m flag and rejects an empty message', async t => {
+  const { calls, run } = await fake(t, [[200, 'committed abc1234'], [200, 'committed def5678'], [200, 'committed 9012345']]);
+  assert.deepEqual(await run(['commit', 'Draft', 'pack']), { code: 0, stdout: 'committed abc1234\n', stderr: '' });
+  assert.deepEqual(await run(['commit', '-m', 'Draft pack built']), { code: 0, stdout: 'committed def5678\n', stderr: '' });
+  assert.deepEqual(await run(['commit', '-m', '-'], 'From stdin\n'), { code: 0, stdout: 'committed 9012345\n', stderr: '' });
+  for (const bad of [['commit'], ['commit', '-m'], ['commit', '-m', '  ']]) {
+    const r = await run(bad);
+    assert.equal(r.code, 1, JSON.stringify(bad));
+    assert.match(r.stderr, /^rf commit \[-m\] MESSAGE\|-/);
+  }
+  assert.deepEqual(calls, [
+    ['POST', `/api/instances/${instance}/commit`, { message: 'Draft pack' }],
+    ['POST', `/api/instances/${instance}/commit`, { message: 'Draft pack built' }],
+    ['POST', `/api/instances/${instance}/commit`, { message: 'From stdin\n' }],
+  ]);
+});

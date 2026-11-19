@@ -27,7 +27,7 @@ rf comment --mine [--json]
   settle: `rf settle ID taken|aside|withdrawn [--see cN] TEXT|-
   ID is cN in your instance or nN in its series. Say where you acted (taken), why you set it aside (aside), or why you
   withdraw a pending question or proposal (withdrawn). --see links a comment in your instance. - reads TEXT from stdin.`,
-  commit: `rf commit MESSAGE|-
+  commit: `rf commit [-m] MESSAGE|-
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and an approval and closing, in the name of whoever approved or closed.`,
@@ -198,7 +198,10 @@ else if (cmd === 'comment') res = await comment();
 else if (cmd === 'settle') res = await settle();
 else if (cmd === 'wake') res = await wake();
 else if (cmd === 'correct') res = await correct();
-else if (cmd === 'commit' && args.length) res = await send('POST', `${own}/commit`, JSON.stringify({ message: args.join(' ') === '-' ? readFileSync(0, 'utf8') : args.join(' ') }));
+else if (cmd === 'commit') {
+  const words = args[0] === '-m' ? args.slice(1) : args, message = words.join(' ') === '-' ? readFileSync(0, 'utf8') : words.join(' ');
+  res = message.trim() ? await send('POST', `${own}/commit`, JSON.stringify({ message })) : usage('commit');
+}
 else if (['expired', 'delivered'].includes(cmd) && args.length >= 1) res = await send('POST', `agent/${cmd}`, JSON.stringify({ args }));
 else if (cmd === 'help') res = { ok: true, text: REPLACEMENTS.get(args[0]) ?? HELP[args[0]] ?? USAGE };
 else res = usage(cmd);
