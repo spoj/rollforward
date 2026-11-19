@@ -19,9 +19,10 @@ export const scratch = process.env.RF_SCRATCH ?? join(tmpdir(), 'rollforward');
 // The server's user alone reaches its runs, whose folders are named by their tokens.
 mkdirSync(scratch, { recursive: true });
 chmodSync(scratch, 0o700);
-// Each run's own cgroup, where systemd runs the server; the container image sets this empty. Its CPU and disk weights are a fifth
-// of the default, so under load runs yield to the server and the rest of the host.
-export const SCOPE = `systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryHigh=4G -p MemoryMax=8G -p CPUQuota=${Number(process.env.RF_RUN_CPUS ?? 2) * 100}% -p CPUWeight=20 -p IOWeight=20 --`;
+// Each run's own cgroup, where systemd runs the server; the container image sets this empty. MemoryMax=4G with MemorySwapMax=0
+// (and no MemoryHigh) fails a runaway child fast with OOM instead of throttling it in reclaim or swap. Its CPU and disk weights
+// are a fifth of the default, so under load runs yield to the server and the rest of the host.
+export const SCOPE = `systemd-run --user --scope --quiet --collect --slice=rollforward-runs -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=${Number(process.env.RF_RUN_CPUS ?? 2) * 100}% -p CPUWeight=20 -p IOWeight=20 --`;
 // A run's processes and threads at most, a fork bomb's end, and its biggest file, which bounds a runaway write and a sparse file.
 export const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(process.env.RF_RUN_FILE_GB ?? 16);
 

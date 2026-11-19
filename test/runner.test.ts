@@ -16,7 +16,7 @@ Object.assign(process.env, {
   RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'the-real-key', EXA_API_KEY: 'the-real-key', RF_TEST_SECRET: 'server-only',
   RF_BROWSER_URL: `http://127.0.0.1:${(browsers.address() as { port: number }).port}`, RF_BROWSER_KEY: 'the-browser-key',
 });
-const { pi } = await import('../src/runner.ts');
+const { pi, SCOPE } = await import('../src/runner.ts');
 const { agentRoot } = await import('../src/agent.ts');
 const { serveSandboxes } = await import('../src/sandbox.ts');
 const { HttpError, openStore } = await import('../src/store.ts');
@@ -250,5 +250,11 @@ process.stdin.on('data', d => {
   assert.equal(res.errAborted, false);
   assert.equal(res.outAborted, true);
   assert.match(res.outErr, /stdout line/);
+});
+
+test('default run scope caps memory at 4G without swap or MemoryHigh throttling', () => {
+  assert.match(SCOPE, /-p MemoryMax=4G\b/);
+  assert.match(SCOPE, /-p MemorySwapMax=0\b/);
+  assert.doesNotMatch(SCOPE, /MemoryHigh/);
 });
 
