@@ -555,7 +555,8 @@ export class Instance {
     let doc: Doc;
     try { doc = JSON.parse(text); } catch (e) { throw new HttpError(400, `not JSON: ${(e as Error).message}`); }
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new HttpError(400, 'screen must be an object');
-    if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: the screen is at rev ${this.doc.rev} now, as each put and upload moves it on: run rf show and merge`);
+    if (doc.rev == null) throw new HttpError(400, 'missing rev: take it from rf show and merge');
+    if (doc.rev !== this.doc.rev) throw new HttpError(409, `stale rev ${doc.rev}: each put and upload moves the screen on: run rf show and merge`);
     if (doc.status !== undefined && doc.status !== this.doc.status) throw new HttpError(400, 'status is set by the server; leave it out or as it is');
     if (!Array.isArray(doc.items)) throw new HttpError(400, 'items must be an array');
     const errors: string[] = [], ids = new Set<string>();

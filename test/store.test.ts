@@ -338,3 +338,17 @@ test('a createInstance cut short leaves no instance behind, and openStore remove
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test('screen put distinguishes a missing rev from a stale rev without leaking the current rev', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-rev-'));
+  openStore(tmp);
+  try {
+    const inst = createInstance('weekly', 'w1', 'alex');
+    for (const body of [{ items: [] }, { rev: null, items: [] }]) {
+      assert.throws(() => inst.put(JSON.stringify(body), 1), { status: 400, message: 'missing rev: take it from rf show and merge' });
+    }
+    assert.throws(() => inst.put(JSON.stringify({ rev: 99, items: [] }), 1), { status: 409, message: 'stale rev 99: each put and upload moves the screen on: run rf show and merge' });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
