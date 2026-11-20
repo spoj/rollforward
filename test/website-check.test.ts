@@ -71,6 +71,7 @@ beforeEach(() => {
   delete process.env.RF_SIGNIN_S;
   writeJson('connections.json', { m365: { type: 'graph' }, db: { type: 'databricks' } });
   writeJson('internal.json', {});
+  writeJson('profiles.json', {});
 });
 const site = async (name: string, change: object = {}) => {
   await addSite(email, name, 'https://erp.company.test/sign-in?code=private');
@@ -129,6 +130,62 @@ test('one shared conversation searches with Exa and persists profile and rule/mo
   assert.deepEqual([checked.by, checked.evidence, checked.queries, checked.profile, checked.checks], ['server', evidence, [searches[0].body.query], profile, w.checks]);
   await checkWebsite(email, 'rules', evidence);
   assert.equal(models.length, 2, 'a successful profile and completed verdicts are cached');
+});
+
+test('only an exact starting host with passing host checks can skip the model', async () => {
+  const curated = { what: 'Curated business portal.', category: 'company', risk: 'medium' };
+  const record = { ...curated, by: email, at: '2026-11-20T00:00:00.000Z' };
+  const evidence = trace('erp.company.test', 'cdn.company.test');
+  const login = (requests: Trace) => saveLogin(email, { id: 'web:curated', kind: 'website', name: 'curated', since: '', offers: [], trace: requests });
+  await site('not-curated');
+  writeJson('profiles.json', { 'company.test': record, 'cdn.company.test': record });
+  assert.deepEqual(await checkWebsite(email, 'not-curated', evidence), profile, 'neither the parent nor a dependency matches');
+  assert.equal(models.length, 1);
+
+  await site('curated');
+  login(evidence);
+  writeJson('profiles.json', { 'erp.company.test': record, 'upload.vendor.test': record });
+  assert.deepEqual(await checkWebsite(email, 'curated'), { ...curated, flags: [], curated: true });
+  assert.equal(models.length, 1);
+  assert.deepEqual(blockQueries.at(-1), ['erp.company.test', 'cdn.company.test']);
+
+  const redirected = trace('erp.company.test', 'upload.vendor.test');
+  redirected.kinds = { 'upload.vendor.test': { dest: ['document'], from: ['erp.company.test'] } };
+  redirected.blocked = ['static.vendor.test'];
+  login(redirected);
+  mode = 'fail';
+  assert.deepEqual(await checkWebsite(email, 'curated'), { error: 'OpenRouter answered 500' });
+  mode = 'normal';
+  assert.deepEqual(await checkWebsite(email, 'curated'), profile);
+  assert.deepEqual(JSON.parse(models.at(-1).messages[1].content).unchecked, ['upload.vendor.test', 'static.vendor.test']);
+  assert.equal(websitesOf(email).curated.checks!['upload.vendor.test'].verdict, 'high');
+  assert.ok(!websitesOf(email).curated.hosts.includes('upload.vendor.test'));
+  assert.equal(models.length, 3);
+  assert.deepEqual(await checkWebsite(email, 'curated'), profile, 'a rejected redirect does not qualify for curation');
+  assert.deepEqual(await checkWebsite(email, 'curated', evidence), profile, 'another trace does not hide the saved redirect');
+});
+
+test('a curated starting host still goes through the browser blocklist', async () => {
+  await site('curated-blocked');
+  writeJson('profiles.json', { 'erp.company.test': { what: 'Curated portal.', category: 'company', risk: 'low' } });
+  blocked.add('erp.company.test');
+  assert.deepEqual(await checkWebsite(email, 'curated-blocked'), profile);
+  assert.equal(models.length, 1);
+  assert.equal(websitesOf(email)['curated-blocked'].checks!['erp.company.test'].verdict, 'refused');
+});
+
+test('only an Exa-backed check tells the model to search', async () => {
+  await site('with-exa');
+  await checkWebsite(email, 'with-exa');
+  assert.match(models[0].messages[0].content, /Search to establish/);
+  assert.equal(models[0].tools[0].function.name, 'search');
+
+  delete process.env.EXA_API_KEY;
+  await site('without-exa');
+  await checkWebsite(email, 'without-exa');
+  assert.doesNotMatch(models[1].messages[0].content, /search/i);
+  assert.equal(models[1].tools, undefined);
+  assert.equal(models[1].tool_choice, undefined);
 });
 
 test('a search naming an internal host never reaches Exa, and still counts towards the five', async () => {

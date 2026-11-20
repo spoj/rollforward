@@ -689,6 +689,40 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
   assert.deepEqual(await links('Acme Payroll'), [['larkfield'], []]);
 });
 
+test('admins list, set and remove exact-host website profiles, persisted and audited', async () => {
+  const path = '/profiles', file = join(root, '.rf', 'profiles.json'), host = 'e1.lfapps.net';
+  const profile = { host, what: '  Business portal  ', category: 'vendor', risk: 'medium' };
+  const put = (input: unknown, cookie = admin) => call('PUT', path, JSON.stringify(input), cookie);
+  const b = sessionOf(await login(bob))!;
+  assert.equal((await fetch(base + path, { redirect: 'manual' })).status, 401);
+  assert.equal((await call('GET', path, undefined, b)).status, 403);
+  assert.equal((await put(profile, b)).status, 403);
+  assert.equal((await put({ host, remove: true }, b)).status, 403);
+  assert.equal((await call('POST', path)).status, 405);
+  assert.deepEqual(await json(path), {});
+  for (const input of [null, {}, ...['*.lfapps.net', 'E1.lfapps.net', 'https://e1.lfapps.net', host + ':443', host + '/', host + '.', '-e1.lfapps.net', '__proto__'].map(host => ({ ...profile, host })),
+    { ...profile, category: 'other' }, { ...profile, risk: 'critical' }, { ...profile, what: ' ' }, { host, remove: 'true' }])
+    assert.equal((await put(input)).status, 400, JSON.stringify(input));
+  assert.equal(existsSync(file), false);
+
+  const saved = await put(profile);
+  assert.equal(saved.status, 200);
+  const all = await saved.json(), { at } = all[host];
+  assert.equal(new Date(at).toISOString(), at);
+  assert.deepEqual(all, { [host]: { what: 'Business portal', category: 'vendor', risk: 'medium', by: adminEmail, at } });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), all);
+  assert.deepEqual(await json(path), all);
+  assert.equal((await put({ ...profile, risk: 'high' })).status, 200);
+  assert.equal((await json(path))[host].risk, 'high');
+  const remove = { host, remove: true }, gone = await put(remove);
+  assert.equal(gone.status, 200);
+  assert.deepEqual(await gone.json(), {});
+  assert.deepEqual(await json(path), {});
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), {});
+  const acts = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(e => e.path === path);
+  assert.deepEqual(acts.map(e => [e.by, e.method, e.body]), [profile, { ...profile, risk: 'high' }, remove].map(body => [adminEmail, 'PUT', body]));
+});
+
 test('each sign-in replaces the groups, and a token without groups removes their workspaces and capabilities', async () => {
   const email = 'groups@demo.test', group = 'a3ec3016-372f-4fbb-804d-3267627d819f';
   const { id } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'Group access' }))).json();

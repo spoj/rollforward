@@ -19,7 +19,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, reap, removeHost, removeSite, revokeInternalHosts, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, removeHost, removeSite, revokeInternalHosts, risks, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -1800,6 +1800,23 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         }
       }
       send(res, 200, Object.fromEntries(CAPS.filter(c => c !== 'vpn' || can(me, c)).map(c => [c, capabilities()[c] ?? []])));
+    } else if (url.pathname === '/profiles') {
+      if (me.role !== 'admin') throw new HttpError(403, 'admins keep website profiles');
+      if (req.method === 'GET') return send(res, 200, profiles());
+      if (req.method !== 'PUT') throw new HttpError(405, 'GET or PUT');
+      const { host, what, category, risk, remove } = await json(req) ?? {};
+      if (typeof host !== 'string' || host.length > 253 || !host.includes('.') ||
+          !host.split('.').every(h => /^(?!-)[a-z0-9-]{1,63}(?<!-)$/.test(h)) || URL.parse(`https://${host}`)?.hostname !== host)
+        throw new HttpError(400, 'host: an exact lowercase hostname, such as portal.example.com');
+      const all = profiles();
+      if (remove === true) delete all[host];
+      else {
+        if (remove !== undefined || typeof what !== 'string' || !what.trim() || !categories.includes(category) || !risks.includes(risk))
+          throw new HttpError(400, `give remove: true, or what (a non-empty description), category (${categories.join(', ')}) and risk (${risks.join(', ')})`);
+        all[host] = { what: what.trim(), category, risk, by: me.email, at: new Date().toISOString() };
+      }
+      writeJson('profiles.json', all);
+      send(res, 200, all);
     } else if (url.pathname === '/egress') {
       // The hosts runs may reach beyond the sandbox's own list (sandbox.ts), which admins keep.
       if (req.method === 'PUT') {

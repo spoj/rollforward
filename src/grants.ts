@@ -2,7 +2,7 @@ import { HttpError, instancesBySeries, newId, type Entry, type Instance } from '
 import { act, canManage, canSee, isIn, readJson, tree, writeJson } from './system.ts';
 import { asPerson, users, type Me } from './auth.ts';
 import { logins, signOut } from './logins.ts';
-import { checkWebsite, isCheckingWebsite, websitesOf, type Profile } from './browsers.ts';
+import { checkWebsite, isCheckingWebsite, profiles, websitesOf, type Profile, type Website } from './browsers.ts';
 
 // Grants, in .rf/grants.json: a person's use of their login to their website in one workspace, (workspace, person, site). The person
 // asks, with a reason, once they've signed in to it; one of the workspace's owners, or an admin, approves or denies it, and may
@@ -47,7 +47,7 @@ export function visible(me: Me) {
   return shown.map(([id, g]) => {
     const website = websitesOf(g.person)[g.site], profile = website.profile ?? null;
     const personName = people[g.person]?.name ?? g.person, workspaceName = t.workspaces[g.workspace].name;
-    const why = reserved(g.site, website.profile, g.check), flags = [...profile && 'flags' in profile ? profile.flags : [],
+    const why = reserved(g.site, website, g.check), flags = [...profile && 'flags' in profile ? profile.flags : [],
       ...g.check && 'risk' in g.check ? g.check.flags : g.check ? [`The old check failed: ${g.check.error}`] : []];
     const u = used.get(`${g.workspace} ${g.person} ${g.site}`), use = g.state === 'approved' ? { runs: u?.runs.size ?? 0, wrote: u?.wrote.size ?? 0, last: u?.last ?? null } : null;
     const host = new URL(website.url).hostname;
@@ -59,17 +59,15 @@ export function visible(me: Me) {
   });
 }
 
-// Why only an admin may approve a website's use, if so: its profile is missing, failed, general-purpose or high risk, or an old
-// grant's check rated it high risk.
-function reserved(site: string, profile?: Profile, check?: Check) {
-  const why: string[] = [];
+// A model check for extra hosts cannot lower the admin's restrictions for the starting host.
+function reserved(site: string, { url, profile }: Website, check?: Check) {
+  const why: string[] = [], curated = profiles()[new URL(url).hostname], assessed = profile && !('error' in profile) ? profile : undefined;
   if (!profile) {
     if (!check || 'error' in check) why.push('the website profile is missing');
   } else if ('error' in profile) why.push(`the website profile could not be checked: ${profile.error}`);
-  else {
-    if (profile.category === 'general') why.push('this is a general-purpose website');
-    if (profile.risk === 'high') why.push(`the website profile rates ${site} high risk`);
-  }
+  if (assessed?.curated && !curated) why.push('the curated website profile was removed');
+  if (assessed?.category === 'general' || curated?.category === 'general') why.push('this is a general-purpose website');
+  if (assessed?.risk === 'high' || curated?.risk === 'high') why.push(`the website profile rates ${site} high risk`);
   if (check && 'risk' in check && check.risk === 'high') why.push(`the old check rates ${site} high risk`);
   return why;
 }
@@ -77,7 +75,7 @@ function reserved(site: string, profile?: Profile, check?: Check) {
 // Who approves a person's ask to use their website in a workspace: they do, as they ask, where they manage it and its check doesn't
 // reserve it for admins, or they are one; else an admin, where it does or no one owns it; else its owners, by name.
 function approver(person: Me, site: string, workspace: string) {
-  const t = tree(), w = t.workspaces[workspace], people = users(), why = reserved(site, websitesOf(person.email)[site].profile);
+  const t = tree(), w = t.workspaces[workspace], people = users(), why = reserved(site, websitesOf(person.email)[site]);
   if (canManage(person, w) && (!why.length || person.role === 'admin')) return { self: true, who: isIn(person, w.owners) ? `an owner of ${w.name}` : 'an admin' };
   const owners = new Intl.ListFormat('en').format(w.owners.map(p => people[p]?.name ?? t.groups?.[p] ?? p));
   return { self: false, who: why.length ? `an admin to approve it, as ${why.join('; ')}` : owners ? `${w.name}'s owners, ${owners}, to approve it` : 'an admin to approve it' };
@@ -103,8 +101,9 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   const had = () => Object.values(grants()).find(g => live(g) && g.workspace === workspace && g.person === me.email && g.site === site);
   const asked = (g: Grant) => new HttpError(409, `you've ${g.state === 'approved' ? 'been granted' : 'asked for'} ${site} in ${w.name} already`);
   if (had()) throw asked(had()!);
-  const existing = websitesOf(me.email)[site].profile;
-  const profile = isCheckingWebsite(me.email, site) || !existing || 'error' in existing ? await checkWebsite(me.email, site, login.trace) : existing, again = had();
+  const { url, profile: existing } = websitesOf(me.email)[site];
+  const profile = isCheckingWebsite(me.email, site) || !existing || 'error' in existing || existing.curated || profiles()[new URL(url).hostname]
+    ? await checkWebsite(me.email, site, login.trace) : existing, again = had();
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);

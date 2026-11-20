@@ -113,6 +113,34 @@ test('an errored profile is refreshed using the login trace, without sending the
   assert.equal(requests.length, 1);
 });
 
+test('curated profiles heal missing and failed assessments without OpenRouter and retain grant approval rules', async () => {
+  const host = 'portal.example.com', { what } = profile;
+  for (const [previous, category, risk, restricted] of [
+    [undefined, 'company', 'low', false], [{ error: 'Previous failure' }, 'vendor', 'medium', false],
+    [undefined, 'general', 'low', true], [undefined, 'company', 'high', true],
+  ] as const) {
+    changeWebsite(person.email, 'portal', { profile: previous });
+    writeJson('profiles.json', { [host]: { what, category, risk, by: admin.email, at: grant.at } });
+    const { id, profile: checked, state } = await ask(person, 'portal', 'w', grant.reason);
+    assert.deepEqual(checked, { what, category, risk, flags: [], curated: true });
+    assert.deepEqual(websitesOf(person.email).portal.profile, checked);
+    assert.equal(state, 'pending');
+    assert.equal(visible(owner)[0].adminOnly, restricted);
+    if (restricted) assert.throws(() => decide(owner, id, true, ''), { status: 403 });
+    decide(restricted ? admin : owner, id, true, '');
+    forgetGrants(person.email, 'portal');
+  }
+
+  const { id } = await ask(person, 'portal', 'w', grant.reason);
+  changeWebsite(person.email, 'portal', { profile });
+  assert.throws(() => decide(owner, id, true, ''), /rates portal high risk/, 'a model profile cannot downgrade the admin restriction');
+  changeWebsite(person.email, 'portal', { profile: { ...profile, curated: true } });
+  writeJson('profiles.json', {});
+  assert.throws(() => decide(owner, id, true, ''), /curated website profile was removed/);
+  const next = await ask(person, 'portal', 'other', grant.reason);
+  assert.ok('error' in next.profile, 'removal returns a new request to the ordinary checker');
+});
+
 test('general-purpose, high-risk, unchecked and legacy high-risk grants need admins; old checks display but never add hosts', () => {
   const old = { risk: 'high' as const, flags: ['Old concern'], summary: 'Legacy summary', hosts: ['extra.example.com'] };
   const cases: { profile: Profile | undefined; check?: Grant['check']; why: RegExp }[] = [
