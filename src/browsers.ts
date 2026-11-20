@@ -220,7 +220,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const viaChanged = change.via !== undefined && change.via !== (w.via ?? '');
   if (![undefined, true, false, 'true', 'false'].includes(x.writeback as never)) throw new HttpError(400, 'writeback: true or false');
   if (x.header !== undefined && x.header !== '' && !/^[a-z0-9-]+$/i.test(String(x.header))) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
-  if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://patriarch.patrina.net/PatriArchMVC/');
+  if (x.keepalive !== undefined && URL.parse(String(x.keepalive), w.url)?.host !== new URL(w.url).host) throw new HttpError(400, 'keepalive: a page of the website, by its address or path, such as https://portal.example.com/app/');
   if (x.every !== undefined && !(every && Number(every[1]) > 0)) throw new HttpError(400, 'every: minutes or hours, such as 10m or 1h');
   if (change.header === '') rmSync(join(personDir(person), `web:${name}.header.sealed`), { force: true });
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added, generation: viaChanged ? (w.generation ?? 0) + 1 : w.generation,
@@ -918,7 +918,7 @@ export class Browsers {
 
 // ---- Keeping logins alive: those admins grant keepalive may keep their login to a website alive as they sign in to it, until a
 // time at most 7 days ahead, so that runs that come while they're away, such as a weekday's at 8:00, find it signed in. Every
-// `every` minutes a person's website gives, 10 unless it gives one, such as 8 for PatriArch, which ends sessions left idle after 12,
+// `every` minutes a person's website gives, 10 unless it gives one, such as 8 for a site that ends sessions left idle after 12,
 // the server loads its keepalive page, or else its address, in their login's browser, while they keep a live login there alive and
 // may still use the website, unless a run of theirs holds that browser; where the website writes its state back, the turn holds it, so
 // a run that connects meanwhile waits. The browser reaches only that page's host, so a sign-in elsewhere, as single sign-on would

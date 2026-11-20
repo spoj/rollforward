@@ -690,7 +690,7 @@ test("each person sees the workspaces they're in, by email or Entra group; owner
 });
 
 test('admins list, set and remove exact-host website profiles, persisted and audited', async () => {
-  const path = '/profiles', file = join(root, '.rf', 'profiles.json'), host = 'e1.lfapps.net';
+  const path = '/profiles', file = join(root, '.rf', 'profiles.json'), host = 'portal.example.com';
   const profile = { host, what: '  Business portal  ', category: 'vendor', risk: 'medium' };
   const put = (input: unknown, cookie = admin) => call('PUT', path, JSON.stringify(input), cookie);
   const b = sessionOf(await login(bob))!;
@@ -700,7 +700,7 @@ test('admins list, set and remove exact-host website profiles, persisted and aud
   assert.equal((await put({ host, remove: true }, b)).status, 403);
   assert.equal((await call('POST', path)).status, 405);
   assert.deepEqual(await json(path), {});
-  for (const input of [null, {}, ...['*.lfapps.net', 'E1.lfapps.net', 'https://e1.lfapps.net', host + ':443', host + '/', host + '.', '-e1.lfapps.net', '__proto__'].map(host => ({ ...profile, host })),
+  for (const input of [null, {}, ...['*.example.com', 'PORTAL.example.com', 'https://portal.example.com', host + ':443', host + '/', host + '.', '-portal.example.com', '__proto__'].map(host => ({ ...profile, host })),
     { ...profile, category: 'other' }, { ...profile, risk: 'critical' }, { ...profile, what: ' ' }, { host, remove: 'true' }])
     assert.equal((await put(input)).status, 400, JSON.stringify(input));
   assert.equal(existsSync(file), false);

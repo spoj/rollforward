@@ -568,14 +568,14 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   const bob = 'bob@demo.test', carol = 'carol@demo.test', until = new Date(2026, 10, 9).toISOString(), at = (d: number, h: number, m = 0) => new Date(2026, 10, d, h, m);
   writeJson('users.json', { [alice]: { role: 'admin' }, [bob]: { role: 'user' }, [carol]: { role: 'user' } });
   writeJson('capabilities.json', { keepalive: [carol] });
-  sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
-  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in')));
-  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('bob, not granted keepalive')));
-  saveLogin(carol, website('pa', 'PatriArch'), JSON.stringify(state('carol, not keeping it alive')));
-  const turns = () => starts.filter(s => s.startsWith('https://pa.example.com/PatriArchMVC/ ')).length;
-  [starts.length, states.length, back, shown] = [0, 0, state('kept alive'), { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  sites({ pa: { url: 'https://pa.example.com/app/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/app/', every: 8 } });
+  saveLogin(alice, { ...website('pa', 'Portal'), keepalive: until }, JSON.stringify(state('signed in')));
+  saveLogin(bob, { ...website('pa', 'Portal'), keepalive: until }, JSON.stringify(state('bob, not granted keepalive')));
+  saveLogin(carol, website('pa', 'Portal'), JSON.stringify(state('carol, not keeping it alive')));
+  const turns = () => starts.filter(s => s.startsWith('https://pa.example.com/app/ ')).length;
+  [starts.length, states.length, back, shown] = [0, 0, state('kept alive'), { url: 'https://pa.example.com/app/Home', password: false }];
   await keepAlive(at(7, 3));
-  assert.deepEqual([starts, states], [['https://pa.example.com/PatriArchMVC/ pa.example.com'], [state('signed in')]], "the page's host alone, in alice's browser alone, on a Saturday at 3:00");
+  assert.deepEqual([starts, states], [['https://pa.example.com/app/ pa.example.com'], [state('signed in')]], "the page's host alone, in alice's browser alone, on a Saturday at 3:00");
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive'));
   await keepAlive(at(7, 3, 7));
   assert.equal(turns(), 1, 'every 8 minutes, as the website says');
@@ -587,12 +587,12 @@ test("a person granted keepalive who keeps their login to a website alive, as th
   await keepAlive(at(7, 3, 16));
   assert.equal(turns(), 4, "bob's alone: a run holds alice's browser there");
   await run.close();
-  [shown, back] = [{ url: 'https://pa.example.com/PatriArchMVC/Account/Login', password: true }, state('signed out')];
+  [shown, back] = [{ url: 'https://pa.example.com/app/Account/Login', password: true }, state('signed out')];
   await keepAlive(at(7, 3, 24));
   assert.equal(turns(), 6);
   assert.equal(logins(alice).find(l => l.id === 'web:pa')!.expired, true, 'a sign-in page: the login expired');
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive'), 'and its state stays');
-  saveLogin(bob, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('bob')));
+  saveLogin(bob, { ...website('pa', 'Portal'), keepalive: until }, JSON.stringify(state('bob')));
   await keepAlive(at(9, 0));
   assert.equal(turns(), 6, 'nothing for an expired login, nor once the time its person set has come');
   sites({ crm: { url: 'https://crm.example.com/#/home', hosts: ['cdn.example.com'], writeback: false } });
@@ -625,12 +625,12 @@ test("a sign-in whose website its person removed meanwhile, as from another tab,
 
 test("a person's keepalive turn that fails leaves the others' to go on, and a person disabled has none", async () => {
   const carol = 'carol@demo.test', until = new Date(2026, 10, 12).toISOString();
-  sites({ pa: { url: 'https://pa.example.com/PatriArchMVC/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/PatriArchMVC/', every: 8 } });
+  sites({ pa: { url: 'https://pa.example.com/app/Account/Login', hosts: ['sso.example.com'], writeback: true, keepalive: '/app/', every: 8 } });
   writeJson('users.json', { [carol]: { role: 'user' }, [alice]: { role: 'admin' } });
   writeJson('capabilities.json', { keepalive: [carol] });
-  saveLogin(carol, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('refused')));
-  saveLogin(alice, { ...website('pa', 'PatriArch'), keepalive: until }, JSON.stringify(state('signed in again')));
-  [states.length, back, shown] = [0, state('kept alive again'), { url: 'https://pa.example.com/PatriArchMVC/Home', password: false }];
+  saveLogin(carol, { ...website('pa', 'Portal'), keepalive: until }, JSON.stringify(state('refused')));
+  saveLogin(alice, { ...website('pa', 'Portal'), keepalive: until }, JSON.stringify(state('signed in again')));
+  [states.length, back, shown] = [0, state('kept alive again'), { url: 'https://pa.example.com/app/Home', password: false }];
   await keepAlive(new Date(2026, 10, 10, 9));
   assert.deepEqual(states, [state('refused'), state('signed in again')], "carol's first, refused");
   assert.deepEqual(JSON.parse(secret(alice, 'web:pa')), state('kept alive again'));
