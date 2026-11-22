@@ -74,6 +74,19 @@ test("a run's first message names its captured owner and selected offers, includ
   assert.doesNotMatch(message(oct, 3, [{ seq: 99, at: '', by: 'bob@demo.test', op: 'takeover', from: alice }], true), /captured execution person is .*<bob@demo\.test>/, 'historical takeover cannot change current owner');
 });
 
+test("a run's first message announces wake-check capability only when autonomous consent and the capability both hold", () => {
+  const lease = authority(oct);
+  assert.doesNotMatch(message(oct, 1, [], true, [], lease), /wake-check capability/);
+  writeJson('capabilities.json', { 'wake-check': [alice] });
+  try {
+    assert.match(message(oct, 1, [], true, [], lease), /Your series owner has the wake-check capability\./);
+    assert.doesNotMatch(message(oct, 1, [], false, [], lease), /wake-check capability/, 'first message only');
+    assert.doesNotMatch(message(oct, 1, [], true, [], { ...lease, autonomous: false }), /wake-check capability/, 'requires autonomous consent');
+  } finally {
+    writeJson('capabilities.json', {});
+  }
+});
+
 test("a service prefix is lent at its private address in the run's first message, with no SDK environment", async () => {
   const { setConnection, removeConnection, loginOf } = await import('../src/connections.ts');
   const { signOut } = await import('../src/logins.ts');
