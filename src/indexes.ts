@@ -23,6 +23,7 @@ import { scratch } from './runner.ts';
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 const WAKE_COPY_BYTES = 64 * 2 ** 20;
+const TRANSIENT_ERROR = /^(?:Microsoft Graph answered (?:500|502|504):|The operation was aborted due to timeout\b)/;
 const wakeRebuildAfter = new Map<string, number>();
 
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
@@ -98,12 +99,14 @@ const prefer = (offer: string) => (offer.startsWith('m365:mail:') ? 'outlook.bod
 const fresh = (link: string): Part => ({ link, delta: null, as_of: null, pages: 0, due: Date.now(), error: null, tries: 0 });
 
 // A failure keeps the page: throttling waits as Graph asks, an expired login waits for its person to sign in again, an expired
-// delta token (410) starts a new feed and crawls again, and anything else backs off, 1, 2, 4 and 8 minutes, then stops.
+// delta token (410) starts a new feed and crawls again, transient server errors and timeouts back off up to an hour and keep
+// trying, and anything else backs off, 1, 2, 4 and 8 minutes, then stops.
 function failed(p: Part, e: any, link: string) {
   p.error = e.message;
   if (e.login) p.due = null;
   else if (e.status === 429 || e.status === 503) p.due = Date.now() + e.after * 1000;
   else if (e.status === 410) Object.assign(p, fresh(link), { error: e.message });
+  else if (TRANSIENT_ERROR.test(e.message ?? '')) p.due = Date.now() + Math.min(REFRESH_MS, 60_000 * 2 ** Math.min(++p.tries - 1, 6));
   else p.due = ++p.tries < TRIES ? Date.now() + 60_000 * 2 ** (p.tries - 1) : null;
 }
 
@@ -354,7 +357,7 @@ export function prepare(inst: Instance, to: string, run?: number | Authority, si
   const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
   const selected = lease && login?.offers.filter(o => lease.logins.includes(o.id) && indexed(o));
   if (selected?.length && (!grant || selected.length !== included.length ||
-      included.some(({ c }) => c.wakeGrant !== grant || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta))))
+      included.some(({ c }) => c.wakeGrant !== grant || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta || p.due === null))))
     throw new Error('Microsoft 365 indexes are not ready for a wake check');
   if (lease && included.reduce((sum, { c }) => sum + c.length, 0) > WAKE_COPY_BYTES) throw new Error('wake check index copy limit exceeded');
   for (const { o, c } of included) {
@@ -428,6 +431,16 @@ export function startIndexing() {
   const runs = join(rfDir(), 'runs');
   for (const token of existsSync(runs) ? readdirSync(runs) : []) wipe(Buffer.from(join(scratch, 'runs', token)));
   rmSync(runs, { recursive: true, force: true });
+  // Parts stopped on transient Graph errors before transient retries were indefinite resume on startup while their offer is live.
+  for (const c of caches()) {
+    if (!offered(c.person, c.source)) continue;
+    let resumed = false;
+    for (const p of Object.values(c.parts)) if (p.due === null && p.error && TRANSIENT_ERROR.test(p.error)) {
+      Object.assign(p, { due: Date.now(), tries: 0 });
+      resumed = true;
+    }
+    if (resumed) save(c);
+  }
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
     while (!stopping) {

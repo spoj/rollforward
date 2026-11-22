@@ -208,7 +208,7 @@ test('M365 index revocation aborts a running check and opens Pi under the same w
   writeFileSync(join(person, 'index', `${cache}.json`), JSON.stringify({
     person: admin, source: mailbox.id, name: mailbox.name, gen: 1, length: 0, lines: 0, base: 0,
     wakeGrant: JSON.stringify([login.since, null]),
-    parts: { '': { link: delta, delta, as_of: login.since, due: null, pages: 1, tries: 0, error: null } },
+    parts: { '': { link: delta, delta, as_of: login.since, due: Date.now() + 3_600_000, pages: 1, tries: 0, error: null } },
   }));
   // The notification leaves the cache valid, so a final snapshot recheck alone cannot pass this test.
   const { sid, iid, check } = await fixture('Revoked mailbox index', `

@@ -34,6 +34,7 @@ const sees = (who: string, d: string, id: string) => !locked.has(who) && (who !=
 // for a crawl to be cut; `once` answers a person's next delta request with a status instead.
 const asked: { who: string; url: string; prefer?: string }[] = [], batches: number[] = [];
 let hold: { token: string; reached: () => void } | undefined;
+let slowBatch = false;
 const once = new Map<string, number>();
 
 function delta(who: string, d: string, scope: string | undefined, token: string | null): { status: number; headers?: Record<string, string>; body: any } {
@@ -85,6 +86,7 @@ before(async () => {
       if (path === '/.well-known/openid-configuration') return send(200, { issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` });
       if (path === '/token') {
         const r = new URLSearchParams(body).get('refresh_token');
+        if (r === 'bad-app') return send(401, { error: 'invalid_client', error_description: "AADSTS7000215: Invalid client secret provided for 'app'." });
         return r === 'expired' ? send(400, { error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' }) : send(200, { access_token: r, expires_in: 3600 });
       }
       if (path === '/v1.0/$batch') {
@@ -92,6 +94,11 @@ before(async () => {
         batches.push(requests.length);
         const responses = requests.map(r => ({ id: r.id, ...answer(who, r.url, r.headers?.prefer) }));
         if (hold && requests.some(r => r.url.includes(`token=${hold!.token}`))) return hold.reached();
+        if (slowBatch) {
+          slowBatch = false;
+          setTimeout(() => !res.destroyed && send(200, { responses }), 250).unref();
+          return;
+        }
         return send(200, { responses });
       }
       const a = answer(who, req.url!);
@@ -312,10 +319,10 @@ test('a 429 waits as Retry-After says, at the same page', async () => {
   assert.deepEqual(now(run(ALICE, [FOLDER])('Folder LFM, Reports').lines), ['f1', 'f4', 'pub', 'top']);
 });
 
-test("a person's next run resumes parts stopped after five failures, without waiting or restarting their page", async () => {
+test("a person's next run resumes parts stopped after five non-transient failures, without waiting or restarting their page", async () => {
   const link = cache(ALICE, FOLDER).parts[''].link;
   for (let i = 1; i <= 5; i++) {
-    once.set(ALICE, 500);
+    once.set(ALICE, 400);
     await due(ALICE, FOLDER);
     assert.equal(cache(ALICE, FOLDER).parts[''].tries, i);
     if (i === 1) {
@@ -336,6 +343,96 @@ test("a person's next run resumes parts stopped after five failures, without wai
   assert.equal(p.link, link);
   await work(() => cache(ALICE, FOLDER).parts[''].error === null && settled(ALICE, FOLDER)());
   assert.equal(asked.slice(from).find(q => q.who === ALICE)!.url, link.slice(`${base}/v1.0`.length));
+});
+
+test('transient Graph errors (500, 502, 504 and TimeoutError) retry indefinitely with backoff capped at one hour', async () => {
+  const link = cache(ALICE, FOLDER).parts[''].link;
+  const statuses = [500, 502, 504, 500, 502, 504, 500];
+  const expectedMin = [1, 2, 4, 8, 16, 32, 60];
+  for (let i = 0; i < statuses.length; i++) {
+    once.set(ALICE, statuses[i]);
+    const before = Date.now();
+    await due(ALICE, FOLDER);
+    const p = cache(ALICE, FOLDER).parts[''];
+    assert.equal(p.tries, i + 1);
+    assert.notEqual(p.due, null, `attempt ${i + 1} (${statuses[i]}) never stops`);
+    assert.ok(Math.abs(p.due - (before + expectedMin[i] * 60_000)) < 15_000, `attempt ${i + 1} backs off ~${expectedMin[i]}m`);
+    assert.equal(p.link, link);
+  }
+  const origTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = () => origTimeout(40);
+  try {
+    slowBatch = true;
+    const before = Date.now();
+    await due(ALICE, FOLDER);
+    const p = cache(ALICE, FOLDER).parts[''];
+    assert.equal(p.tries, 8);
+    assert.match(p.error, /^The operation was aborted due to timeout\b/);
+    assert.notEqual(p.due, null);
+    assert.ok(Math.abs(p.due - (before + 60 * 60_000)) < 15_000, 'TimeoutError backoff stays capped at 60m');
+  } finally {
+    AbortSignal.timeout = origTimeout;
+    slowBatch = false;
+  }
+  await due(ALICE, FOLDER);
+  assert.equal(cache(ALICE, FOLDER).parts[''].error, null);
+  assert.equal(cache(ALICE, FOLDER).parts[''].tries, 0);
+});
+
+test('a local token-renewal 502 (such as an expired app secret) stops after five tries instead of retrying forever', async () => {
+  const prevLogin = logins.logins(ALICE).find(l => l.id === 'm365')!;
+  offer(ALICE, prevLogin.offers, '2026-11-03T00:00:00Z', 'bad-app');
+  try {
+    for (let i = 1; i <= 5; i++) {
+      await due(ALICE, FOLDER);
+      assert.equal(cache(ALICE, FOLDER).parts[''].tries, i);
+      assert.match(cache(ALICE, FOLDER).parts[''].error, /^Microsoft did not renew the login:/);
+    }
+    assert.equal(cache(ALICE, FOLDER).parts[''].due, null, 'fifth failed renewal stops the part');
+    assert.equal(logins.logins(ALICE).find(l => l.id === 'm365')!.expired, undefined, 'app-secret failure does not expire the user login');
+  } finally {
+    offer(ALICE, prevLogin.offers, '2026-11-03T01:00:00Z', ALICE);
+    await due(ALICE, FOLDER);
+  }
+});
+
+test('startIndexing re-arms only live offered parts stopped on transient errors, leaving 404 and expired logins paused', async () => {
+  const stopWith = (who: string, offerId: string, error: string) => {
+    const c = cache(who, offerId);
+    Object.assign(c.parts[''], { due: null, tries: 5, error });
+    writeFileSync(`${at(who, offerId)}.json`, JSON.stringify(c));
+  };
+  // Live offered transient stops (500, 502, 504, timeout) all resume on startup and recover.
+  for (const err of [
+    'Microsoft Graph answered 500: null',
+    'Microsoft Graph answered 502: {"error":{"code":"UnknownError"}}',
+    'Microsoft Graph answered 504: {"error":{"code":"UnknownError"}}',
+    'The operation was aborted due to timeout',
+  ]) {
+    stopWith(ALICE, FOLDER, err);
+    await work(() => cache(ALICE, FOLDER).parts[''].error === null && settled(ALICE, FOLDER)());
+    assert.notEqual(cache(ALICE, FOLDER).parts[''].due, null);
+    assert.equal(cache(ALICE, FOLDER).parts[''].tries, 0);
+  }
+  // A non-transient 404 stop stays paused across startup.
+  stopWith(ALICE, FOLDER, 'Microsoft Graph answered 404: {"error":{"code":"ErrorItemNotFound"}}');
+  await work(() => true);
+  assert.equal(cache(ALICE, FOLDER).parts[''].due, null);
+  assert.equal(cache(ALICE, FOLDER).parts[''].tries, 5);
+  // Restore ALICE FOLDER to healthy.
+  await due(ALICE, FOLDER);
+  // An expired login with a transient stop stays paused across startup.
+  const danLogin = logins.logins(DAN).find(l => l.id === 'm365')!;
+  logins.saveLogin(DAN, { ...danLogin, expired: true }, DAN);
+  stopWith(DAN, BIG, 'Microsoft Graph answered 502: {"error":{"code":"UnknownError"}}');
+  try {
+    await work(() => true);
+    assert.equal(cache(DAN, BIG).parts[''].due, null);
+    assert.equal(cache(DAN, BIG).parts[''].tries, 5);
+  } finally {
+    logins.saveLogin(DAN, { ...danLogin, expired: undefined }, DAN);
+    await due(DAN, BIG);
+  }
 });
 
 test('an expired login pauses its cache until its person signs in again, then it goes on at the same page', async () => {
@@ -545,6 +642,24 @@ test('a delta deletion invalidates a wake snapshot even when the part is still o
   await due(who, source);
   assert.equal(snapshot?.valid(), false);
   assert.ok(!lines(feedOf(who, source)).some(l => l.id === 'm2'), 'the rebuilt raw feed does not carry the removed row');
+});
+
+test('wake copies reject a cache when any part is stopped even if it still has a deltaLink', async () => {
+  const who = CAROL, source = MAIL, login = logins.logins(who).find(l => l.id === 'm365')!;
+  const grant = JSON.stringify([login.generation, null]);
+  await work(() => cache(who, source).wakeGrant === grant && ['', 'fin'].every(p => cache(who, source).parts[p]?.delta) && settled(who, source)());
+  const c = cache(who, source), saved = c.parts.fin.due;
+  c.parts.fin.due = null;
+  c.parts.fin.error = 'Microsoft Graph answered 400: bad';
+  writeFileSync(`${at(who, source)}.json`, JSON.stringify(c));
+  try {
+    const inst = instance(who, [source]), lease = logins.authority(inst);
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'stopped-wake'), lease, new AbortController().signal), /indexes/);
+  } finally {
+    c.parts.fin.due = saved;
+    c.parts.fin.error = null;
+    writeFileSync(`${at(who, source)}.json`, JSON.stringify(c));
+  }
 });
 
 test('prepare shortens long offer names so index copies fit within 255-byte filenames, including duplicates', async () => {

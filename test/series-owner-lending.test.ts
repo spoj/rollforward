@@ -237,9 +237,11 @@ test('index copies select only leased sources and prune after transfer', async (
   const dir = join(root, '.rf/runs/token'), meta = join(personDir(ALICE), 'index', `${createHash('sha256').update(one).digest('hex').slice(0, 16)}.json`);
   const before = readFileSync(meta, 'utf8');
   const check = join(root, '.rf/runs/check');
+  await assert.rejects(async () => prepare(inst, check, captured, new AbortController().signal), /indexes/);
+  assert.equal(readFileSync(meta, 'utf8'), before, 'a rejected wake snapshot does not resume a stopped feed');
+  writeFileSync(meta, JSON.stringify({ ...JSON.parse(before), parts: { first: { due: Date.now() + 3_600_000, tries: 0, delta: 'caught-up' } } }));
   const snapshot = await prepare(inst, check, captured, new AbortController().signal);
   assert.equal(snapshot?.valid(), true);
-  assert.equal(readFileSync(meta, 'utf8'), before, 'a snapshot does not resume a stopped feed');
   const login = logins(ALICE).find(l => l.id === 'm365')!;
   saveLogin(ALICE, { ...login, since: 'new Microsoft sign-in' });
   assert.equal(snapshot?.valid(), false, 'a new sign-in with the same offers does not lend an old snapshot');
