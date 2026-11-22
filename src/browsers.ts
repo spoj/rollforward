@@ -976,6 +976,8 @@ const BROWSERS = `Each website ticked for this run is a browser signed in as you
 being your runner's name for it; another runner may name the same website otherwise. The run's connections share its browser, and
 where a website writes its state back, a run of your runner's that holds it makes another wait. A download is at
 $RF_BROWSERS/NAME/downloads/PATH, PATH its path on the browser's machine; a file you upload is at most 50 MB.
+When a page request is refused with "host not on the list", the server checks that host when the browser closes and may allow it;
+beyond that check, only an admin allows a host, not a user's login settings.
 $RF_BROWSERS/print reaches nothing, for rendering to PDF with page.pdf(): your connections share it, so give each page a tab of its
 own (new_page()).
 Ticked for this run:`;

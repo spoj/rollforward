@@ -512,7 +512,9 @@ test("$RF_BROWSERS/NAME is the run's browser there: its CDP discovery, its webso
   const inst = running('2027-07', ['web:crm'], 0), api = await serveAgent(inst), base = `${api.url}/browsers/${api.token}`;
   assert.deepEqual(await (await fetch(`${base}/crm/json/version/`)).json(), { webSocketDebuggerUrl: `${base.replace('http', 'ws')}/crm` });
   assert.match(await (await fetch(`${base}/erp/json/version`)).text(), /web:erp is outside this run's selected series credentials/);
-  assert.match(await (await fetch(base)).text(), /^Each website ticked for this run is a browser signed in as your runner[^]*\nTicked for this run:\n  crm  https:\/\/crm\.example\.com\n$/, '$RF_BROWSERS itself says what is there, and how it is used');
+  const help = await (await fetch(base)).text();
+  assert.match(help, /^Each website ticked for this run is a browser signed in as your runner[^]*\nTicked for this run:\n  crm  https:\/\/crm\.example\.com\n$/, '$RF_BROWSERS itself says what is there, and how it is used');
+  assert.match(help, /"host not on the list".*browser closes and may allow it;[^]*only an admin allows a host, not a user's login settings/);
   assert.equal((await fetch(`${base}/crm/downloads/tmp/x.csv`)).status, 409, 'no browser before a connection');
   const raw = connect(Number(new URL(api.url).port), '127.0.0.1');
   raw.end(`GET /browsers/${api.token}/crm HTTP/1.1\r\nhost: x\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n`);
