@@ -54,14 +54,15 @@ openStore(root, verifyOnly ? undefined : () => {
   cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
   for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 });
-const authorityEpochs = new Map(Object.keys(tree().series).map(sid => [sid, seriesSettings(seriesDir(sid)).epoch]));
+const authorityKey = (epoch: number, workspace: string) => `${epoch}:${workspace}`;
+const authorityBoundaries = new Map(Object.entries(tree().series).map(([sid, s]) => [sid, authorityKey(seriesSettings(seriesDir(sid)).epoch, s.workspace)]));
 changes.on('change', (id: string, actor?: string) => {
   if (id !== 'tree') return;
   const t = tree();
   for (const [sid, s] of Object.entries(t.series)) {
-    const settings = seriesSettings(seriesDir(sid)), previous = authorityEpochs.get(sid);
-    authorityEpochs.set(sid, settings.epoch);
-    if (previous !== undefined && previous !== settings.epoch) for (const i of instances(sid)) if (i.doc.status === 'open')
+    const settings = seriesSettings(seriesDir(sid)), next = authorityKey(settings.epoch, s.workspace), previous = authorityBoundaries.get(sid);
+    authorityBoundaries.set(sid, next);
+    if (previous !== undefined && previous !== next) for (const i of instances(sid)) if (i.doc.status === 'open')
       i.append(actor ?? 'server', 'authority', { owner: settings.owner, epoch: settings.epoch, workspace: s.workspace });
   }
 });
@@ -113,6 +114,24 @@ function freeName(t: Tree, ws: string, name: string): string {
 
 checkConfig();
 if (!verifyOnly) {
+  const retirementOps = new Set(['call', 'done', 'commit', 'browser', 'browsers', 'shot', 'egress', 'expired']);
+  for (const [sid, s] of Object.entries(tree().series)) {
+    const settings = seriesSettings(seriesDir(sid));
+    for (const i of instances(sid)) if (i.doc.status === 'open') {
+      const last = i.log.findLast(e => e.op === 'authority');
+      if (!last || last.epoch !== settings.epoch || last.workspace === s.workspace) continue;
+      const priorRuns = new Set(i.log.filter(e => e.seq < last.seq && e.op === 'run').map(e => e.run));
+      const tail = i.log.filter(e => e.seq > last.seq);
+      const safeTail = tail.every((e, idx) =>
+        (e.op === 'move' && idx === tail.length - 1)
+        || (retirementOps.has(e.op) && typeof e.run === 'number' && priorRuns.has(e.run))
+      );
+      if (last.owner === settings.owner && safeTail)
+        i.append('server', 'authority', { owner: settings.owner, epoch: settings.epoch, workspace: s.workspace });
+      else
+        console.error(`skipped authority workspace heal for ${sid}/${i.id}: owner mismatch or later entries after seq ${last.seq}`);
+    }
+  }
   openSkills(root);
   for (const dir of [tmpDir, previews]) {
     rmSync(dir, { recursive: true, force: true });
@@ -1144,7 +1163,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       delete a.proposal;
       a.moved = [...(a.moved ?? []).filter(m => fresh(m.at)), { name: p.series!, to: moved[0].to, at: new Date().toISOString() }];
     }
-    saveTree(t);
+    saveTree(t, by);
     await Promise.all(retirements);
     for (const m of moved) {
       if (t.series[m.id].single && instances(m.id)[0] && instances(m.id)[0].label !== t.series[m.id].name) renameInstance(instances(m.id)[0], t.series[m.id].name);

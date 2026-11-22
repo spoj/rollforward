@@ -47,9 +47,9 @@ export function replaceFile(path: string, data: string | Buffer, durable = false
   }
 }
 
-export function writeJson(name: string, data: unknown) {
+export function writeJson(name: string, data: unknown, actor?: string) {
   replaceFile(join(dir, name), JSON.stringify(data, null, 1));
-  changes.emit('change', 'tree');
+  changes.emit('change', 'tree', actor);
 }
 
 // An append a write error cut short, as on a full disk, is taken back. A last line a kill or a power cut left unended is dropped
@@ -133,8 +133,8 @@ export function tree(): Tree {
   return authorityTree(readJson('tree.json', { ...AUTHORITY_FORMAT, tree: { workspaces: {}, series: {} } }));
 }
 
-export function saveTree(t: Tree) {
-  writeJson('tree.json', { ...AUTHORITY_FORMAT, tree: t });
+export function saveTree(t: Tree, actor?: string) {
+  writeJson('tree.json', { ...AUTHORITY_FORMAT, tree: t }, actor);
 }
 
 export function forgetPerson(email: string) {

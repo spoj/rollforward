@@ -388,6 +388,8 @@ test('membership safeguard includes empty owned series; force withdraws consent 
 test('move preserves owner and clears workspace-bound authority', async () => {
   const sid = await series('Moving');
   const inst = await (await ok('POST', `/api/series/${sid}`, { label: 'Period', quiet: true })).json();
+  const closed = await (await ok('POST', `/api/series/${sid}`, { label: 'Closed', quiet: true })).json();
+  await ok('POST', `/api/instances/${closed.id}/close`, { quiet: true }, alice);
   await json(`/api/instances/${inst.id}`);
   await ok('PUT', '/api/proposals/ws', { kind: 'move', series: sid, to: 'dest' });
   await ok('POST', '/api/proposals/ws', { owners: [], members: [] });
@@ -398,6 +400,35 @@ test('move preserves owner and clears workspace-bound authority', async () => {
   assert.equal(settings(sid).consent.workspace, 'dest');
   const row = (await json('/api')).flatMap(w => w.series).flatMap(s => s.instances).find(i => i.id === inst.id);
   assert.equal(row.unread, false, 'the accepting manager does not receive unread news of their own authority withdrawal');
+  const openDetail = await json(`/api/instances/${inst.id}`);
+  assert.deepEqual(
+    openDetail.log.filter((e: { op: string }) => e.op === 'authority').map((e: { by: string; owner: string; epoch: number; workspace: string }) => ({ by: e.by, owner: e.owner, epoch: e.epoch, workspace: e.workspace })),
+    [{ by: admin, owner: alice, epoch: 2, workspace: 'ws' }, { by: admin, owner: alice, epoch: 2, workspace: 'dest' }],
+  );
+  const closedDetail = await json(`/api/instances/${closed.id}`);
+  assert.equal(closedDetail.log.some((e: { op: string }) => e.op === 'authority'), false, 'closed history is unchanged');
+});
+
+test('merge records destination workspace authority boundary on open instances without mutating closed history', async () => {
+  const { id: srcWs } = await (await ok('POST', '/api/workspaces', { name: 'Merge Source' })).json();
+  await ok('PUT', `/api/workspaces/${srcWs}`, { members: [alice] });
+  const { id: sid } = await (await ok('POST', '/api/series', { workspace: srcWs, name: 'Merged', logins: [], autonomous: false }, alice)).json();
+  const openInst = await (await ok('POST', `/api/series/${sid}`, { label: 'Open', quiet: true })).json();
+  const closedInst = await (await ok('POST', `/api/series/${sid}`, { label: 'Done', quiet: true })).json();
+  await ok('POST', `/api/instances/${closedInst.id}/close`, { quiet: true }, alice);
+  await json(`/api/instances/${openInst.id}`);
+  await ok('PUT', `/api/proposals/${srcWs}`, { kind: 'merge', to: 'dest' });
+  await ok('POST', `/api/proposals/${srcWs}`, { owners: [], members: [] });
+  assert.equal(settings(sid).epoch, 2);
+  const row = (await json('/api')).flatMap(w => w.series).flatMap(s => s.instances).find(i => i.id === openInst.id);
+  assert.equal(row.unread, false, 'the accepting manager sees no unread news before opening the instance');
+  const openDetail = await json(`/api/instances/${openInst.id}`);
+  assert.deepEqual(
+    openDetail.log.filter((e: { op: string }) => e.op === 'authority').map((e: { by: string; owner: string; epoch: number; workspace: string }) => ({ by: e.by, owner: e.owner, epoch: e.epoch, workspace: e.workspace })),
+    [{ by: admin, owner: alice, epoch: 2, workspace: srcWs }, { by: admin, owner: alice, epoch: 2, workspace: 'dest' }],
+  );
+  const closedDetail = await json(`/api/instances/${closedInst.id}`);
+  assert.equal(closedDetail.log.some((e: { op: string }) => e.op === 'authority'), false);
 });
 
 test('deletion retains the captured executor and initiator, not the current owner or original creator', async () => {
