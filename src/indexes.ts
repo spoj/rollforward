@@ -331,14 +331,18 @@ export function sources(inst: Instance, run?: number | Authority): { o: Offer; c
 // What a run's $RF_INDEX holds, in its README.md.
 const README = `# $RF_INDEX
 
-Your runner's own caches of the Microsoft 365 sources ticked for this run, two files for each that has one, by its name in your
-first message:
+Your series owner's own caches of the Microsoft 365 sources ticked for this run, two files for each that has one, by its name in
+your first message:
 
 - NAME.ndjson.zst: its delta feed from Graph, its crawl then its changes, in Graph's own JSON, one item per line, with no paths,
   which parent ids rebuild. A later line for an id replaces an earlier one, and a \`deleted\` facet or an \`@removed\` removes it,
-  a folder's with everything under it.
-- NAME.json: its \`source\`, the tick; \`as_of\`, when it was last caught up, null while it's still being built; and your runner's
-  \`deltaLinks\`, to follow as they are for what changed since.
+  a folder's with everything under it. Stream it line by line and keep only the fields you need: a compressed feed expands many
+  times in memory if loaded whole.
+- NAME.json: its \`source\`, the tick; \`as_of\`, when its oldest part last caught up (the server refreshes caches about hourly),
+  null while it's still being built; and your series owner's \`deltaLinks\`, to follow as they are for what changed since.
+
+In a wake check there is no network, so do not call Graph or follow \`deltaLinks\`: read these files as they are and compare
+\`as_of\` against the business window you need rather than wall-clock age.
 
 A ticked source with neither file has no cache yet.
 `;

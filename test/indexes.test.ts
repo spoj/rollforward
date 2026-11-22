@@ -672,4 +672,8 @@ test('prepare shortens long offer names so index copies fit within 255-byte file
   const files = readdirSync(to).filter(f => f !== 'README.md');
   assert.equal(files.length, 4);
   assert.ok(files.every(f => Buffer.byteLength(f) <= 255));
+  const readme = readFileSync(join(to, 'README.md'), 'utf8');
+  assert.match(readme, /about hourly/);
+  assert.match(readme, /Stream it line by line/);
+  assert.match(readme, /wake check.*no network/i);
 });
