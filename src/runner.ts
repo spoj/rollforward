@@ -2,7 +2,7 @@ import { RpcClient, type JsonAgentSessionEvent } from '@earendil-works/pi-coding
 import type { ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, watch, writeFileSync, type FSWatcher } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, posix, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,8 @@ export const TASKS = process.env.RF_RUN_TASKS ?? '2048', FILE_GB = Number(proces
 
 // A run's Pi: a prompt the agent takes, and steers it may get, until it settles, aborted or not; and its sandbox's bwrap, the
 // server's child, from which all the run's processes descend (monitor.ts).
-export type TurnEnd = { aborted: boolean; error?: string };
+export const OOM_ERROR = "out of memory: a process in the run's cgroup was OOM-killed";
+export type TurnEnd = { aborted: boolean; error?: string; oom?: boolean };
 export type Run = {
   turn(text: string): Promise<{ settled: Promise<TurnEnd> }>;
   steer(text: string): Promise<unknown>;
@@ -36,6 +37,30 @@ export type Run = {
   stop(): Promise<void>;
   pid?: number;
 };
+
+const liveScopes = new Set<string>();
+
+function isSystemdScope(launcher: string): boolean {
+  const parts = launcher.trim().split(/\s+/);
+  return (parts[0] === 'systemd-run' || parts[0].endsWith('/systemd-run')) && parts.includes('--scope');
+}
+
+function cgroupPath(pid: number | 'self'): string | undefined {
+  try {
+    const line = readFileSync(`/proc/${pid}/cgroup`, 'utf8').split('\n').find(l => l.startsWith('0::'));
+    const path = line?.slice(3).trim();
+    return path?.startsWith('/') ? path : undefined;
+  } catch { return undefined; }
+}
+
+function readOomKill(file: string): { count: number } | { enoent: boolean } {
+  try {
+    const m = /^oom_kill\s+(\d+)$/m.exec(readFileSync(file, 'utf8'));
+    return { count: m ? Number(m[1]) : 0 };
+  } catch (e) {
+    return { enoent: (e as NodeJS.ErrnoException).code === 'ENOENT' };
+  }
+}
 
 // The run's view of the data, which the server builds: its own instance at instance, such as /work/<workspace>/<series>/<label>,
 // its working folder, from the folder dir, its series' .pylib from pylib, in ro, every instance in its reach and the AGENTS.md of
@@ -172,10 +197,27 @@ async function ready(client: RpcClient, tries = 4): Promise<void> {
 
 export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: JsonAgentSessionEvent) => void }): Promise<Run> {
   if (!process.env.OPENROUTER_API_KEY) throw new Error('no model key: the server has no OPENROUTER_API_KEY');
-  const run = join(scratch, 'runs', o.token);
+  const run = join(scratch, 'runs', o.token), scopeCmd = process.env.RF_SANDBOX_SCOPE ?? SCOPE;
   let client: RpcClient | undefined;
+  let stoppingRun = false, stdoutOverflow = false, stdinFailed = false, exitEnd: TurnEnd | undefined;
+  let watchedScope: string | undefined, eventsFile: string | undefined, watcher: FSWatcher | undefined, sawOom = false;
+  const sampleOom = (): boolean => {
+    if (!eventsFile) return false;
+    const r = readOomKill(eventsFile);
+    if ('count' in r) {
+      if (r.count > 0) sawOom = true;
+      return false;
+    }
+    return r.enoent;
+  };
+  const closeWatcher = () => {
+    if (watcher) { watcher.close(); watcher = undefined; }
+    if (watchedScope) { liveScopes.delete(watchedScope); watchedScope = undefined; }
+  };
   // A run may leave folders it can't write in its home, or named in bytes that aren't UTF-8: wipe() removes them all.
   const stop = async () => {
+    stoppingRun = true;
+    closeWatcher();
     const child = (client as unknown as { process: ChildProcess | null } | undefined)?.process;
     const exited = !child?.pid || child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : once(child, 'exit');
     await client?.stop();
@@ -200,22 +242,62 @@ export async function startRun(o: Parameters<typeof pi>[0] & { onEvent: (e: Json
       const nl = d.lastIndexOf(10);
       lineBytes = nl < 0 ? lineBytes + d.length : d.length - nl - 1;
       if (lineBytes > 64 * 2 ** 20) {
+        stdoutOverflow = true;
+        closeWatcher();
         rpc.stopReadingStdout?.();
         rpc.stopReadingStdout = undefined;
         child.stdout!.destroy();
         child.kill('SIGKILL');
-        settle({ aborted: true, error: 'Pi stdout line exceeded 64 MB' });
+        exitEnd = { aborted: true, error: 'Pi stdout line exceeded 64 MB' };
+        settle(exitEnd);
       }
     });
-    child.once('exit', (code, signal) => settle({ aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${rpcClient.getStderr()}` }));
+    // Prepend so exitEnd latches before RpcClient rejects any in-flight prompt or steer promise.
+    child.stdin?.prependListener('error', () => { stdinFailed = true; });
+    const dead = () => Boolean(exitEnd || stdinFailed || child.stdin?.destroyed || !child.stdin?.writable);
+    child.prependOnceListener('exit', (code, signal) => {
+      const armed = !!eventsFile, enoent = sampleOom();
+      closeWatcher();
+      if (stdoutOverflow) return;
+      if (!stoppingRun && sawOom) {
+        exitEnd = { aborted: true, error: OOM_ERROR, oom: true };
+      } else {
+        if (!stoppingRun && armed && enoent) console.warn(`run ${o.n} of ${o.id} exited (${signal ?? code}) after its cgroup scope vanished`);
+        exitEnd = { aborted: true, error: `Pi exited with ${signal ? `signal ${signal}` : `code ${code}`}: ${rpcClient.getStderr()}` };
+      }
+      settle(exitEnd);
+    });
     await ready(rpcClient);
+    if (!exitEnd && !stoppingRun && isSystemdScope(scopeCmd) && child.pid) {
+      const selfScope = cgroupPath('self'), scope = cgroupPath(child.pid);
+      if (scope && selfScope && scope !== selfScope && scope.endsWith('.scope') && !scope.split('/').includes('..') && !liveScopes.has(scope)) {
+        const file = join('/sys/fs/cgroup', scope, 'memory.events');
+        try {
+          watcher = watch(file, { persistent: false }, () => { sampleOom(); });
+          watcher.on('error', () => {});
+          watchedScope = scope;
+          eventsFile = file;
+          liveScopes.add(scope);
+          sampleOom();
+        } catch {
+          closeWatcher();
+        }
+      }
+    }
     return {
       turn: async text => {
+        if (exitEnd) return { settled: Promise.resolve(exitEnd) };
         settled = new Promise<TurnEnd>(resolve => { settle = resolve; });
-        await rpcClient.prompt(text);
+        if (dead()) return { settled };
+        try {
+          await rpcClient.prompt(text);
+        } catch (e) {
+          if (dead()) return { settled };
+          throw e;
+        }
         return { settled };
       },
-      steer: text => rpcClient.steer(text),
+      steer: text => dead() ? Promise.resolve() : rpcClient.steer(text).catch(e => { if (!dead()) throw e; }),
       // Done once the turn settles: Pi says so before it answers the abort, and the run's end may stop it first.
       interrupt: async () => { void rpcClient.clearQueue().then(() => rpcClient.abort()).catch(() => {}); await settled; },
       stop,

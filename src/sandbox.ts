@@ -25,8 +25,11 @@ const ALLOWED = [
   'docs.python.org', '*.readthedocs.io', 'pandas.pydata.org', 'nodejs.org', 'developer.mozilla.org', 'learn.microsoft.com',
 ];
 
-export const allowed = (host: string) =>
-  [...ALLOWED, ...readJson<string[]>('egress.json', [])].some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));
+const matchesHost = (patterns: string[], host: string) =>
+  patterns.some(p => (p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p));
+
+export const builtInAllowed = (host: string) => matchesHost(ALLOWED, host);
+export const allowed = (host: string) => matchesHost([...ALLOWED, ...readJson<string[]>('egress.json', [])], host);
 
 // What the server knows of a run, by its token.
 export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };

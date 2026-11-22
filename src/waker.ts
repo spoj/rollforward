@@ -9,7 +9,8 @@ import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, can, users } from './auth.ts';
-import { websitesOf, type Browsers } from './browsers.ts';
+import { PRINT, websitesOf, type Browsers } from './browsers.ts';
+import { builtInAllowed } from './sandbox.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from './series.ts';
 import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
@@ -19,7 +20,7 @@ import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 import { runWakeCheck } from './wake-check.ts';
 import { binds, conversation, currentMessage, isPerson, openNotes, type Note } from './messages.ts';
-import { appendMessage, messagesAt, syncNotes, visibleInstanceFiles } from './message-store.ts';
+import { appendMessage, messagesAt, noteEntries, syncNotes, visibleInstanceFiles } from './message-store.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -39,10 +40,10 @@ const full = () => !!draining || active.size + checking.size >= MAX_RUNS || (MIN
 export const MAX_OPEN = 3;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
-export type Active = { inst: Instance; n: number; runner: string; authority: Authority; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Set<string>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
+export type Active = { inst: Instance; n: number; runner: string; authority: Authority; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Map<string, boolean>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
   // Its Pi as it starts, and once its Pi, sandbox and browsers have stopped, after it ends; whether its stop was asked for, from when
   // its token opens nothing (server.ts running()).
-  ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean; interrupted?: boolean };
+  ready?: Promise<Run>; ended?: Promise<unknown>; stopped?: boolean; interrupted?: boolean; cut?: string };
 export const active = new Map<string, Active>();
 export const byToken = new Map<string, Active>();
 const debounce = new Map<string, NodeJS.Timeout>();
@@ -67,6 +68,8 @@ function seenBefore(inst: Instance): number {
   return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
+const isOomRecovery = (e: Entry) => e.op === 'wake' && (e.recovery as { reason?: string } | undefined)?.reason === 'oom';
+
 // Human acts carry the owner/epoch at append time; autonomous entries carry an immutable lease.
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
@@ -81,7 +84,7 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const word = e.seq < line || e.note || e.informs || stale ? 'note'
     : e.op !== 'wake' ? binds(inst, e, owner, r)
     : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
-  const valid = e.op === 'wake' ? !stale && (!(e.recovery || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
+  const valid = e.op === 'wake' ? !stale && (!(e.recovery || (e.schedule && !e.immediate)) || isOomRecovery(e) || (!!lease?.autonomous && !!r.consent?.autonomous))
     : epoch === r.epoch && owner === r.by;
   return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule)) };
 }
@@ -99,7 +102,20 @@ export function pending(inst: Instance, seen: number, upto = inst.log.length): E
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt or a failed or cut run, which
 // waits for the next act; nothing while its series or its workspace is archived, which does no work until it's restored.
-const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
+// A quiet archive interrupt cancels only the pending OOM wake before it, preserving any later owner comment across restore.
+function stopped(inst: Instance): number {
+  let cut = 0;
+  for (let i = 0; i < inst.log.length; i++) {
+    const e = inst.log[i];
+    if (e.op === 'interrupt' && e.why === 'archived') {
+      const w = inst.log.slice(0, i).findLast(isOomRecovery);
+      if (w) cut = Math.max(cut, w.seq);
+    } else if (e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error))) {
+      cut = Math.max(cut, e.seq);
+    }
+  }
+  return cut;
+}
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), stopped(inst))).length > 0
   && !archived(tree(), inst.seriesId);
 
@@ -237,7 +253,7 @@ function flush(a: Active) {
   a.sent = entries.at(-1)?.seq ?? a.sent;
   a.noted = fresh.findLast(e => !e.anchor)?.seq ?? a.noted;
   a.texts.set(text, a.sent);
-  a.run!.steer(text).catch(err => finishRun(a, true, String(err)));
+  a.run!.steer(text).catch(err => !a.stopped && finishRun(a, true, String(err)));
 }
 
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
@@ -265,7 +281,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   if (full()) return void waiting.add(inst);
   // Confirmation may wait across transfers: recheck the captured epoch, not email equality.
   if (!sees(inst)) return bail(inst, tried);
-  const cause = pending(inst, seen).at(-1)!, lease = (cause.authority as Authority | undefined) ?? authority(inst);
+  const cause = pending(inst, Math.max(seen, stopped(inst))).at(-1)!, lease = (cause.authority as Authority | undefined) ?? authority(inst);
   if (!sameAuthority(inst, lease)) return bail(inst, tried);
   const runner = lease.owner, initiator = cause.op === 'wake' ? cause.initiator : cause.by;
   if (held(inst, 'entra', runner)) return bail(inst, tried);
@@ -276,6 +292,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     const left = !!(e as { left?: boolean }).left && ownerOf(inst).by === runner;
     if (stopping || inst.doc.status !== 'open' || (!left && !due(inst))) return bail(inst, tried);
     if (!left && !sameAuthority(inst, lease)) return bail(inst, tried);
+    if (!left && ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun || pending(inst, Math.max(seen, stopped(inst))).at(-1) !== cause)) return begin(inst, tried);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();
@@ -285,7 +302,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   }
   if (stopping || busy(series) || !due(inst)) return bail(inst, tried);
   if (!sameAuthority(inst, lease)) return bail(inst, tried);
-  if ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun) return begin(inst, tried);
+  if ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun || pending(inst, Math.max(seen, stopped(inst))).at(-1) !== cause) return begin(inst, tried);
   if (full()) return void waiting.add(inst);
   // Losing workspace visibility never chooses a replacement owner.
   if (!sees(inst)) return bail(inst, tried);
@@ -299,7 +316,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   const live = skills().map(s => ({ ...s, dir: realpathSync(s.dir) }));
   const a: Active = {
     inst, n, runner: lease.owner, authority: lease, token: randomUUID(), view: work, workspace: lease.workspace,
-    sent: entries.at(-1)!.seq, noted: left.findLast(e => !e.anchor)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Set(), links: new Map(),
+    sent: entries.at(-1)!.seq, noted: left.findLast(e => !e.anchor)?.seq ?? 0, seen, delivered: seen, texts: new Map([[text, entries.at(-1)!.seq]]), done: false, cost: 0, estimated: false, hosts: new Map(), links: new Map(),
     process: processOf(inst), thread: pending(inst, seen)[0]?.thread as string | undefined,
   };
   active.set(series, a);
@@ -333,7 +350,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
   }
   flush(a);
   a.timer = setTimeout(() => { finishRun(a, true, 'time limit').catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e)); }, LIMIT_MS);
-  settled.then(({ aborted, error }) => finishRun(a, aborted, error ?? a.failed)).catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e));
+  settled.then(({ aborted, error, oom }) => finishRun(a, aborted, error ?? a.failed, oom)).catch(e => console.error(`run ${n} of ${inst.id} failed to end`, e));
 }
 
 // What its Pi says as a run goes, the run now its token's.
@@ -381,24 +398,92 @@ function revokeRun(a: Active) {
   abortCalls(a);
 }
 
-async function finishRun(a: Active, aborted: boolean, error?: string) {
-  if (a.done || stopping) return;
-  revokeRun(a);
-  if (hasCalls(a)) await drainCalls(a);
-  finish(a, aborted, error);
+function canRetryOom(a: Active, priorSeen: number): boolean {
+  if (!a.run || a.interrupted || a.cut || a.inst.doc.status !== 'open' || a.inst.closing) return false;
+  const t = tree();
+  if (archived(t, a.inst.seriesId) || !sees(a.inst, t) || !sameAuthority(a.inst, a.authority)) return false;
+  if (a.browsers?.websites()) return false;
+  const log = a.inst.log, runIdx = log.findLastIndex(e => e.op === 'run' && e.run === a.n);
+  if (runIdx < 0) return false;
+  if (log.slice(runIdx + 1).some(e => e.op === 'interrupt' || e.op === 'authority')) return false;
+  if (held(a.inst, 'entra', a.runner) || log.some(e => e.op === 'expired' && typeof e.login === 'string' && held(a.inst, e.login, a.runner, e.login !== 'openrouter'))) return false;
+  const authSeq = log.slice(0, runIdx).findLast(e => e.op === 'authority')?.seq ?? 0;
+  const startFloor = Math.max(a.inst.copied, authSeq);
+  const runInfo: { run: number; seq: number; idx: number; upto: number; done?: Entry; doneIdx: number }[] = [];
+  const byRun = new Map<number, (typeof runInfo)[number]>();
+  for (let i = startFloor; i < runIdx; i++) {
+    const e = log[i];
+    if (e.op === 'run') {
+      const info = { run: e.run as number, seq: e.seq, idx: i, upto: typeof e.upto === 'number' ? e.upto : e.seq, done: undefined as Entry | undefined, doneIdx: -1 };
+      runInfo.push(info);
+      byRun.set(info.run, info);
+    } else if (e.op === 'done') {
+      const info = byRun.get(e.run as number);
+      if (info && !info.done) { info.done = e; info.doneIdx = i; }
+    }
+  }
+  let chainStart = startFloor;
+  for (let k = runInfo.length - 1; k >= 0; k--) {
+    const { done: d, doneIdx } = runInfo[k];
+    if (!d) continue;
+    if (!d.aborted && !d.error) { chainStart = d.seq; break; }
+    const nextRunIdx = k + 1 < runInfo.length ? runInfo[k + 1].idx : runIdx;
+    const between = log.slice(doneIdx + 1, nextRunIdx);
+    const interrupted = between.findLast(e => e.op === 'interrupt');
+    if (interrupted) { chainStart = interrupted.seq; break; }
+    if (!between.some(w => w.op === 'wake' && !!w.recovery && !w.quiet)) { chainStart = d.seq; break; }
+  }
+  if (log.slice(chainStart).some(isOomRecovery)) return false;
+  const chainRuns = new Set<number>([a.n]);
+  for (const info of runInfo) {
+    if (info.seq > chainStart) { chainRuns.add(info.run); continue; }
+    if (info.done && !info.done.aborted && !info.done.error) continue;
+    const endIdx = info.doneIdx >= 0 ? info.doneIdx : runIdx;
+    if (info.upto > priorSeen || log.slice(info.idx + 1, endIdx).some(e => e.seq > priorSeen && (e.by !== 'agent' || !!e.note) && told(e))) chainRuns.add(info.run);
+  }
+  // Effects match by run number rather than seq because cross-instance said/corrected carry the target's seq.
+  if (log.some(e => (e.op === 'expired' && e.run === a.n) || (chainRuns.has(e.run as number) && (
+    ['send', 'delivered', 'said', 'corrected', 'browsers'].includes(e.op)
+    || (e.op === 'browser' && e.site !== PRINT)
+    || (e.op === 'egress' && e.allowed === true && !builtInAllowed(e.host as string))
+  )))) return false;
+  if (Object.keys(t.series).some(sid => noteEntries(seriesDir(sid)).some(e =>
+    e.by === 'agent' && (e.see as { inst?: string } | undefined)?.inst === a.inst.id && chainRuns.has(e.run as number)))) return false;
+  return true;
 }
 
-function finish(a: Active, aborted: boolean, error?: string): Entry | undefined {
+async function finishRun(a: Active, aborted: boolean, error?: string, oom = false) {
+  if (a.done || stopping) return;
+  const mayRetry = oom && !a.stopped && !a.interrupted && !a.cut;
+  revokeRun(a);
+  if (hasCalls(a)) await drainCalls(a);
+  finish(a, aborted, error, oom, mayRetry);
+}
+
+function finish(a: Active, aborted: boolean, error?: string, oom = false, allowOomRetry = oom): Entry | undefined {
   if (a.done || stopping) return;
   aborted ||= !!a.interrupted;
   a.done = true;
   revokeRun(a);
   const series = a.inst.seriesId;
   active.delete(series);
+  const priorSeen = seenBefore(a.inst);
+  const retryOom = allowOomRetry && canRetryOom(a, priorSeen);
   const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
-  const done = a.inst.append('server', 'done', { run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated, ...(error && { error }), ...(added && { rules: added, thread: a.thread }) });
+  const done = a.inst.append('server', 'done', {
+    run: a.n, aborted, seen: retryOom ? priorSeen : a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated,
+    ...(error && { error }), ...(oom && { oom: true }), ...(added && { rules: added, thread: a.thread }),
+  });
+  if (retryOom) {
+    const runEntry = a.inst.log.findLast(e => e.op === 'run' && e.run === a.n);
+    a.inst.append('server', 'wake', {
+      reason: `Run ${a.n} hit the memory limit and was killed by the kernel; retry with lower peak memory (stream or chunk large files/sheets instead of loading them whole).`,
+      from: 'server', cause: done.seq, initiator: (runEntry?.initiator as string | undefined) ?? a.runner,
+      authority: a.authority, recovery: { run: a.n, reason: 'oom' },
+    });
+  }
   // The run's changes are one commit, with the names.tsv they were written under, which the instance's next run and its other
   // commits wait for, once its browsers and sandbox have stopped.
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
@@ -467,6 +552,7 @@ export async function retireSeries(seriesId: string) {
 
 function cut(a: Active, why: string) {
   if (a.done || stopping) return;
+  a.cut ??= why;
   revokeRun(a);
   const after = () => {
     const done = finish(a, true, why);
@@ -495,7 +581,10 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   const runs = [...active.values()].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id));
   const checks = [...checking.values()].filter(c => c.inst === inst || c.view && Object.values(c.view.names).includes(inst.id));
   for (const c of checks) c.cancel.abort();
-  for (const a of runs) revokeRun(a);
+  for (const a of runs) {
+    if (a.inst !== inst) a.cut ??= CUT.gone;
+    revokeRun(a);
+  }
   for (const a of runs) if (a.inst === inst && hasCalls(a)) await drainCalls(a);
   for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
   const w = wakes();
@@ -722,6 +811,20 @@ export function cancelWakes(targets: string[]) {
   for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) delete w.pending[id];
   for (const [id, r] of Object.entries(w.requests)) if ([r.series, r.target].some(x => targets.includes(x!))) delete w.requests[id];
   saveWakes(w);
+}
+
+// Cancel pending OOM retries when archiving so restoring does not revive them, while leaving later owner comments intact.
+export function cancelPendingOom(insts: Instance[], by: string) {
+  for (const inst of insts) {
+    if (inst.hole || inst.doc.status !== 'open') continue;
+    const p = pending(inst, Math.max(seenBefore(inst), stopped(inst)));
+    if (p.some(isOomRecovery)) {
+      clearTimeout(debounce.get(inst.id));
+      debounce.delete(inst.id);
+      waiting.delete(inst);
+      inst.append(by, 'interrupt', { quiet: true, why: 'archived' });
+    }
+  }
 }
 
 export function dropRequest(id: string, by: string, how: 'started' | 'dismissed'): Request {

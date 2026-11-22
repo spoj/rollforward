@@ -127,7 +127,7 @@ rf indexes [--json]               each index of a source you index, all for admi
 rf runs [PATH] [--since DATE] [--failed] [--running] [--long MIN] [-d SECONDS] [--json]
                                   a table, a row per run: start, path, run, outcome, time, cost, what started it, and any error;
                                   the outcome is done, interrupted by a person, cut, by a restart or a change that broke its
-                                  lease, running, or failed, for credits, policy, time limit or other
+                                  lease, running, or failed, for credits, policy, time limit, memory or other
 rf costs [PATH] [--since DATE] [--by workspace|series|person|day|outcome] [--daily] [--json]   totals, runs and cost per run,
                                   plus server calls and OpenRouter key usage for admins; --daily lists each day by workspace,
                                   person, run and server; runs leave out those that were cut, as the next run carries each on
@@ -661,7 +661,13 @@ else if (cmd === 'comment' && args.length < 2) {
       // The run that saw the comment, and what it said from then on: a run ending as it came may not have.
       await new Promise(r => setTimeout(r, 5000));
       const { doc, log } = await get(at);
-      const done = log.find(e => e.op === 'done' && (e.seen >= seq || (e.seq > seq && (e.error || e.aborted) && !log.some(w => w.seq > e.seq && ((w.op === 'wake' && w.cause === e.seq) || w.op === 'run')))));
+      const done = log.find(e => {
+        if (e.op !== 'done') return false;
+        if (e.seen >= seq) return true;
+        if (!(e.seq > seq && (e.error || e.aborted))) return false;
+        const cut = log.find(x => x.seq > e.seq && (x.op === 'interrupt' || x.op === 'authority'))?.seq ?? Infinity;
+        return !log.some(w => w.seq > e.seq && ((w.op === 'wake' && w.cause === e.seq && cut === Infinity) || (w.op === 'run' && w.seq < cut)));
+      });
       if (done) {
         const from = Math.max(seq, log.find(e => e.op === 'run' && e.run === done.run)?.seq ?? 0);
         for (const e of log.filter(e => e.seq > from && e.seq < done.seq && e.op === 'comment' && e.by === 'agent' && !e.see)) console.log(`${e.ask === 'proposal' ? 'Proposes' : e.ask ? 'Asks' : 'Says'} in ${e.thread}:\n${e.text}\n`);

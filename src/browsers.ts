@@ -824,6 +824,11 @@ export class Browsers {
     }));
   }
 
+  // Whether this run opened or started opening any website browser (anything other than the offline print browser).
+  websites(): boolean {
+    return [...this.opens.keys(), ...this.opening.keys(), ...this.bySite.keys()].some(site => site !== PRINT);
+  }
+
   // The run's open browsers on websites, which whoever sees its instance may watch, by website, with their sessions.
   watchable(): Map<string, string> {
     return new Map([...this.bySite].filter(([site]) => site !== PRINT).map(([site, b]) => [site, b.id]));

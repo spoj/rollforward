@@ -30,7 +30,7 @@ import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './serie
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -398,7 +398,7 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       }
       return {
         run: r.run as number, at: r.at, outcome,
-        failure: outcome !== 'failed' ? null : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
+        failure: outcome !== 'failed' ? null : d?.oom ? 'memory' : /\b402\b|credits/i.test(error!) ? 'credits' : /\b403\b|terms of service|usage polic|flagged/i.test(error!) ? 'policy' : error === 'time limit' ? 'time limit' : 'other',
         seconds: Math.round(((end ? Date.parse(end.at) : Date.now()) - Date.parse(r.at)) / 1000),
         cost: d ? d.cost as number : going ? +a.cost.toFixed(6) : 0,
         ...(estimated && { estimated: true as const }),
@@ -1090,7 +1090,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && its.flatMap(instances).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, closing.seriesId)}/${closing.label} is closing: archive ${w.name} once it finishes`);
     if (change.archived !== undefined) w.archived = !!change.archived;
-    if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
+    if (change.archived) {
+      cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
+      cancelPendingOom(its.flatMap(instances), by);
+    }
     if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
     pruneGrants();
@@ -1290,7 +1293,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && instances(id).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, id)}/${closing.label} is closing: archive ${s.name} once it finishes`);
     if (change.archived !== undefined) s.archived = !!change.archived;
-    if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
+    if (change.archived) {
+      cancelWakes([id, ...labels(id).map(l => l.id)]);
+      cancelPendingOom(instances(id), by);
+    }
     saveTree(t);
     if (change.archived === false) for (const i of instances(id)) kick(i);
     return send(res, 200, 'ok');
@@ -1741,8 +1747,10 @@ if (!verifyOnly) serveSandboxes({
   run: token => running(token) ? {
     egress(host, allowed) {
       const a = running(token);
-      if (!a || a.hosts.has(host)) return;
-      a.hosts.add(host);
+      if (!a) return;
+      const prev = a.hosts.get(host);
+      if (prev === true || prev === allowed) return;
+      a.hosts.set(host, allowed);
       a.inst.append('server', 'egress', { run: a.n, host, allowed });
     },
     browsers: () => { const a = running(token)!; return (a.browsers ??= new Browsers(a.inst, a.n)); },
