@@ -21,6 +21,8 @@ const today = new Date().toISOString().slice(0, 10);
 let entra: Awaited<ReturnType<typeof idp>>, proc: ChildProcess, browser: Browser, base = '';
 let adminCookie = '', bobCookie = '', adminHome = '', bobHome = '';
 let keyQueries = 0;
+let completionStatus = 200;
+let completionErrorBody: Record<string, unknown> | undefined;
 let keyPayload: Record<string, unknown> = {
   label: 'sk-or-v1-leaked...999',
   usage: 140.25,
@@ -67,6 +69,10 @@ const providers = createHttpServer(async (req, res) => {
   }
   if (url.pathname === '/api/v1/chat/completions') {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
+    if (completionStatus !== 200) {
+      res.writeHead(completionStatus, { 'content-type': 'application/json' });
+      return void res.end(JSON.stringify(completionErrorBody ?? { error: { code: completionStatus, message: 'error' } }));
+    }
     const hasTool = body.messages.some((m: any) => m.role === 'tool');
     if (!hasTool) {
       return void res.end(JSON.stringify({
@@ -372,6 +378,7 @@ test('daily totals, live website-check attribution, cached /api/v1/key view, una
   const bobPage = await bobCtx.newPage();
   await bobPage.goto(`${base}/#/c05750000001`);
   await bobPage.waitForSelector('#sidefoot [data-act=logins]');
+  assert.match((await bobPage.locator('#sidefoot [data-act=logins]').innerText()), /Logins & tokens/);
   assert.equal(await bobPage.locator('#masthead #low-credit').count(), 0, 'non-admin sees no low-credit banner');
   assert.equal(await bobPage.locator('#sidefoot [data-act=costs]').count(), 0, 'non-admin sees no admin Costs button');
   await bobCtx.close();
@@ -426,7 +433,7 @@ test('owners, members, reader-workspace people and personal tokens cannot obtain
   await change('/api/workspaces/ops001', 'PUT', { owners: [adminEmail] });
 });
 
-test('masthead escapes upstream reset strings', async () => {
+test('masthead escapes upstream reset strings and 402 credit_error messages', async () => {
   const payload = '<img src=x onerror="window.costXss=1">', who = await apiJson('/me');
   who.low_credit = { remaining: 1, limit: 200, usage: 199, reset: payload };
   const ctx = await browser.newContext();
@@ -440,7 +447,56 @@ test('masthead escapes upstream reset strings', async () => {
     assert.ok((await page.locator('#masthead #low-credit').innerText()).includes(payload));
     assert.equal(await page.locator('#masthead img').count(), 0);
     assert.equal(await page.evaluate(() => (window as any).costXss), undefined);
+
+    // Account-wide 402 credit_error surfaces even when low_credit is absent, and escapes HTML.
+    delete who.low_credit;
+    who.credit_error = { at: new Date().toISOString(), message: `Insufficient credits ${payload}` };
+    await page.reload();
+    await page.waitForSelector('#masthead #low-credit');
+    const txt = await page.locator('#masthead #low-credit').innerText();
+    assert.match(txt, /^OpenRouter credits exhausted \(402\): Insufficient credits /);
+    assert.ok(txt.includes(payload));
+    assert.equal(await page.locator('#masthead img').count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).costXss), undefined);
   } finally { await ctx.close(); }
+});
+
+test('402 credit_error surfaces on /me, /api/status, and rf status for admins only, even when key remaining is healthy', async () => {
+  // Restore healthy key balance (low_credit = false) and trigger a shared-key 402 via website-check.
+  keyPayload = { label: 'sk-or-v1-leaked...999', usage: 100, usage_daily: 0.95, limit: 1000, limit_remaining: 900, limit_reset: 'daily' };
+  await new Promise(ok => setTimeout(ok, 1350));
+  completionStatus = 402;
+  completionErrorBody = { error: { code: 402, message: `Insufficient account credits (${secretKey})`, metadata: { limit_source: 'openrouter_credits' } } };
+  try {
+    assert.equal((await fetch(`${base}/logins/sites`, { method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'credit402', url: 'https://credit402.example.com/' }) })).status, 200);
+    const { id: signinId } = await (await fetch(`${base}/logins/web/credit402`, { method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/json' }, body: '{}' })).json();
+    assert.equal((await fetch(`${base}/signins/${signinId}`, { method: 'POST', headers: { cookie: adminCookie, 'content-type': 'application/json' }, body: '{}' })).status, 200);
+    // Wait for background website-check to hit the 402.
+    let adminMe: any;
+    for (let i = 0; i < 40; i++) {
+      adminMe = await apiJson('/me');
+      if (adminMe.credit_error) break;
+      await new Promise(ok => setTimeout(ok, 100));
+    }
+    assert.ok(adminMe.credit_error, 'admin /me exposes credit_error during 402 outage');
+    assert.equal(adminMe.low_credit, undefined, 'healthy key limit keeps low_credit absent');
+    assert.equal(adminMe.credit_error.message, 'Insufficient account credits ([redacted])');
+    assert.doesNotMatch(JSON.stringify(adminMe), /sk-or-/);
+
+    const adminStatus = await apiJson('/api/status');
+    assert.equal(adminStatus.credit_error?.message, 'Insufficient account credits ([redacted])');
+    const adminStatusText = await rfAs(adminHome, 'status');
+    assert.match(adminStatusText, /^OpenRouter credits exhausted \(402\): Insufficient account credits \(\[redacted\]\)/);
+
+    const bobMe = await apiJson('/me', bobCookie);
+    const bobStatus = await apiJson('/api/status', bobCookie);
+    assert.equal(bobMe.credit_error, undefined, 'non-admin /me never sees credit_error');
+    assert.equal(bobStatus.credit_error, undefined, 'non-admin /api/status never sees credit_error');
+    assert.doesNotMatch(await rfAs(bobHome, 'status'), /OpenRouter credits exhausted/);
+  } finally {
+    completionStatus = 200;
+    completionErrorBody = undefined;
+  }
 });
 
 test('cost totals support workspace names that collide with Object.prototype', async () => {

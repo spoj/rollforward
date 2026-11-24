@@ -246,7 +246,7 @@ export async function serverCall(
   const type = r?.headers.get('content-type') ?? '', events = parseEvents(text);
   const headers: Record<string, string> = {};
   r?.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  if (s === openrouter && r) keyOut(apiKey, r.status);
+  if (s === openrouter && r && !failed) keyOut(apiKey, r.status, events.at(-1), 'POST');
   const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
   if ((!failed && r!.status < 400) || cost > 0 || estimated) {
     recordCost({
@@ -258,6 +258,7 @@ export async function serverCall(
   return { ok: r!.ok, status: r!.status, data: events.at(-1), cost, estimated };
 }
 
+export type CreditError = { at: string; message: string };
 export type KeyInfo = {
   usage: number;
   usage_daily: number | null;
@@ -270,17 +271,21 @@ export type KeyInfo = {
   key?: 'primary' | 'fallback';
   // What all the server's keys spent today, if OpenRouter said for each.
   usage_daily_all?: number | null;
+  // Account-wide 402 credit exhaustion latched from a shared-key call, cleared on the next billable 2xx.
+  credit_error?: CreditError;
 };
 
 // The server's OpenRouter keys: OPENROUTER_API_KEY, such as one with a daily limit, and OPENROUTER_FALLBACK_KEY, such as a monthly
-// one, which calls use while the first has under RF_KEY_SWITCH_USD (50) left, or has answered that it's out of credit, until a check
-// finds its credit back, as once its limit resets. Each key's state is OpenRouter's, fetched at most every RF_KEY_TTL_MS (3m), and
-// just after each UTC midnight, when its daily limits reset (refreshKeys()).
+// one, which calls use while the first has under RF_KEY_SWITCH_USD (50) left, or has answered 403 openrouter_key_limit, until a
+// check finds its credit back, as once its limit resets. Account-wide 402 credit exhaustion never switches keys; instead it latches
+// credit_error for admins until a shared-key billable call succeeds. Each key's state is OpenRouter's, fetched at most every
+// RF_KEY_TTL_MS (3m), and just after each UTC midnight, when its daily limits reset (refreshKeys()).
 type KeyState = { info: KeyInfo | null; at: number; inFlight: Promise<KeyInfo | null> | null };
 const keyStates = new Map<string, KeyState>(), spent = new Set<string>();
-let using: 'primary' | 'fallback' = 'primary';
+let using: 'primary' | 'fallback' = 'primary', creditError: CreditError | null = null;
 const switchUsd = () => Number(process.env.RF_KEY_SWITCH_USD ?? 50);
 export const serverKeys = () => [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY].filter((k): k is string => !!k);
+export const openrouterCreditError = (): CreditError | null => creditError;
 
 // Every key checked again now, as just after OpenRouter's daily limits reset at UTC midnight.
 export function refreshKeys() {
@@ -292,6 +297,7 @@ export function resetKeyCache() {
   keyStates.clear();
   spent.clear();
   using = 'primary';
+  creditError = null;
 }
 
 // The key the server's calls to OpenRouter go with now; a switch is logged.
@@ -308,9 +314,33 @@ export function serverKey(): string {
   return now === 'fallback' ? fallback : primary;
 }
 
-// OpenRouter answered a call with `key` that it's out of credit, 402, or past its limit, 403.
-export function keyOut(key: string, status = 402) {
-  if (![402, 403].includes(status) || key !== process.env.OPENROUTER_API_KEY || !process.env.OPENROUTER_FALLBACK_KEY) return;
+// Track OpenRouter shared-key outcomes: switch to the fallback key ONLY on 403 openrouter_key_limit (never on 402 account-wide
+// credits or policy/moderation 403s); latch 402 credit_error once per outage and clear it on the next billable 2xx.
+export function keyOut(key: string, status = 403, body?: any, method = 'POST') {
+  if (key !== process.env.OPENROUTER_API_KEY && key !== process.env.OPENROUTER_FALLBACK_KEY) return;
+  if (status >= 200 && status < 300) {
+    if (creditError && !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
+      creditError = null;
+      act('server', { op: 'openrouter credit', recovered: true });
+      changes.emit('change', 'tree');
+    }
+    return;
+  }
+  if (status === 402) {
+    if (!creditError) {
+      const raw = typeof body?.error?.message === 'string' ? body.error.message.replace(/\s+/g, ' ').trim() : '';
+      const cleaned = serverKeys().reduce((m, k) => m.replaceAll(k, '[redacted]'), raw).slice(0, 200);
+      const message = cleaned || 'OpenRouter account credits exhausted (402)';
+      creditError = { at: new Date().toISOString(), message };
+      const which = key === process.env.OPENROUTER_FALLBACK_KEY ? 'fallback' : 'primary';
+      act('server', { op: 'openrouter credit', status: 402, key: which, message });
+      console.error(`OpenRouter shared ${which} key answered 402: ${message}`);
+      changes.emit('change', 'tree');
+    }
+    return;
+  }
+  if (status !== 403 || body?.error?.metadata?.limit_source !== 'openrouter_key_limit') return;
+  if (key !== process.env.OPENROUTER_API_KEY || !process.env.OPENROUTER_FALLBACK_KEY) return;
   spent.add(key);
   serverKey();
 }
@@ -336,7 +366,11 @@ export async function keyStatus(): Promise<KeyInfo | null> {
   const low = isLowCredit(info.remaining, info.limit);
   if (low !== prevLow) changes.emit('change', 'tree');
   const daily = keys.map(k => keyStates.get(k)?.info?.usage_daily ?? null);
-  return { ...info, low_credit: low, key: using, usage_daily_all: daily.includes(null) ? null : (daily as number[]).reduce((t, d) => t + d, 0) };
+  return {
+    ...info, low_credit: low, key: using,
+    usage_daily_all: daily.includes(null) ? null : (daily as number[]).reduce((t, d) => t + d, 0),
+    ...(creditError && { credit_error: creditError }),
+  };
 }
 
 async function keyInfo(apiKey: string): Promise<KeyInfo | null> {
@@ -521,7 +555,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       }
       const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
       log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
-      if (s === openrouter && !mine) keyOut(apiKey, answer.status);
+      if (s === openrouter && !mine && !answer.failed) keyOut(apiKey, answer.status, answer.events.at(-1), method);
       if (mine && answer.status === 402) {
         // A revoked lease or a replacement key must not receive a late expiry.
         if (!current() || logins(runner).find(l => l.id === mine.id)?.since !== mine.since) return;

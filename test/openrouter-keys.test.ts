@@ -6,21 +6,26 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem } from '../src/system.ts';
-import { keyOut, keyStatus, resetKeyCache, serverCall, serverKey, upstreams } from '../src/connections.ts';
+import { keyOut, keyStatus, openrouterCreditError, resetKeyCache, serverCall, serverKey, upstreams } from '../src/connections.ts';
+import { call as proxyCall, type CallRun } from '../src/connections.ts';
+import { saveTree, writeJson } from '../src/system.ts';
+import { saveSeriesSettings } from '../src/series.ts';
+import { openStore, type Instance } from '../src/store.ts';
 
 // The server's two OpenRouter keys, a daily one and a monthly one, at a stand-in for OpenRouter: /api/v1/key says what each has left,
-// and a chat completion answers with `answer`, saying which key it was sent with.
+// and a chat completion answers with `answer` + `answerBody`, saying which key it was sent with.
 const root = mkdtempSync(join(tmpdir(), 'rf-keys-'));
 initSystem(root);
 const DAY = 'sk-or-day-key', MONTH = 'sk-or-month-key';
 const left: Record<string, number> = {}, sent: string[] = [];
 let answer = 200;
+let answerBody: Record<string, unknown> | undefined;
 const server = createServer((req, res) => {
   const k = String(req.headers.authorization).replace('Bearer ', '');
   res.writeHead(req.url === '/api/v1/key' ? 200 : answer, { 'content-type': 'application/json' });
   if (req.url === '/api/v1/key') return void res.end(JSON.stringify({ data: { usage: 1, usage_daily: 1, limit: k === DAY ? 500 : 1000, limit_remaining: left[k], limit_reset: k === DAY ? 'daily' : 'monthly' } }));
   sent.push(k);
-  res.end(JSON.stringify(answer === 200 ? { choices: [{ message: { content: 'ok' } }], usage: { cost: 0.001 } } : { error: { message: 'Key limit exceeded', code: answer } }));
+  res.end(JSON.stringify(answer === 200 ? { choices: [{ message: { content: 'ok' } }], usage: { cost: 0.001 } } : (answerBody ?? { error: { message: 'Key limit exceeded', code: answer } })));
 }).listen(0, '127.0.0.1');
 await once(server, 'listening');
 const was = { ...process.env }, upstream = upstreams['openrouter.ai'];
@@ -38,8 +43,11 @@ beforeEach(() => {
   resetKeyCache();
   Object.assign(left, { [DAY]: 400, [MONTH]: 900 });
   answer = 200;
+  answerBody = undefined;
 });
-const switches = () => (existsSync(join(root, '.rf', 'log.jsonl')) ? readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(e => e.op === 'openrouter key') : []);
+const logActs = (op: string) => (existsSync(join(root, '.rf', 'log.jsonl')) ? readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(e => e.op === op) : []);
+const switches = () => logActs('openrouter key');
+const creditActs = () => logActs('openrouter credit');
 
 test('the daily key goes while it has $50 or more left, the monthly one once it has less, and the daily one again once its limit resets', async () => {
   const before = switches().length;
@@ -54,9 +62,9 @@ test('the daily key goes while it has $50 or more left, the monthly one once it 
   assert.doesNotMatch(JSON.stringify([await keyStatus(), switches()]), /sk-or-/, 'never a key');
 });
 
-test('a daily key that answers it is out gives way at once, until a check finds its credit back', async () => {
+test('a daily key that answers 403 openrouter_key_limit gives way at once, until a check finds its credit back', async () => {
   await keyStatus();
-  keyOut(DAY);
+  keyOut(DAY, 403, { error: { code: 403, message: 'Key limit exceeded', metadata: { limit_source: 'openrouter_key_limit' } } });
   assert.equal(serverKey(), MONTH);
   left[DAY] = 10;
   await keyStatus();
@@ -66,15 +74,103 @@ test('a daily key that answers it is out gives way at once, until a check finds 
   assert.equal(serverKey(), DAY);
 });
 
-test("the server's own calls go with the key in use, and one OpenRouter refuses as out of credit turns them to the other", async () => {
+test('403 openrouter_key_limit switches keys on serverCall, while policy 403 and 402 credits never switch keys', async () => {
   await keyStatus();
   const call = () => serverCall('openrouter', '/api/v1/chat/completions', { model: 'm', messages: [] }, { kind: 'try', person: 'a@demo.test' });
+  const beforeCredit = creditActs().length;
+
+  // Policy/moderation 403 without openrouter_key_limit must NOT switch keys or latch credit_error.
+  answer = 403;
+  answerBody = { error: { code: 403, message: 'Moderation refusal', metadata: { limit_source: 'moderation' } } };
   await call();
+  assert.equal(serverKey(), DAY, 'moderation 403 keeps primary key');
+  assert.equal(openrouterCreditError(), null);
+
+  // Account-wide 402 (openrouter_credits) must NOT switch keys; latches credit_error once and redacts key strings.
   answer = 402;
+  answerBody = { error: { code: 402, message: `Insufficient credits for ${DAY}\nplease top up`, metadata: { limit_source: 'openrouter_credits' } } };
+  await call();
+  await call(); // repeated 402 during same outage must NOT duplicate audit log
+  assert.equal(serverKey(), DAY, '402 never flips to fallback key');
+  const st = (await keyStatus())!;
+  assert.equal(st.key, 'primary');
+  assert.equal(st.low_credit, false);
+  assert.ok(st.credit_error?.at);
+  assert.equal(st.credit_error?.message, 'Insufficient credits for [redacted] please top up');
+  assert.doesNotMatch(JSON.stringify([st, creditActs()]), /sk-or-/);
+  assert.equal(creditActs().length - beforeCredit, 1, '402 logged once per outage');
+
+  // Non-billable GET 200 must NOT clear credit_error.
+  keyOut(DAY, 200, {}, 'GET');
+  assert.ok(openrouterCreditError(), 'GET 200 does not clear credit_error');
+
+  // Billable POST 200 clears credit_error and logs recovery.
+  answer = 200;
+  answerBody = undefined;
+  await call();
+  assert.equal(openrouterCreditError(), null);
+  assert.equal((await keyStatus())!.credit_error, undefined);
+  assert.equal(creditActs().at(-1)?.recovered, true);
+
+  // Per-key 403 openrouter_key_limit DOES switch to fallback key immediately.
+  answer = 403;
+  answerBody = { error: { code: 403, message: 'Key daily limit reached', metadata: { limit_source: 'openrouter_key_limit' } } };
   await call();
   answer = 200;
+  answerBody = undefined;
   await call();
-  assert.deepEqual(sent.slice(-3), [DAY, DAY, MONTH]);
+  assert.deepEqual(sent.slice(-2), [DAY, MONTH]);
+});
+
+test('proxy call() path matches serverCall(): 402 latches credit_error without switching, GET 200 keeps latch, POST 200 clears, 403 key limit switches', async () => {
+  openStore(root);
+  writeJson('users.json', { 'a@demo.test': { role: 'user' } });
+  saveTree({ workspaces: { w: { name: 'W', owners: ['a@demo.test'], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+  const serDir = join(root, 'series', 's');
+  saveSeriesSettings(serDir, { version: 1, owner: 'a@demo.test', epoch: 1, since: '', consent: { by: 'a@demo.test', at: '', workspace: 'w', logins: [], autonomous: false } });
+  const inst = {
+    id: 'i1', seriesId: 's', series: () => serDir,
+    log: [{ seq: 1, at: '', by: 'a@demo.test', op: 'create' }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, runner: 'a@demo.test', initiator: 'a@demo.test', authority: { version: 1, owner: 'a@demo.test', epoch: 1, workspace: 'w', logins: [] } }],
+    append: () => ({ seq: 3 }),
+  } as unknown as Instance;
+  const run: CallRun = { inst, n: 1, runner: 'a@demo.test', cost: 0, estimated: false, links: new Map() };
+  const proxy = createServer((req, res) => proxyCall(run, 'openrouter.ai', req, res)).listen(0, '127.0.0.1');
+  await once(proxy, 'listening');
+  const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+  try {
+    await keyStatus();
+    answer = 402;
+    answerBody = { error: { code: 402, message: 'Out of account credits', metadata: { limit_source: 'openrouter_credits' } } };
+    const r402 = await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(r402.status, 402);
+    assert.equal(serverKey(), DAY, 'proxy 402 never switches keys');
+    assert.equal(openrouterCreditError()?.message, 'Out of account credits');
+
+    // Non-billable GET /api/v1/models 200 does not clear the 402 latch.
+    answer = 200;
+    answerBody = undefined;
+    const rGet = await fetch(`${proxyBase}/api/v1/models`, { method: 'GET' });
+    assert.equal(rGet.status, 200);
+    assert.ok(openrouterCreditError(), 'proxy GET 200 keeps credit_error latched');
+
+    // Billable POST 200 clears the latch.
+    const rPost = await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(rPost.status, 200);
+    assert.equal(openrouterCreditError(), null);
+
+    // Policy 403 does not switch keys; openrouter_key_limit 403 switches immediately.
+    answer = 403;
+    answerBody = { error: { code: 403, message: 'Policy blocked' } };
+    await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(serverKey(), DAY);
+
+    answerBody = { error: { code: 403, message: 'Key daily limit reached', metadata: { limit_source: 'openrouter_key_limit' } } };
+    await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(serverKey(), MONTH);
+  } finally {
+    proxy.close();
+    proxy.closeAllConnections();
+  }
 });
 
 test('both keys low say so, and one key alone is used whatever it has left', async () => {

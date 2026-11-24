@@ -919,6 +919,7 @@ else if (cmd === 'comment' && args.length < 2) {
   const asks = s.asks.filter(a => !a.legacyNotice);
   if (flags.json) return JSON.stringify({ ...s, asks, indexes: ix }, null, 1);
   else {
+    const creditErrLine = s.credit_error ? `OpenRouter credits exhausted (402): ${s.credit_error.message}` : '';
     const lowLine = s.low_credit ? `Low OpenRouter credit: ${usd(s.low_credit.remaining)} remaining${s.low_credit.limit !== null ? ` of ${usd(s.low_credit.limit)} limit` : ''}${s.low_credit.reset ? ` (resets ${s.low_credit.reset})` : ''}${s.low_credit.key === 'fallback' ? ', on the fallback key, the first being low too' : ''}` : '';
     // What waits, by whom it waits on, oldest first, at most WAITING each unless --all.
     const waiting: { who: string; kind: string; since?: string; path: string; text: string }[] = [
@@ -948,7 +949,7 @@ else if (cmd === 'comment' && args.length < 2) {
       ['Indexes crawling or failing', failing.length, table(['INDEX', 'PERSON', 'STATE', 'ERROR'], failing)],
     ].filter(([, n]) => n) as [string, number, string][];
     const body = sections.map(([title, n, rows]) => `${title} (${n})\n${rows}`).join('\n\n');
-    return [lowLine, body].filter(Boolean).join('\n\n') || 'Nothing is running, queued, waiting or failed.';
+    return [creditErrLine, lowLine, body].filter(Boolean).join('\n\n') || 'Nothing is running, queued, waiting or failed.';
   }
 });
 else if (cmd === 'indexes' && !args.length) {

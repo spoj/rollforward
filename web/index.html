@@ -40,6 +40,7 @@ const enc = encodeURIComponent;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const usd = (n, est) => `${est ? '~' : ''}${n < 0 ? '-$' + (-n).toFixed(2) : '$' + n.toFixed(2)}${est ? ' (est.)' : ''}`;
 const lowCreditText = lc => `Low OpenRouter credit: ${usd(lc.remaining)} remaining${lc.limit !== null ? ` of ${usd(lc.limit)} limit` : ''}${lc.reset ? ` (resets ${lc.reset})` : ''}${lc.key === 'fallback' ? ', on the fallback key, the first being low too' : ''}`;
+const creditErrText = ce => `OpenRouter credits exhausted (402): ${ce.message}`;
 const APP = 'RollForward';
 // The buttons' icons, line drawings in the colour of their text.
 const icon = d => `<svg class="ico" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
@@ -307,7 +308,7 @@ function renderBrand() {
 // The top bar: the app and what the page shows, and your account, whose menu has your role and Sign out.
 function renderTop() {
   const view = cur?.i ? 'Instance workspace' : cur?.s ? 'Series' : cur?.w ? 'Workspace' : '';
-  const low = me.role === 'admin' && me.low_credit ? `<div class="lowcredit" id="low-credit">${esc(lowCreditText(me.low_credit))}</div>` : '';
+  const low = me.role === 'admin' && (me.credit_error || me.low_credit) ? `<div class="lowcredit" id="low-credit">${esc(me.credit_error ? creditErrText(me.credit_error) : lowCreditText(me.low_credit))}</div>` : '';
   put($('#masthead'), `<div class="app-name"><b>${APP}</b>${view ? `<span class="pagename">${view}</span>` : ''}</div>` + low
     + `<details class="user" id="user"><summary title="${esc(me.name)}"><span class="avatar">${esc(initials(me.name || me.email))}</span><span class="mail">${esc(me.email)}</span></summary>`
     + `<div class="upop"><b>${esc(me.name)}${me.role === 'user' ? '' : ' · ' + me.role}</b><span class="sub">${esc(me.email)}</span><button class="quiet" data-act="signout">Sign out</button></div></details>`);
@@ -404,9 +405,9 @@ function renderSide() {
     if (href) $(`#tree [href="${CSS.escape(href)}"]`)?.focus();
     if (note) $(`#tree [data-act="notes"][data-id="${CSS.escape(note)}"]`)?.focus();
   }
-  // The foot: Settings, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
+  // The foot: Logins and tokens, the version the server runs, and « to fold the sidebar to a rail, as this browser keeps it.
   const folded = $('.app').classList.contains('folded');
-  put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Settings<span class="go-on">\u203A</span></button>`
+  put($('#sidefoot'), `<button class="setting" data-act="logins" title="Logins and tokens"><span class="cog">\u2699</span>Logins &amp; tokens<span class="go-on">\u203A</span></button>`
     + (me.version ? `<div class="release">rollforward ${esc(me.version)}</div>` : '')
     + `<button class="sidefold" data-act="fold-side" title="${folded ? 'Open' : 'Fold'} the sidebar">${folded ? '\u00BB' : '\u00AB'}${folded && waits ? `<span class="dot${actionable ? '' : ' fyi'}"></span>` : ''}</button>`);
 }
