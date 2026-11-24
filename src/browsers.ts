@@ -7,7 +7,7 @@ import { request as httpsRequest } from 'node:https';
 import type { Duplex } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { HttpError, instance, replaceReadOnly, type Instance } from './store.ts';
-import { lender, logins, personDir, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
+import { lender, loginGeneration, logins, personDir, saveLogin, seal, secret, signOut, use, type Trace } from './logins.ts';
 import { getDomain } from 'tldts';
 import { checkHost, covers, except, letIn, reached, resolvesInternal, serverCall, setLetIn } from './connections.ts';
 import { answer, model } from './connections/openrouter.ts';
@@ -682,12 +682,20 @@ export class Browsers {
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
   private refused = new Set<string>();
+  private expired = new Set<string>();
   private conns = new Map<Duplex, string>();
   private ended = false;
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
     this.run = run;
+  }
+
+  private logExpired(login: string, since: string, site: string, runner: string) {
+    const key = `${login}:${since}`;
+    if (this.expired.has(key)) return;
+    this.expired.add(key);
+    this.inst.append('server', 'expired', { run: this.run, login, name: site, runner });
   }
 
   // The login a browser on a website may use now, and the run's browser there if open: checked at every call and new connection,
@@ -698,7 +706,7 @@ export class Browsers {
       // A try's stand-in instance (cli.ts) is in no workspace: any approved grant of its runner's does.
       const { email, login } = use(this.inst, this.run, `web:${site}`), had = this.bySite.get(site), ws = tree().series[this.inst.seriesId]?.workspace;
       if (!approved(site, email, ws)) throw Object.assign(new HttpError(403, unapproved(email, site, ws)), { refused: true });
-      if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id });
+      if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id, since: loginGeneration(login) ?? '' });
       const generation = website(email, site).generation ?? 0;
       if (had && (had.email !== email || had.since !== login.since || had.generation !== generation)) throw new HttpError(409, `this run's browser on ${site} has a superseded login`);
       const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
@@ -712,8 +720,8 @@ export class Browsers {
       return { email, login, had, via };
     } catch (e) {
       if (!quiet) {
-        const { login, refused } = e as { login?: string; refused?: true };
-        if (login) this.inst.append('server', 'expired', { run: this.run, login, name: site, runner: this.inst.log.find(e => e.op === 'run' && e.run === this.run)!.runner });
+        const { login, since, refused } = e as { login?: string; since?: string; refused?: true };
+        if (login) this.logExpired(login, since ?? '', site, this.inst.log.find(e => e.op === 'run' && e.run === this.run)!.runner as string);
         if (refused && !this.refused.has(site)) this.inst.append('server', 'browser', { run: this.run, site, action: 'refused', why: (e as Error).message });
         if (refused) this.refused.add(site);
       }
@@ -854,7 +862,7 @@ export class Browsers {
     const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
     await this.close(site);
-    this.inst.append('server', 'expired', { run: this.run, login: login.id, name: site, runner: email });
+    this.logExpired(login.id, loginGeneration(login) ?? '', site, email);
     return `recorded: ${site} signed ${email} out; they sign in to it again on the Logins page, and the instance carries on`;
   }
 

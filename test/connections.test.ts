@@ -409,9 +409,9 @@ test('a malformed request target is refused and logged, and the proxy keeps serv
 
 test('a request is for the host it was sent to, over https: a target naming another, such as //elsewhere.test/…, or http://, is refused before anything is put in', async () => {
   const before = seen.length, r = await via('GET', `${G.replace('/v1.0', '')}//elsewhere.test/v1.0/me/messages`);
-  assert.deepEqual([r.status, r.text], [403, 'graph.microsoft.com takes requests for https://graph.microsoft.com, not https://elsewhere.test\n']);
+  assert.deepEqual([r.status, r.headers['content-type'], JSON.parse(r.text)], [403, 'application/json; charset=utf-8', { error: { code: 'rf_proxy', message: 'graph.microsoft.com takes requests for https://graph.microsoft.com, not https://elsewhere.test' } }]);
   const clear = await via('GET', G, { path: 'http://graph.microsoft.com/v1.0/me/messages' });
-  assert.deepEqual([clear.status, clear.text], [403, 'graph.microsoft.com takes requests for https://graph.microsoft.com, not http://graph.microsoft.com\n'], 'its token would go in the clear');
+  assert.deepEqual([clear.status, clear.headers['content-type'], JSON.parse(clear.text)], [403, 'application/json; charset=utf-8', { error: { code: 'rf_proxy', message: 'graph.microsoft.com takes requests for https://graph.microsoft.com, not http://graph.microsoft.com' } }], 'its token would go in the clear');
   assert.equal(seen.length, before, 'nothing reached Graph, or went on with its token');
 });
 
@@ -805,7 +805,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
     assert.match(r.text, why, path);
   }
   const site = await write('POST', '/sites/host,site1,web1/lists/l1/items', {});
-  assert.deepEqual([site.status, site.text], [409, "this server's Microsoft 365 logins don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All\n"], "the server's to change");
+  assert.deepEqual([site.status, site.headers['content-type'], JSON.parse(site.text)], [409, 'application/json; charset=utf-8', { error: { code: 'rf_proxy', message: "this server's Microsoft 365 logins don't write SharePoint sites: RF_M365_SCOPES has no Sites.ReadWrite.All" } }], "the server's to change");
   assert.match((await via('PUT', `${G}/drives/b!d1/items/y2025:/x.csv:/content`, { token: 'run3', body: 'x' })).text, /is in no folder, file or SharePoint site ticked/);
   assert.match((await via('PATCH', `${G}/drives/b!d1/items/a`, { token: 'run3', body: JSON.stringify({ parentReference: { id: 'y2025' } }), headers: { 'content-type': 'text/plain' } })).text, /a write's body is a JSON object/);
   assert.equal(writes.length, before, 'none reached Graph');
@@ -829,7 +829,8 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
   ] as [string, RegExp][]) {
     const r = await sendMime(body);
     assert.equal(r.status, 403, Buffer.from(body, 'base64').toString().split('\r\n')[0]);
-    assert.match(r.text, why);
+    assert.equal(r.headers['content-type'], 'application/json; charset=utf-8');
+    assert.match(JSON.parse(r.text).error.message, why);
   }
   assert.match((await sendMime(mime(`From: ${ALICE}`), { 'content-type': 'application/octet-stream' })).text, /MIME in base64 as text\/plain/);
   assert.equal(writes.length, before, 'none reached Graph');
@@ -949,7 +950,7 @@ test("a run queries Databricks at its own address as the runner: statements on a
   const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');
-  assert.deepEqual([gone.status, gone.text], [409, "alice@demo.test's Databricks adb login has expired: they sign in to it again on the Logins page\n"]);
+  assert.deepEqual([gone.status, gone.headers['content-type'], JSON.parse(gone.text)], [409, 'application/json; charset=utf-8', { error: { code: 'rf_proxy', message: "alice@demo.test's Databricks adb login has expired: they sign in to it again on the Logins page" } }]);
   assert.deepEqual(log.filter(e => e.op === 'expired').at(-1)!.data, { run: 1, login: 'adb', name: 'Databricks adb', runner: ALICE }, 'the instance carries on once they sign in again');
   assert.equal(calls().at(-1)!.status, 409);
 });

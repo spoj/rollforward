@@ -19,7 +19,7 @@ const current = (email: string, id: string) => logins(email).find(l => l.id === 
 export function token(email: string, id: string, scope: string[], checkpoint?: () => void): Promise<string> {
   checkpoint?.();
   const key = `${id} ${email}`, t = tokens.get(key), login = current(email, id);
-  if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id }));
+  if (!login || login.expired) return Promise.reject(Object.assign(new HttpError(409, `${email} has no current ${login?.name ?? id} login: they sign in to it on the Logins page`), { login: id, since: loginGeneration(login) ?? '' }));
   const generation = loginGeneration(login)!;
   if (t && t.exp > Date.now() && t.generation === generation) return Promise.resolve(t.token);
   const inflightKey = `${key}\0${generation}\0${scope.join(' ')}`;
@@ -52,7 +52,7 @@ export function token(email: string, id: string, scope: string[], checkpoint?: (
           tokens.delete(key);
           saveLogin(email, { ...now, expired: true });
         }
-        throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id });
+        throw Object.assign(new HttpError(409, `${email}'s ${login.name} login has expired: they sign in to it again on the Logins page`), { login: id, since: loginGeneration(now) ?? generation ?? '' });
       }
     })().finally(() => inFlight.delete(inflightKey));
     inFlight.set(inflightKey, pending = { run, waiters });

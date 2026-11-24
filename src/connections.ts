@@ -10,7 +10,7 @@ import { act, changes, isPrivate, key, readJson, tree, writeJson } from './syste
 import { recordCost } from './costs.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
-import { lender, logins, saveLogin, secret, use, type Offer } from './logins.ts';
+import { lender, loginGeneration, logins, saveLogin, secret, use, type Offer } from './logins.ts';
 import graph from './connections/graph.ts';
 import databricks from './connections/databricks.ts';
 import service from './connections/service.ts';
@@ -26,7 +26,7 @@ import * as exa from './connections/exa.ts';
 // host, with rollforward's own certificate authority (ca.ts), which runs trust. Each request is checked against the type's policy
 // and the instance's ticks, has its Authorization replaced by the runner's token or the deployment service's key, and goes on; the answer comes back as it is, and
 // a `call` entry logs it. A link an answer held, such as an upload session's, or redirected to, goes through for that run, as it
-// is, with no credential added, while the offer that allowed the answer may still be used. A refusal is a plain 403 with the reason, logged too.
+// is, with no credential added, while the offer that allowed the answer may still be used. A refusal is a 403 with the reason (JSON for JSON APIs, plain text otherwise), logged too.
 //
 // The server's own connections, OpenRouter and Exa, each a module under connections/ too, are every run's while the server has
 // its key, which no person lends: a request is checked against its policy and has the key put in for the run's stand-in, and what
@@ -412,6 +412,16 @@ async function keyInfo(apiKey: string): Promise<KeyInfo | null> {
   return st.inFlight;
 }
 
+const expiredLogged = new WeakMap<CallRun, Set<string>>();
+function logExpired(a: CallRun, login: string, since: string, name: string, runner: string) {
+  let set = expiredLogged.get(a);
+  if (!set) expiredLogged.set(a, set = new Set());
+  const key = `${login}:${since}`;
+  if (set.has(key)) return;
+  set.add(key);
+  a.inst.append('server', 'expired', { run: a.n, login, name, runner });
+}
+
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
   const method = req.method!;
   let name = host, path = req.url!, offer = '';
@@ -432,16 +442,19 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...(digest && { sha256: digest.hash.copy().digest('hex'), size: digest.size }), ...more });
     sending.delete(req);
   };
+  let jsonApi = false;
   try {
     const url = URL.parse(req.url!, `https://${host}`);
     if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
     const link = a.links.get(url.href), s = link ? undefined : own(host);
     if (link) { name = link.name; path = url.origin + url.pathname; }
-    // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
-    const runner = a.runner, { logins: ticked } = lender(a.inst, a.n), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
     const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.(c).some(h => covers(h, host)));
+    jsonApi = !!s || serving.some(c => c.type === 'graph' || c.type === 'databricks');
+    // The runner's own OpenRouter key, where they use it, in place of the server's, never falling back to it.
+    const runner = a.runner, { logins: ticked } = lender(a.inst, a.n), mine = s === openrouter ? logins(runner).find(l => l.id === 'openrouter' && l.enabled) : undefined;
     const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
+    jsonApi = !!s || c?.type === 'graph' || c?.type === 'databricks';
     name = link?.name ?? c?.name ?? s?.name ?? host;
     path = link ? url.origin + url.pathname : url.pathname + url.search;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
@@ -449,7 +462,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
     if (method === 'TRACE') throw new HttpError(403, 'a TRACE would echo the credential put in');
     if (link) use(a.inst, a.n, link.offer);
-    if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter' });
+    if (mine?.expired) throw Object.assign(new HttpError(409, `${runner}'s own OpenRouter key is out of credits: they save another, or stop using it, on the Logins page, and the instance carries on`), { login: 'openrouter', since: loginGeneration(mine) ?? '' });
     if (!link && !c && !s) throw new HttpError(403, `${url.origin + url.pathname} is no link a connection's answer gave this run`);
     // A POST's or PATCH's body, a JSON one, or any to the server's own services, is read whole, for the policy, up to 32 MB, the
     // most any of their hosts takes; a JSON body goes on as the JSON it read, as it rewrote
@@ -560,7 +573,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         // A revoked lease or a replacement key must not receive a late expiry.
         if (!current() || logins(runner).find(l => l.id === mine.id)?.since !== mine.since) return;
         saveLogin(runner, { ...mine, expired: true });
-        a.inst.append('server', 'expired', { run: a.n, login: 'openrouter', name: 'OpenRouter', runner });
+        logExpired(a, 'openrouter', loginGeneration(mine) ?? '', 'OpenRouter', runner);
       }
     } finally {
       sending.delete(req);
@@ -569,12 +582,13 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     }
   } catch (e) {
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
-    const err = e as Error & { status?: number; login?: string }, status = e instanceof HttpError ? err.status! : 502;
+    const err = e as Error & { status?: number; login?: string; since?: string }, status = e instanceof HttpError ? err.status! : 502;
     const msg = [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
-    if (err.login && current()) a.inst.append('server', 'expired', { run: a.n, login: err.login, name: byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, runner: a.runner });
+    if (err.login && current()) logExpired(a, err.login, err.since ?? '', byLogin(err.login) ? loginOf(byLogin(err.login)!).name : err.login, a.runner);
     log(status, 0, e instanceof HttpError ? { refused: msg } : { failed: msg });
     if (res.headersSent) return void res.destroy();
-    res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${msg}\n`);
+    if (jsonApi) res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }).end(`${JSON.stringify({ error: { code: 'rf_proxy', message: msg } })}\n`);
+    else res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' }).end(`${msg}\n`);
   }
 }
 

@@ -567,6 +567,7 @@ export class Instance {
       ids.add(i.id);
       if (typeof i.name !== 'string' || !i.name) errors.push(`${i.id}: name missing`);
       if (!['input', 'step', 'output'].includes(i.kind)) errors.push(`${i.id}: kind must be "input", "step" or "output"`);
+      for (const k of ['headline', 'source', 'destination', 'from'] as const) if ((i as Record<string, unknown>)[k] === null) delete i[k];
       if (i.from !== undefined && !Array.isArray(i.from)) errors.push(`${i.id}: from must be a list of item ids`);
       for (const k of ['headline', 'source', 'destination'] as const) if (i[k] !== undefined && typeof i[k] !== 'string') errors.push(`${i.id}: ${k} must be a string`);
       if (i.file !== null) {

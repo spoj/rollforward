@@ -460,6 +460,21 @@ async function finishRun(a: Active, aborted: boolean, error?: string, oom = fals
   finish(a, aborted, error, oom, mayRetry);
 }
 
+export function commitSubject(n: number, error?: string): string {
+  if (!error) return `Run ${n}`;
+  const clean = error
+    .replace(/\r?\n[\s\S]*/, '')
+    .replace(/https?:\/\/\S+/gi, '[url]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, '[redacted]')
+    .replace(/\b(?:api[_-]?key|access[_-]?token|secret)\s*[=:]\s*\S+/gi, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return `Run ${n}: failed`;
+  const prefix = `Run ${n}: `, max = 120 - prefix.length;
+  return prefix + (clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean);
+}
+
 function finish(a: Active, aborted: boolean, error?: string, oom = false, allowOomRetry = oom): Entry | undefined {
   if (a.done || stopping) return;
   aborted ||= !!a.interrupted;
@@ -489,7 +504,7 @@ function finish(a: Active, aborted: boolean, error?: string, oom = false, allowO
   if (!a.run && !a.ready) rmSync(join(rfDir(), 'runs', a.token), { recursive: true, force: true });
   const stopped = !a.run && !a.ready ? undefined : end(a.token, a.run ?? a.ready!);
   const closed = Promise.all([closing, stopped]);
-  const committed = commit(a.inst.dir, AGENT, [`Run ${a.n}`, error].filter(Boolean).join(': '), closed).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
+  const committed = commit(a.inst.dir, AGENT, commitSubject(a.n, error), closed).catch(e => a.inst.append('server', 'commit', { run: a.n, error: e.message }));
   retiring.add(a);
   a.ended = Promise.all([closed, committed]).finally(() => {
     retiring.delete(a);

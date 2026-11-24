@@ -68,6 +68,7 @@ const REPLACEMENTS = new Map([
   ['ask', `Use rf comment . --ask ${anchorOptions} [--to EMAIL] TEXT`],
   ['propose', `Use rf comment . --propose ${anchorOptions} [--to EMAIL] TEXT`],
   ['withdraw', 'Use rf settle cN withdrawn [--see cM] TEXT'],
+  ['wakes', 'Pending wakes are listed in your first message; use rf wake TARGET AT ... or rf wake --cancel ID'],
 ]);
 // node:http, not fetch, which gives up on an answer after 5 minutes.
 const send = (method: string, path: string, body?: string | Buffer) => new Promise<{ ok: boolean; status: number; text: string }>((ok, fail) => {
