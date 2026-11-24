@@ -253,6 +253,10 @@ test('P2: HTTP 200 deletion compacts locally with zero Graph recrawl, fires inde
   const snapAfter = await ix.prepare(inst, join(tmp, 'runs', 'p2-after'), lease, new AbortController().signal);
   assert.equal(snapAfter?.valid(), true);
   assert.deepEqual(lines(join(tmp, 'runs', 'p2-after', 'Top.ndjson.zst')).map(l => l.id).sort(), ['keep1', 'top']);
+  const readme = readFileSync(join(tmp, 'runs', 'p2-after', 'README.md'), 'utf8');
+  assert.match(readme, /query `NAME\.ndjson\.zst` locally first/i);
+  assert.match(readme, /plain-text `body`/i);
+  assert.match(readme, /wake check.*no network/i);
 
   // Mail folder deletion also compacts locally without recrawling remaining folders.
   const mailAsked = asked.length;

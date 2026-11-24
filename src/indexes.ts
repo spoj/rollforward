@@ -313,6 +313,9 @@ async function tidy(c: Cache) {
       if (rest) yield rest;
     } catch (e) {
       throw new FeedReadError('index feed could not be read', { cause: e });
+    } finally {
+      src.destroy();
+      dec.destroy();
     }
   };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
@@ -470,10 +473,13 @@ export function sources(inst: Instance, run?: number | Authority): { o: Offer; c
 const README = `# $RF_INDEX
 
 Your series owner's own caches of the Microsoft 365 sources ticked for this run, two files for each that has one, by its name in
-your first message:
+your first message. When \`NAME.json\` has a non-null \`as_of\`, query \`NAME.ndjson.zst\` locally first and follow \`deltaLinks\` only
+for changes after \`as_of\` (or skip Graph when \`as_of\` already covers your window); call Graph directly only for attachments or
+file bytes, writes, or sources with no cache (\`as_of: null\` or no files):
 
-- NAME.ndjson.zst: its delta feed from Graph, its crawl then its changes, in Graph's own JSON, one item per line, with no paths,
-  which parent ids rebuild. A later line for an id replaces an earlier one, and a \`deleted\` facet or an \`@removed\` removes it,
+- NAME.ndjson.zst: its delta feed from Graph, its crawl then its changes, in Graph's own JSON, one item per line (mailbox feeds
+  include each message's plain-text \`body\`, so you do not need to re-fetch message bodies over Graph; file items have no paths,
+  which parent ids rebuild). A later line for an id replaces an earlier one, and a \`deleted\` facet or an \`@removed\` removes it,
   a folder's with everything under it. Stream it line by line and keep only the fields you need: a compressed feed expands many
   times in memory if loaded whole.
 - NAME.json: its \`source\`, the tick; \`as_of\`, when its oldest part last caught up (the server refreshes caches about hourly),
