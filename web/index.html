@@ -1010,7 +1010,11 @@ function renderPv() {
       + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : s.single ? '' : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
     h += '</div>';
   }
+  // Drawn again as it is, as live updates redraw Waiting on you, the dialog stays scrolled where its reader left it.
+  const key = `${pv.title}\n${pv.settings?.kind ?? ''}\n${pv.path ?? ''}`, tops = d.open && d.dataset.key === key ? [...d.querySelectorAll('.pvb')].map(b => b.scrollTop) : [];
   d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;
+  d.dataset.key = key;
+  d.querySelectorAll('.pvb').forEach((b, i) => { if (tops[i]) b.scrollTop = tops[i]; });
   if (pv.settings?.kind === 'workspace' ? cur.w.archived : pv.settings?.kind === 'series' && archived()) {
     d.querySelector('.pvb').insertAdjacentHTML('afterbegin', '<div class="sub">Archived · read-only</div>');
     for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
