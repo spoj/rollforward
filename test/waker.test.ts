@@ -57,7 +57,7 @@ startWaking();
 after(() => (entra.close(), rmSync(tmp, { recursive: true, force: true })));
 
 test("a run's first message names its captured owner and selected offers, including website addresses", () => {
-  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its series owner and captured execution person is .+ <${alice}>, who lends you no login\\. Approvals from an earlier authority epoch are history, not authorization for this owner\\. New log entries:`));
+  assert.match(message(oct, 1, oct.log, true), new RegExp(`^Instance 2026-10, run 1\\. Its series owner and captured execution person is .+ <${alice}>, who delegates no login to you\\. Approvals from an earlier authority epoch are history, not authorization for this owner\\. New log entries:`));
   mkdirSync(personDir(alice), { recursive: true });
   writeFileSync(join(personDir(alice), 'websites.json'), JSON.stringify({ portal: { url: 'https://portal.test/login', hosts: [], writeback: true, added: '' } }));
   saveLogin(alice, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '', offers: [{ id: 'm365:item:d1/i1', name: 'Folder LFM, Reports' }, { id: 'm365:mail:ann@demo.test', name: 'Mailbox' }] }, 'r');
@@ -66,7 +66,7 @@ test("a run's first message names its captured owner and selected offers, includ
   ownSeries('s5', alice, ['web:portal', 'm365:mail:ann@demo.test', 'm365:item:d1/i1'], true);
   const ticked = createInstance('s5', '2026-10', alice);
   ticked.append('server', 'run', { run: 1, runner: alice, initiator: alice, authority: authority(ticked) });
-  assert.match(message(ticked, 1, ticked.log, true), /, who lends you web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test \(Mailbox\), m365:item:d1\/i1 \(Folder LFM, Reports\)\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/, 'each tick with what it is, where its login still offers it');
+  assert.match(message(ticked, 1, ticked.log, true), /, who delegates web:portal at https:\/\/portal\.test\/login, m365:mail:ann@demo\.test \(Mailbox\), m365:item:d1\/i1 \(Folder LFM, Reports\) to you\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/, 'each tick with what it is, where its login still offers it');
   const said = message(ticked, 2, [{ seq: 90, at: '', by: 'server', op: 'run', run: 1 }, { seq: 91, at: '', by: 'server', op: 'shot', run: 1 }, { seq: 92, at: '', by: 'server', op: 'done', run: 1, aborted: false }, { seq: 93, at: '', by: 'server', op: 'done', run: 2, aborted: true }, { seq: 94, at: '', by: alice, op: 'comment', text: 'go' }]);
   assert.deepEqual(said.split('\n').slice(1).map(l => JSON.parse(l).seq), [93, 94], "people's acts and a run cut, not the server's bookkeeping");
   assert.match(message(oct, 2, [{ seq: 98, at: '', by: alice, op: 'comment', text: 'go' }], true), /^Instance 2026-10, run 2\. Its series owner and captured execution person is /, 'every run is a new conversation');
@@ -94,7 +94,7 @@ test("a service prefix is lent at its private address in the run's first message
   saveLogin(alice, { ...loginOf(c), since: '' } as never);
   ownSeries('s5', alice, ['drop:AP/'], true);
   const inst = createInstance('s5', 'Service', alice);
-  assert.match(message(inst, 1, inst.log, true), /who lends you drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\)\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/);
+  assert.match(message(inst, 1, inst.log, true), /who delegates drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\) to you\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/);
   assert.deepEqual(view(inst).env, {});
   signOut(alice, 'drop');
   removeConnection('drop');

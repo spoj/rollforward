@@ -132,7 +132,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const by = lease.owner, ticked = lease.logins, set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
   const offers = new Map(logins(by).flatMap(l => l.offers.map(o => [o.id, o.name])));
-  const lent = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
+  const delegated = (l: string) => l.startsWith('web:') && sites[l.slice(4)] ? `${l} at ${sites[l.slice(4)].url}` : offers.has(l) ? `${l} (${offers.get(l)})` : l;
   // The corrections on the instances before it, so an error isn't rolled forward.
   const fixed = !first ? [] : closedBefore(inst).flatMap(i => i.log.filter(e => e.op === 'correction').map(e => {
     const see = e.see as { inst: string; label: string; thread?: string } | undefined;
@@ -184,7 +184,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const series = open.filter(e => !e.anchor), here = open.filter(e => e.anchor);
   const owner = first ? asPerson(by) : null;
   return `Instance ${inst.label}, run ${n}.`
-    + (first ? ` Its series owner and captured execution person is ${who(by)}, who lends you ${ticked.map(lent).join(', ') || 'no login'}. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
+    + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')

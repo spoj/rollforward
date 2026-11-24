@@ -159,7 +159,7 @@ rf internal [remove HOST] [--json]   the hosts at internal addresses admins let 
                                   which everyone's websites at it wait for an admin again
 rf connection set NAME TYPE       an outside system runs reach as their series owner, by a login each person makes: graph,
                                   Microsoft 365, or databricks, Azure Databricks, as each person adds what their login
-                                  offers; service --url http://HOST:PORT --paths 'AP/,GL/2026/' [--key KEY] lends paths
+                                  offers; service --url http://HOST:PORT --paths 'AP/,GL/2026/' [--key KEY] delegates paths
                                   through a deployment's service at https://NAME.rf.internal/; websites are rf site's
 rf connection remove NAME
 rf brand [--text TEXT] [--logo FILE] [--clear]   the deployment's text and logo, a .png, .jpg, .gif, .webp or .svg, which top

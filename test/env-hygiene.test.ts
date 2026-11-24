@@ -228,4 +228,15 @@ test('prompt.md states fresh bash CWD, working/ ownership split, background proc
   assert.match(prompt, /leaving screen outputs and proposed or signed-off files intact/);
   assert.match(prompt, /background processes end with the run/);
   assert.match(prompt, /keep run logs and scratch notes in separate files under `working\/`/);
+  assert.match(prompt, /the logins your series owner delegates to you/);
+  assert.doesNotMatch(prompt, /\b(lend\w*|lent)\b/i);
+});
+
+test('v0.8.11: user-, agent-, CLI-, and doc-facing text uses delegate/delegated rather than lend/lent', () => {
+  const root = join(import.meta.dirname, '..');
+  for (const rel of ['prompt.md', 'docs/system.md', 'README.md', 'src/rf-people.ts', 'web/index.html']) {
+    assert.doesNotMatch(readFileSync(join(root, rel), 'utf8'), /\b(lend\w*|lent)\b/i, `${rel} must not use lend/lent wording`);
+  }
+  assert.match(readFileSync(join(root, 'src/browsers.ts'), 'utf8'), /Check a website whose login may be delegated to automated company work\./);
+  assert.match(readFileSync(join(root, 'src/waker.ts'), 'utf8'), /who delegates \$\{ticked\.map\(delegated\)\.join\(', '\) \|\| 'no login'\} to you\./);
 });
