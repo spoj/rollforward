@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs';
+import { copyFile, stat, truncate } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
@@ -27,7 +28,16 @@ const TRANSIENT_ERROR = /^(?:Microsoft Graph answered (?:500|502|504):|The opera
 const wakeRebuildAfter = new Map<string, number>();
 
 type Part = { link: string; delta: string | null; as_of: string | null; pages: number; due: number | null; error: string | null; tries: number };
-type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part>; wakeGrant?: string };
+type Compact = { grant: string; state: 'pending-append' | 'appended' };
+type Cache = { person: string; source: string; name: string; gen: number; length: number; lines: number; base: number; parts: Record<string, Part>; wakeGrant?: string; compact?: Compact };
+
+const isReflinkUnsupported = (e: unknown) => ['EXDEV', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EINVAL'].includes((e as NodeJS.ErrnoException)?.code ?? '');
+function wakeCopyBytes(): number {
+  const raw = process.env.RF_WAKE_COPY_MB;
+  if (raw === undefined || !raw.trim()) return WAKE_COPY_BYTES;
+  const mb = Number(raw);
+  return Number.isFinite(mb) && mb >= 0 ? Math.floor(mb * 2 ** 20) : WAKE_COPY_BYTES;
+}
 
 // A feed line, U+2028 and U+2029 escaped: JSON.stringify leaves them raw, and line readers such as node's readline and Python's
 // splitlines() end a line at them.
@@ -43,18 +53,69 @@ const offered = (person: string, offer: string) => hasOffer(person, offer) && !m
 const at = (person: string, offer: string) => join(personDir(person), 'index', createHash('sha256').update(offer).digest('hex').slice(0, 16));
 const feed = (c: Cache) => `${at(c.person, c.source)}.${c.gen}.ndjson.zst`;
 const load = (person: string, offer: string): Cache | undefined => (existsSync(`${at(person, offer)}.json`) ? JSON.parse(readFileSync(`${at(person, offer)}.json`, 'utf8')) : undefined);
-function save(c: Cache, invalidates = false) {
+function writeAllSync(fd: number, buf: Buffer) {
+  for (let off = 0; off < buf.length;) off += writeSync(fd, buf, off, buf.length - off);
+}
+function fsyncFile(p: string) {
+  const fd = openSync(p, 'r+');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+function fsyncDir(dir: string) {
+  let fd: number;
+  try {
+    fd = openSync(dir, 'r');
+  } catch {
+    return;
+  }
+  try {
+    fsyncSync(fd);
+  } catch (e) {
+    if (!['EINVAL', 'EBADF', 'EISDIR', 'EPERM', 'EACCES'].includes((e as NodeJS.ErrnoException)?.code ?? '')) throw e;
+  } finally {
+    closeSync(fd);
+  }
+}
+function save(c: Cache, invalidates = false, sync = false) {
   const f = `${at(c.person, c.source)}.json`;
-  writeFileSync(`${f}.tmp`, JSON.stringify(c));
-  renameSync(`${f}.tmp`, f);
+  const tmp = `${f}.tmp`;
+  if (sync) {
+    const fd = openSync(tmp, 'w');
+    try {
+      writeAllSync(fd, Buffer.from(JSON.stringify(c)));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, f);
+    fsyncDir(dirname(f));
+  } else {
+    writeFileSync(tmp, JSON.stringify(c));
+    renameSync(tmp, f);
+  }
   if (invalidates) changes.emit('index-removed', c.person, c.source);
 }
 
 function reset(c: Cache, parts: Record<string, Part>) {
   const was = feed(c);
+  delete c.compact;
   Object.assign(c, { gen: c.gen + 1, length: 0, lines: 0, base: 0, parts });
-  save(c, true);
+  save(c, true, true);
   rmSync(was, { force: true });
+}
+
+function resetCompact(c: Cache) {
+  const oldGrant = c.compact?.grant;
+  const [k] = kind(c.source);
+  const parts = k === 'site'
+    ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(c.source, part))]))
+    : { '': fresh(start(c.source, '')) };
+  if (oldGrant && offered(c.person, c.source) && wakeOptedIn(c.person) && wakeGrant(m365(c.person)) === oldGrant) c.wakeGrant = oldGrant;
+  else delete c.wakeGrant;
+  reset(c, parts);
 }
 
 function caches(): Cache[] {
@@ -118,8 +179,13 @@ async function slice(person: string, offer: string, until: number): Promise<void
   const mail = offer.startsWith('m365:mail:');
   for (;;) {
     const c = load(person, offer);
-    const due = c ? Object.entries(c.parts).filter(([, p]) => p.due !== null && p.due <= Date.now()).sort(([, a], [, b]) => a.due! - b.due!).slice(0, 20) : [];
-    if (!c || !due.length) return;
+    if (!c) return;
+    if (c.compact) {
+      await finishCompact(person, offer);
+      return;
+    }
+    const due = Object.entries(c.parts).filter(([, p]) => p.due !== null && p.due <= Date.now()).sort(([, a], [, b]) => a.due! - b.due!).slice(0, 20);
+    if (!due.length) return;
     const login = m365(person), generation = loginGeneration(login);
     if (c.wakeGrant && c.wakeGrant !== wakeGrant(login)) delete c.wakeGrant;
     const current = () => {
@@ -141,14 +207,21 @@ async function slice(person: string, offer: string, until: number): Promise<void
       return save(c);
     }
     if (!current()) return;
-    // Graph can report access loss as a deletion. In a wake-capable feed, start fresh before lending older, raw rows again.
-    if (c.wakeGrant && (c.length || Object.values(c.parts).some(p => p.delta)) && answers.some(a => a.status === 403 || a.status === 404 ||
-         a.status === 200 && a.body.value.some((item: any) => item.deleted || item['@removed']))) {
-      const denied = new Map(answers.filter(a => a.status === 403 || a.status === 404).map(a => [due[Number(a.id)][0], a.status]));
+    // A 403 or 404 on a wake-capable feed resets immediately before lending older, raw rows again,
+    // except a 404 on a mail folder that the folder list ('') itself reported @removed in the same $batch.
+    const removedFolders = new Set(mail ? answers.filter(a => a.status === 200 && !due[Number(a.id)][0])
+      .flatMap(a => a.body.value.filter((it: any) => it['@removed']).map((it: any) => it.id as string)) : []);
+    const isDenial = (a: { id: string; status: number }) => a.status === 403 || (a.status === 404 && !removedFolders.has(due[Number(a.id)][0]));
+    if (c.wakeGrant && (c.length || Object.values(c.parts).some(p => p.delta)) && answers.some(isDenial)) {
+      const denied = new Map(answers.filter(isDenial).map(a => [due[Number(a.id)][0], a.status]));
       const parts = Object.fromEntries(Object.keys(c.parts).filter(part => !part || !denied.has(part)).map(part => [part, fresh(start(offer, part))]));
       if (denied.has('')) failed(parts[''], { status: denied.get(''), message: `Microsoft Graph answered ${denied.get('')}` }, start(offer, ''));
       return reset(c, parts);
     }
+    const savedGrant = c.wakeGrant;
+    const pre: Cache | undefined = savedGrant ? { ...c, parts: structuredClone(c.parts), compact: { grant: savedGrant, state: 'pending-append' } } : undefined;
+    if (pre) delete pre.wakeGrant;
+    let hasDeletion = false;
     const lines: string[] = [];
     let lost: [string, Part, Error & { status: number }] | undefined;
     for (const a of answers) {
@@ -160,12 +233,14 @@ async function slice(person: string, offer: string, until: number): Promise<void
           delete c.parts[part];
           lines.push(ndjson(JSON.stringify({ id: part, '@removed': { reason: 'deleted' } })));
           c.base = 0;
+          hasDeletion = true;
         } else if (a.status === 410) lost = [part, p, e];
         else if (a.status === 403 || a.status === 404) lost ??= [part, p, e];
         else failed(p, e, start(offer, part));
         continue;
       }
       for (const it of a.body.value) {
+        if (it.deleted || it['@removed']) hasDeletion = true;
         lines.push(ndjson(JSON.stringify(it)));
         if (mail && !part) {
           if (it['@removed']) delete c.parts[it.id];
@@ -184,39 +259,75 @@ async function slice(person: string, offer: string, until: number): Promise<void
     if (lines.length) {
       const frame = await promisify(zstdCompress)(lines.join(''));
       if (!current() || m365(person)?.expired) return;
+      const needsCompact = !!pre && hasDeletion;
+      if (needsCompact) save(pre, true, true);
       const fd = openSync(feed(c), 'a');
-      ftruncateSync(fd, c.length);
-      writeSync(fd, frame);
-      fsyncSync(fd);
-      closeSync(fd);
+      try {
+        ftruncateSync(fd, c.length);
+        writeAllSync(fd, frame);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      if (needsCompact) fsyncDir(dirname(feed(c)));
       c.length += frame.length;
       c.lines += lines.length;
+      if (needsCompact) {
+        delete c.wakeGrant;
+        c.compact = { grant: savedGrant!, state: 'appended' };
+        save(c, false, true);
+        await finishCompact(person, offer);
+        if (Date.now() > until) return;
+        continue;
+      }
     }
     save(c);
     if (Date.now() > until) return;
   }
 }
 
-// Once what later lines replaced or removed reaches a quarter of the feed, it's rewritten without them, and without what is under a
-// removed folder or library, as delta sends only the folder, as a new feed that the .json then names. A library's root item has its
-// drive as parent.
+class FeedReadError extends Error {
+  constructor(message: string, options?: ErrorOptions) { super(message, options); }
+}
+
+// Once what later lines replaced or removed reaches a quarter of the feed, or after a deletion on a wake-capable cache, it's
+// rewritten without them, and without what is under a removed folder or library, as delta sends only the folder, as a new feed
+// that the .json then names. A library's root item has its drive as parent.
 async function tidy(c: Cache) {
   const file = feed(c), next = feed({ ...c, gen: c.gen + 1 });
+  if (c.length > 0 && (!existsSync(file) || statSync(file).size < c.length))
+    throw new FeedReadError(`index feed shorter than ${c.length} bytes`);
   const read = async function* () {
+    if (!c.length) return;
     let rest = '';
-    for await (const chunk of createReadStream(file, { end: c.length - 1 }).pipe(createZstdDecompress()).setEncoding('utf8')) {
-      const ls = (rest + chunk).split('\n');
-      rest = ls.pop()!;
-      yield* ls;
+    const src = createReadStream(file, { end: c.length - 1 }), dec = createZstdDecompress();
+    src.on('error', e => dec.destroy(e));
+    src.pipe(dec);
+    dec.setEncoding('utf8');
+    try {
+      for await (const chunk of dec) {
+        const ls = (rest + chunk).split('\n');
+        rest = ls.pop()!;
+        yield* ls;
+      }
+      if (rest) yield rest;
+    } catch (e) {
+      throw new FeedReadError('index feed could not be read', { cause: e });
     }
   };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
   for await (const line of read()) {
-    const it = JSON.parse(line);
+    let it: any;
+    try {
+      it = JSON.parse(line);
+    } catch (e) {
+      throw new FeedReadError('index feed held invalid JSON', { cause: e });
+    }
     last.set(it.id, ids.push(it.id) - 1);
     if (it.deleted || it['@removed']) gone.add(it.id);
     else gone.delete(it.id);
-    parent.set(it.id, it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId);
+    const p = it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId;
+    if (p !== undefined) parent.set(it.id, p);
   }
   const dead = new Map<string, boolean>();
   const under = (id: string | undefined): boolean => {
@@ -228,19 +339,46 @@ async function tidy(c: Cache) {
     return dead.get(id)!;
   };
   let i = 0, kept = 0;
-  await pipeline(async function* () {
-    for await (const line of read()) {
-      const id = ids[i];
-      if (last.get(id) === i++ && !under(id)) {
-        kept++;
-        yield ndjson(line);
+  try {
+    await pipeline(async function* () {
+      for await (const line of read()) {
+        const id = ids[i];
+        if (last.get(id) === i++ && !under(id)) {
+          kept++;
+          yield ndjson(line);
+        }
       }
-    }
-  }, createZstdCompress(), createWriteStream(next));
+    }, createZstdCompress(), createWriteStream(next));
+    fsyncFile(next);
+    fsyncDir(dirname(next));
+  } catch (e) {
+    rmSync(next, { force: true });
+    throw e;
+  }
   if (!hasOffer(c.person, c.source)) return rmSync(next, { force: true });
-  Object.assign(c, { gen: c.gen + 1, length: statSync(next).size, base: statSync(next).size, lines: kept });
-  save(c, true);
-  rmSync(file);
+  const size = statSync(next).size;
+  if (c.compact) {
+    const restore = c.compact.state === 'appended' && offered(c.person, c.source)
+      && wakeOptedIn(c.person) && wakeGrant(m365(c.person)) === c.compact.grant;
+    if (restore) c.wakeGrant = c.compact.grant;
+    else delete c.wakeGrant;
+    delete c.compact;
+  }
+  Object.assign(c, { gen: c.gen + 1, length: size, base: size, lines: kept });
+  save(c, true, true);
+  rmSync(file, { force: true });
+}
+
+async function finishCompact(person: string, offer: string) {
+  const c = load(person, offer);
+  if (!c?.compact) return;
+  if (c.compact.state === 'pending-append') return resetCompact(c);
+  try {
+    await tidy(c);
+  } catch (e) {
+    if (e instanceof FeedReadError) return resetCompact(c);
+    throw e;
+  }
 }
 
 const epochs = new Map<string, number>();
@@ -253,7 +391,7 @@ async function begin(o: Offer, person: string, generation: string, ep: string, f
   const alive = () => `${epochOf(personDir(person))}:${epochOf(key)}` === ep && loginGeneration(m365(person)) === generation && offered(person, o.id);
   if (!alive() || (forWake && !wakeOptedIn(person))) return;
   const [k, id] = kind(o.id), old = load(person, o.id), grant = wakeGrant(m365(person));
-  if (forWake && old?.wakeGrant === grant) return;
+  if (forWake && (old?.wakeGrant === grant || (old?.compact?.state === 'appended' && old.compact.grant === grant))) return;
   const c: Cache = (!forWake && old) || { person, source: o.id, name: o.name, gen: old ? old.gen + 1 : 0, length: 0, lines: 0, base: 0, parts: k === 'site' ? {} : { '': fresh(start(o.id, '')) } };
   c.name = o.name;
   if (k === 'site') {
@@ -267,17 +405,17 @@ async function begin(o: Offer, person: string, generation: string, ep: string, f
         path = page['@odata.nextLink']?.slice(G().length);
       }
     } catch (e) {
-      if (old?.wakeGrant && alive() && [403, 404].includes((e as { status?: number }).status!)) reset(old, {});
+      if ((old?.wakeGrant || old?.compact) && alive() && [403, 404].includes((e as { status?: number }).status!)) reset(old, {});
       throw e;
     }
-    if (c.wakeGrant && Object.keys(c.parts).some(key => !listed.has(key)))
+    if ((c.wakeGrant || c.compact) && Object.keys(c.parts).some(key => !listed.has(key)))
       return reset(c, Object.fromEntries([...listed].map(part => [part, fresh(start(o.id, part))])));
     for (const part of listed) c.parts[part] ??= fresh(start(o.id, part));
   }
   if (!alive() || (forWake && !wakeOptedIn(person))) return;
   mkdirSync(dirname(key), { recursive: true, mode: 0o700 });
   if (forWake) c.wakeGrant = wakeGrant(m365(person));
-  save(c, forWake);
+  save(c, forWake, forWake);
   if (forWake && old) rmSync(feed(old), { force: true });
 }
 
@@ -357,13 +495,13 @@ export function prepare(inst: Instance, to: string, run?: number): boolean;
 export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal): Promise<Snapshot | undefined>;
 export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal): boolean | Promise<Snapshot | undefined> {
   signal?.throwIfAborted();
-  const names = new Set<string>(), copies: (() => Promise<void>)[] = [], included = sources(inst, run);
+  const names = new Set<string>(), included = sources(inst, run);
   const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
   const selected = lease && login?.offers.filter(o => lease.logins.includes(o.id) && indexed(o));
   if (selected?.length && (!grant || selected.length !== included.length ||
-      included.some(({ c }) => c.wakeGrant !== grant || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta || p.due === null))))
+      included.some(({ c }) => c.wakeGrant !== grant || c.compact || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta || p.due === null))))
     throw new Error('Microsoft 365 indexes are not ready for a wake check');
-  if (lease && included.reduce((sum, { c }) => sum + c.length, 0) > WAKE_COPY_BYTES) throw new Error('wake check index copy limit exceeded');
+  const planned: { o: Offer; c: Cache; name: string; ps: Part[] }[] = [];
   for (const { o, c } of included) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
     const fit = (suffix: string) => {
@@ -380,31 +518,78 @@ export function prepare(inst: Instance, to: string, run?: number | Authority, si
     let name = fit('');
     for (let k = 2; names.has(name); k++) name = fit(` ${k}`);
     names.add(name);
-    mkdirSync(to, { recursive: true });
-    if (c.length) {
-      const file = join(to, `${name}.ndjson.zst`);
-      if (lease) copies.push(async () => {
-        signal!.throwIfAborted();
-        const source = createReadStream(feed(c), { end: c.length - 1 });
-        await pipeline(source, createWriteStream(file, { flags: 'wx' }), { signal });
-        if (source.bytesRead !== c.length) throw new Error('index feed changed during the copy');
-      }); else {
+    planned.push({ o, c, name, ps });
+    if (!lease) {
+      mkdirSync(to, { recursive: true });
+      if (c.length) {
+        const file = join(to, `${name}.ndjson.zst`);
         copyFileSync(feed(c), file, constants.COPYFILE_FICLONE);
         truncateSync(file, c.length);
       }
+      writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
     }
-    writeFileSync(join(to, `${name}.json`), JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
   }
-  if (names.size) writeFileSync(join(to, 'README.md'), README);
-  if (!lease) return names.size > 0;
+  if (!lease) {
+    if (names.size) writeFileSync(join(to, 'README.md'), README);
+    return names.size > 0;
+  }
   return (async () => {
-    for (const copy of copies) await copy();
-    if (included.length) return { offers: included.map(({ o }) => o.id), valid() {
+    signal!.throwIfAborted();
+    if (!planned.length) return undefined;
+    mkdirSync(to, { recursive: true });
+    const streamLimit = wakeCopyBytes();
+    const created: string[] = [];
+    let streamedBytes = 0;
+    let remainingBytes = planned.reduce((sum, { c }) => sum + c.length, 0);
+    try {
+      for (const { o, c, name, ps } of planned) {
+        signal!.throwIfAborted();
+        if (c.length) {
+          const file = join(to, `${name}.ndjson.zst`);
+          let reflinked = false;
+          try {
+            await copyFile(feed(c), file, constants.COPYFILE_FICLONE_FORCE | constants.COPYFILE_EXCL);
+            created.push(file);
+            reflinked = true;
+          } catch (e) {
+            if (!isReflinkUnsupported(e)) throw e;
+          }
+          if (reflinked) {
+            signal!.throwIfAborted();
+            const st = await stat(file);
+            if (st.size < c.length) throw new Error('index feed changed during the copy');
+            if (st.size > c.length) await truncate(file, c.length);
+          } else {
+            if (streamedBytes + remainingBytes > streamLimit) throw new Error('wake check index copy limit exceeded');
+            created.push(file);
+            const source = createReadStream(feed(c), { end: c.length - 1 });
+            await pipeline(source, createWriteStream(file, { flags: 'wx' }), { signal });
+            if (source.bytesRead !== c.length) throw new Error('index feed changed during the copy');
+            streamedBytes += c.length;
+          }
+          const latest = load(lease.owner, o.id);
+          if (!latest || latest.wakeGrant !== grant || latest.compact || latest.gen !== c.gen || latest.length < c.length
+              || !Object.keys(c.parts).every(part => Object.hasOwn(latest.parts, part)))
+            throw new Error('index feed changed during the copy');
+        }
+        remainingBytes -= c.length;
+        const metaFile = join(to, `${name}.json`);
+        writeFileSync(metaFile, JSON.stringify({ source: o.id, as_of: ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null, deltaLinks: ps.flatMap(p => p.delta ?? []) }, null, 1));
+        created.push(metaFile);
+      }
+      const readmeFile = join(to, 'README.md');
+      writeFileSync(readmeFile, README);
+      created.push(readmeFile);
+    } catch (e) {
+      for (const f of created) rmSync(f, { force: true });
+      throw e;
+    }
+    return { offers: included.map(({ o }) => o.id), valid() {
       const login = m365(lease.owner);
       return !!login && !!grant && wakeGrant(login) === grant && sameAuthority(inst, lease) && included.every(({ o, c }) => {
         if (!login.offers.some(offer => offer.id === o.id)) return false;
         const latest = load(lease.owner, o.id);
-        return latest?.wakeGrant === grant && latest.gen === c.gen && latest.length >= c.length
+        return latest?.wakeGrant === grant && !latest.compact && latest.gen === c.gen && latest.length >= c.length
           && Object.keys(c.parts).every(part => Object.hasOwn(latest.parts, part));
       });
     } };
@@ -435,6 +620,22 @@ export function startIndexing() {
   const runs = join(rfDir(), 'runs');
   for (const token of existsSync(runs) ? readdirSync(runs) : []) wipe(Buffer.from(join(scratch, 'runs', token)));
   rmSync(runs, { recursive: true, force: true });
+  // Recover any crash-interrupted compaction and sweep orphan feed/tmp files left by crashes.
+  const people = join(rfDir(), 'people');
+  for (const p of existsSync(people) ? readdirSync(people) : []) {
+    const dir = join(people, p, 'index');
+    if (!existsSync(dir)) continue;
+    const live = new Set<string>();
+    for (const f of readdirSync(dir)) {
+      if (f.endsWith('.json.tmp')) { rmSync(join(dir, f), { force: true }); continue; }
+      if (!f.endsWith('.json')) continue;
+      const c = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Cache;
+      if (c.compact?.state === 'pending-append') resetCompact(c);
+      live.add(`${f.slice(0, -5)}.${c.gen}.ndjson.zst`);
+    }
+    for (const f of readdirSync(dir))
+      if (f.endsWith('.ndjson.zst') && !live.has(f)) rmSync(join(dir, f), { force: true });
+  }
   // Parts stopped on transient Graph errors before transient retries were indefinite resume on startup while their offer is live.
   for (const c of caches()) {
     if (!offered(c.person, c.source)) continue;
@@ -448,9 +649,21 @@ export function startIndexing() {
   for (const email of Object.keys(users())) track(email);
   worker = (async () => {
     while (!stopping) {
+      const compact = caches().find(c => c.compact && hasOffer(c.person, c.source) && (wakeRebuildAfter.get(at(c.person, c.source)) ?? 0) <= Date.now());
+      if (compact) {
+        const key = at(compact.person, compact.source);
+        try {
+          await queue(key, () => finishCompact(compact.person, compact.source));
+          wakeRebuildAfter.delete(key);
+        } catch (e) {
+          wakeRebuildAfter.set(key, Date.now() + 60_000);
+          console.error('compacting index:', e);
+        }
+        continue;
+      }
       const offeredCaches = caches().filter(c => offered(c.person, c.source));
       // Only opted-in owners rebuild legacy copies or copies from a different login, in the background, never for a check.
-      const rebuild = offeredCaches.find(c => (wakeRebuildAfter.get(at(c.person, c.source)) ?? 0) <= Date.now()
+      const rebuild = offeredCaches.find(c => !c.compact && (wakeRebuildAfter.get(at(c.person, c.source)) ?? 0) <= Date.now()
         && c.wakeGrant !== wakeGrant(m365(c.person)) && wakeOptedIn(c.person));
       if (rebuild) {
         const { person, source } = rebuild, l = m365(person)!, key = at(person, source);
@@ -464,12 +677,12 @@ export function startIndexing() {
         }
         continue;
       }
-      const next = offeredCaches.flatMap(c => Object.values(c.parts).flatMap(p => (p.due === null ? [] : [{ c, due: p.due }]))).sort((a, b) => a.due - b.due)[0];
+      const next = offeredCaches.filter(c => !c.compact).flatMap(c => Object.values(c.parts).flatMap(p => (p.due === null ? [] : [{ c, due: p.due }]))).sort((a, b) => a.due - b.due)[0];
       if (!next || next.due > Date.now()) await rest((next?.due ?? Infinity) - Date.now());
       else await queue(at(next.c.person, next.c.source), async () => {
         await slice(next.c.person, next.c.source, Date.now() + SLICE_MS);
         const c = load(next.c.person, next.c.source);
-        if (c && Object.values(c.parts).every(p => p.delta) && c.length > c.base * 1.25) await tidy(c);
+        if (c && !c.compact && Object.values(c.parts).every(p => p.delta) && c.length > c.base * 1.25) await tidy(c);
       }).catch(e => (console.error('indexing', e), rest(60_000)));
     }
   })();
