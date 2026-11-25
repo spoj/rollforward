@@ -219,58 +219,85 @@ import json, os, signal, sys
 proc, sig_name, exp_cg, exp_ns, raw_targets = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 sig = getattr(signal, sig_name)
 signaled = []
-for pid, expected in json.loads(raw_targets):
-    try:
-        fd = os.pidfd_open(pid, 0)
-    except ProcessLookupError:
-        continue
-    try:
-        with open(f"{proc}/{pid}/stat", "r", encoding="latin-1") as f:
-            s = f.read()
-        i = s.rfind(")")
-        if i < 0:
-            continue
-        rest = s[i + 2:].split(" ")
-        if len(rest) <= 19 or rest[0] in ("Z", "X", "x") or int(rest[19]) != expected:
-            continue
-        if exp_ns:
-            try:
-                if os.readlink(f"{proc}/{pid}/ns/pid") != exp_ns:
-                    continue
-            except OSError:
-                continue
-        if exp_cg:
-            try:
-                with open(f"{proc}/{pid}/cgroup", "r", encoding="latin-1") as cf:
-                    if cf.read() != exp_cg:
-                        continue
-            except OSError:
-                continue
+held_fds = []
+try:
+    for pid, expected in json.loads(raw_targets):
         try:
-            signal.pidfd_send_signal(fd, sig)
-            signaled.append(pid)
+            fd = os.pidfd_open(pid, 0)
         except ProcessLookupError:
+            continue
+        keep = False
+        try:
+            with open(f"{proc}/{pid}/stat", "r", encoding="latin-1") as f:
+                s = f.read()
+            i = s.rfind(")")
+            if i < 0:
+                continue
+            rest = s[i + 2:].split(" ")
+            if len(rest) <= 19 or rest[0] in ("Z", "X", "x") or int(rest[19]) != expected:
+                continue
+            if exp_ns:
+                try:
+                    if os.readlink(f"{proc}/{pid}/ns/pid") != exp_ns:
+                        continue
+                except OSError:
+                    continue
+            if exp_cg:
+                try:
+                    with open(f"{proc}/{pid}/cgroup", "r", encoding="latin-1") as cf:
+                        if cf.read() != exp_cg:
+                            continue
+                except OSError:
+                    continue
+            try:
+                signal.pidfd_send_signal(fd, sig)
+                signaled.append(pid)
+                if sig == signal.SIGSTOP:
+                    held_fds.append(fd)
+                    keep = True
+            except ProcessLookupError:
+                pass
+        except FileNotFoundError:
             pass
-    except FileNotFoundError:
-        pass
-    finally:
-        os.close(fd)
+        finally:
+            if not keep:
+                os.close(fd)
+except BaseException:
+    for hfd in held_fds:
+        try:
+            signal.pidfd_send_signal(hfd, signal.SIGCONT)
+        except OSError:
+            pass
+    raise
+finally:
+    for hfd in held_fds:
+        try:
+            os.close(hfd)
+        except OSError:
+            pass
 sys.stdout.write(json.dumps(signaled))
 `;
 export type SignalScope = { cgroup?: string; pidNs?: string };
-async function signalBatch(proc: string, targets: [number, number][], sig: NodeJS.Signals, scope: SignalScope = {}): Promise<Set<number>> {
+export async function signalBatch(proc: string, targets: [number, number][], sig: NodeJS.Signals, scope: SignalScope = {}): Promise<Set<number>> {
   if (!targets.length) return new Set();
   if (process.platform === 'linux' && proc === PROC) {
     const { stdout } = await runFile('python3', ['-c', PIDFD_SIGNAL_BATCH, proc, sig, scope.cgroup ?? '', scope.pidNs ?? '', JSON.stringify(targets)]);
     return new Set<number>(JSON.parse(stdout || '[]'));
   }
   const ok = new Set<number>();
-  for (const [pid, start] of targets) {
-    if (!alive(proc, pid, start)) continue;
-    if (scope.pidNs && link(`${proc}/${pid}/ns/pid`) !== scope.pidNs) continue;
-    if (scope.cgroup && read(`${proc}/${pid}/cgroup`) !== scope.cgroup) continue;
-    try { process.kill(pid, sig); ok.add(pid); }
-    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
+  try {
+    for (const [pid, start] of targets) {
+      if (!alive(proc, pid, start)) continue;
+      if (scope.pidNs && link(`${proc}/${pid}/ns/pid`) !== scope.pidNs) continue;
+      if (scope.cgroup && read(`${proc}/${pid}/cgroup`) !== scope.cgroup) continue;
+      try { process.kill(pid, sig); ok.add(pid); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
+    }
+  } catch (e) {
+    if (sig === 'SIGSTOP') {
+      for (const pid of ok) try { process.kill(pid, 'SIGCONT'); } catch {}
+    }
+    throw e;
   }
   return ok;
 }

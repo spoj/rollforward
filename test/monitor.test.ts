@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { find, INLINE, killTree, parseStat, redact, sample, scriptOf, signal, startOf, type Sandbox } from '../src/monitor.ts';
+import { find, INLINE, killTree, parseStat, redact, sample, scriptOf, signal, signalBatch, startOf, type Sandbox } from '../src/monitor.ts';
 
 // The system monitor on a /proc of the test's own, as Linux writes one: a server, two runs' sandboxes, one busy, and a process of the
 // host's own beside them; and kills of real processes, where there are any.
@@ -186,6 +186,20 @@ test('pidfd signaling refuses a mismatched start time without harming the live p
     assert.equal(await signal('/proc', child.pid!, start, 'SIGTERM'), true);
     await exited;
     assert.ok(gone(child.pid!), 'matching start time terminates the process via pidfd');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
+});
+
+test('pidfd SIGSTOP batch rolls back earlier stopped PIDs with SIGCONT when a later item in the same batch fails', linux, async () => {
+  const child = spawn('sleep', ['60'], { stdio: 'ignore' });
+  try {
+    const start = statOf(child.pid!)!.start;
+    // Entry 1 stops child via pidfd_send_signal(SIGSTOP); entry 2 triggers an exception inside the same Python batch.
+    await assert.rejects(signalBatch('/proc', [[child.pid!, start], ['bad' as unknown as number, 0]], 'SIGSTOP'));
+    await new Promise(ok => setTimeout(ok, 50));
+    const st = statOf(child.pid!);
+    assert.ok(st && st.state !== 'T' && st.state !== 't', `earlier PID must be resumed via SIGCONT, not left stopped (state=${st?.state})`);
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
