@@ -652,6 +652,10 @@ export function startIndexing() {
       if (f.endsWith('.json.tmp')) { rmSync(join(dir, f), { force: true }); continue; }
       if (!f.endsWith('.json')) continue;
       const c = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Cache;
+      if (!hasOffer(c.person, c.source)) {
+        rmSync(join(dir, f), { force: true });
+        continue;
+      }
       if (c.compact?.state === 'pending-append') resetCompact(c);
       live.add(`${f.slice(0, -5)}.${c.gen}.ndjson.zst`);
     }

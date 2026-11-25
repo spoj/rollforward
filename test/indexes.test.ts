@@ -677,3 +677,47 @@ test('prepare shortens long offer names so index copies fit within 255-byte file
   assert.match(readme, /Stream it line by line/);
   assert.match(readme, /wake check.*no network/i);
 });
+
+test('startIndexing removes persisted caches for unoffered or signed-out sources while preserving expired-login caches', async () => {
+  const aliceOffer = { id: FOLDER, name: 'Folder LFM, Reports' };
+  offer(ALICE, [aliceOffer]);
+  await work(() => existsSync(`${at(ALICE, FOLDER)}.json`) && settled(ALICE, FOLDER)());
+  const aliceBefore = cache(ALICE, FOLDER), aliceFeed = feedOf(ALICE, FOLDER);
+  const aliceStaleGen = `${at(ALICE, FOLDER)}.${aliceBefore.gen + 3}.ndjson.zst`;
+  writeFileSync(aliceStaleGen, 'stale');
+  // Plant a sentinel row in ALICE's feed to verify re-offering never reuses pre-withdrawal cache bytes.
+  appendFileSync(aliceFeed, zstdCompressSync(`${JSON.stringify({ id: 'withdrawn-sentinel', name: 'old.xlsx', file: {} })}\n`));
+  writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify({ ...aliceBefore, length: statSync(aliceFeed).size, lines: aliceBefore.lines + 1 }));
+
+  // Ensure DAN has BIG cached and mark DAN's m365 login expired while keeping the offer.
+  const danBefore = cache(DAN, BIG), danFeed = feedOf(DAN, BIG), danLogin = logins.logins(DAN).find(l => l.id === 'm365')!;
+  assert.equal(existsSync(danFeed), true);
+
+  // Remove ALICE's offer directly (simulating restart after unoffer persisted before queued forget() ran).
+  logins.unoffer(ALICE, 'm365', FOLDER);
+  logins.saveLogin(DAN, { ...danLogin, expired: true }, DAN);
+  try {
+    await work(() => true);
+    assert.equal(existsSync(`${at(ALICE, FOLDER)}.json`), false, 'unoffered cache metadata removed on startup');
+    assert.equal(existsSync(aliceFeed), false, 'unoffered cache feed removed on startup');
+    assert.equal(existsSync(aliceStaleGen), false, 'unoffered cache extra generation removed on startup');
+    assert.equal(existsSync(`${at(DAN, BIG)}.json`), true, 'expired-login cache metadata preserved on startup');
+    assert.equal(existsSync(danFeed), true, 'expired-login cache feed preserved on startup');
+    assert.equal(cache(DAN, BIG).gen, danBefore.gen);
+
+    // Re-offering ALICE's source starts a fresh cache instead of reusing deleted state.
+    offer(ALICE, [aliceOffer]);
+    await work(() => existsSync(`${at(ALICE, FOLDER)}.json`) && settled(ALICE, FOLDER)());
+    const aliceFeed2 = feedOf(ALICE, FOLDER);
+    assert.ok(!lines(aliceFeed2).some(l => l.id === 'withdrawn-sentinel'), 'reoffered source never reuses withdrawn cache');
+
+    // Signing out completely (without forget()) also clears persisted cache on startup.
+    logins.signOut(ALICE, 'm365');
+    await work(() => true);
+    assert.equal(existsSync(`${at(ALICE, FOLDER)}.json`), false, 'signed-out cache metadata removed on startup');
+    assert.equal(existsSync(aliceFeed2), false, 'signed-out cache feed removed on startup');
+  } finally {
+    logins.saveLogin(DAN, { ...danLogin, expired: undefined }, DAN);
+    offer(ALICE, [aliceOffer]);
+  }
+});
