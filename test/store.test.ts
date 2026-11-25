@@ -352,3 +352,94 @@ test('screen put distinguishes a missing rev from a stale rev without leaking th
   }
 });
 
+test('close and abandon persist their terminal audit event before screen.json, reconcile on startup, and replay post-close wakes idempotently', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-'));
+  const { saveTree, writeJson } = await import('../src/system.ts');
+  const { ownSeries } = await import('./owner-fixture.ts');
+  const { closed, recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
+  const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
+  try {
+    initSystem(tmp);
+    openStore(tmp);
+    saveTree({ workspaces: { w: { name: 'W', owners: [owner], members: [] } }, series: { monthly: { name: 'Monthly', workspace: 'w' } } });
+    writeJson('users.json', { [owner]: { name: 'Alex', role: 'user' } });
+    ownSeries('monthly', owner, [], false);
+
+    // 1) Close fails if append fails: never leaves terminal screen.json without audit event, and retries cleanly.
+    const failClose = createInstance('monthly', '2026-01', owner);
+    const origAppend = failClose.append.bind(failClose);
+    failClose.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
+      if (op === 'close') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return origAppend(by, op, fields);
+    }) as typeof failClose.append;
+    await assert.rejects(failClose.close(who), /ENOSPC/);
+    assert.equal(failClose.doc.status, 'open');
+    assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'open');
+    assert.equal(failClose.log.some(e => e.op === 'close'), false);
+    failClose.append = origAppend;
+    await failClose.close(who);
+    assert.equal(failClose.doc.status, 'closed');
+    assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'closed');
+
+    // 2) Abandon fails if append fails: never leaves terminal screen.json without audit event.
+    const failAbandon = createInstance('monthly', '2026-02', owner);
+    const origAbandonAppend = failAbandon.append.bind(failAbandon);
+    failAbandon.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
+      if (op === 'abandon') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return origAbandonAppend(by, op, fields);
+    }) as typeof failAbandon.append;
+    await assert.rejects(failAbandon.abandon(owner), /ENOSPC/);
+    assert.equal(failAbandon.doc.status, 'open');
+    assert.equal(JSON.parse(readFileSync(join(failAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+    assert.equal(failAbandon.log.some(e => e.op === 'abandon'), false);
+
+    // 3) Simulated crash between durable close/abandon event append and screen.json replacement.
+    const cutClose = createInstance('monthly', '2026-03', owner);
+    const cutAbandon = createInstance('monthly', '2026-04', owner);
+    const later = createInstance('monthly', '2026-05', owner);
+    setWake(cutClose.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
+    setWake(cutAbandon.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
+
+    cutClose.save = () => {
+      // At the moment save() is reached, the close audit event is already persisted in events.jsonl while screen.json is still open.
+      assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
+      assert.equal(cutClose.log.at(-1)!.op, 'close');
+      throw new Error('simulated crash before screen save');
+    };
+    await assert.rejects(cutClose.close(who, true), /simulated crash before screen save/);
+    assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
+
+    cutAbandon.save = () => {
+      assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+      assert.equal(cutAbandon.log.at(-1)!.op, 'abandon');
+      throw new Error('simulated crash before screen save');
+    };
+    await assert.rejects(cutAbandon.abandon(owner), /simulated crash before screen save/);
+    assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+
+    // Restart: openStore reconciles screen.json from the durable close/abandon events; recover() replays wake cancellation & post-close wake.
+    openStore(tmp);
+    assert.equal(instance(cutClose.id).doc.status, 'closed');
+    assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'closed');
+    assert.equal(instance(cutClose.id).log.at(-1)!.op, 'close');
+    assert.equal(instance(cutAbandon.id).doc.status, 'abandoned');
+    assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'abandoned');
+    assert.equal(instance(cutAbandon.id).log.at(-1)!.op, 'abandon');
+
+    recover();
+    assert.deepEqual(wakesOf(cutClose.id), [], 'reconciled close cancels pending wakes');
+    assert.deepEqual(wakesOf(cutAbandon.id), [], 'reconciled abandon cancels pending wakes');
+    const wakesAfterRecover = instance(later.id).log.filter(e => e.op === 'wake');
+    assert.equal(wakesAfterRecover.length, 1, 'reconciled close notifies later open instance');
+    assert.equal(wakesAfterRecover[0].quiet, true, 'reconciled close preserves quiet flag');
+    assert.match(String(wakesAfterRecover[0].text), /2026-03 closed/);
+
+    // Replaying closed() again for the same close event is idempotent.
+    closed(instance(cutClose.id), owner, true);
+    assert.equal(instance(later.id).log.filter(e => e.op === 'wake').length, 1, 'closed() replay is idempotent by close-event identity');
+  } finally {
+    stopWaker();
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+

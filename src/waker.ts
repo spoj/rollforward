@@ -3,7 +3,7 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, takeReconciledTerminals, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
@@ -662,11 +662,17 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 
 // The owner's close continues later drafts. A <label>-r2 closing supersedes <label>, and <label>-r3 supersedes <label>-r2.
 export function closed(inst: Instance, by: string, quiet?: boolean) {
+  const close = inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
+  const closedRef = close ? { inst: inst.id, seq: close.seq } : undefined;
   for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
-    wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet }]);
+    if (closedRef && later.log.some(e => e.op === 'wake' && e.from === by && !!e.quiet === !!quiet
+      && (e.closed as { inst?: string; seq?: number } | undefined)?.inst === closedRef.inst
+      && (e.closed as { inst?: string; seq?: number } | undefined)?.seq === closedRef.seq)) continue;
+    wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, ...(closedRef && { closed: closedRef }) }]);
   }
   const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
-  if (was) correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
+  if (was && !was.log.some(e => e.op === 'correction' && e.kind === 'superseded' && (e.see as { inst?: string } | undefined)?.inst === inst.id))
+    correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
 }
 
 // A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
@@ -859,7 +865,7 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
-type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string };
+type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number } };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
@@ -1066,6 +1072,17 @@ export const CUT = { restart: 'a restart cut the run', authority: 'its series au
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
+  const reconciled = takeReconciledTerminals();
+  if (reconciled.length) {
+    cancelWakes(reconciled);
+    const t = tree();
+    for (const id of reconciled) {
+      const inst = instance(id);
+      if (inst.doc.status !== 'closed' || !t.series[inst.seriesId]) continue;
+      const close = inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
+      if (close) closed(inst, close.by, !!close.quiet);
+    }
+  }
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     if (inst.doc.status !== 'open') continue;

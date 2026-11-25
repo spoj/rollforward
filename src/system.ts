@@ -64,10 +64,11 @@ export function readLines<T>(path: string): T[] {
   return all.subarray(0, end).toString().split('\n').filter(Boolean).map(l => JSON.parse(l));
 }
 
-export function appendLine(path: string, line: string, mode?: number) {
+export function appendLine(path: string, line: string, mode?: number, durable = false) {
   const fd = openSync(path, 'a', mode), size = fstatSync(fd).size;
   try {
     appendFileSync(fd, line + '\n');
+    if (durable) fsyncSync(fd);
   } catch (e) {
     ftruncateSync(fd, size);
     throw e;

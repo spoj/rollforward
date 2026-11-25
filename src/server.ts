@@ -1644,7 +1644,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (action === 'close' || action === 'abandon') {
         if (mine) throw new HttpError(409, 'wait for the run to end');
         if (ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
-        await (action === 'close' ? inst.close(who) : inst.abandon(by));
+        await (action === 'close' ? inst.close(who, quiet) : inst.abandon(by));
         cancelWakes([inst.id]);
         if (action === 'close') closed(inst, by, quiet);
         return 'ok';

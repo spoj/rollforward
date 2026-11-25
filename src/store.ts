@@ -119,6 +119,13 @@ export type Meta = { label: string; series: string };
 let root = '';
 let index = new Map<string, Meta>();
 const cache = new Map<string, Instance>();
+const reconciledTerminal = new Set<string>();
+
+export function takeReconciledTerminals(): string[] {
+  const ids = [...reconciledTerminal];
+  reconciledTerminal.clear();
+  return ids;
+}
 
 function readMetadata<T>(path: string): T | undefined {
   const st = lstatSync(path, { throwIfNoEntry: false });
@@ -269,11 +276,18 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
   root = dataRoot;
   index = metas;
   cache.clear();
+  reconciledTerminal.clear();
   installMessageBooks(loaded);
   for (const [id, state] of replayed) cache.set(id, new Instance(instanceDir(id), state));
   for (const inst of cache.values()) {
     if (inst.hole) inst.clear(Object.hasOwn(series, inst.seriesId) && !!series[inst.seriesId].single);
-    else inst.syncLog();
+    else {
+      inst.syncLog();
+      if (readScreen(inst.dir).status !== inst.doc.status) {
+        inst.save();
+        if (inst.doc.status === 'closed' || inst.doc.status === 'abandoned') reconciledTerminal.add(inst.id);
+      }
+    }
   }
   for (const b of loaded.values()) b.notes.sync();
 }
@@ -430,6 +444,10 @@ export class Instance {
     this.projection = instanceProjection(this.series(), this.id, join(dir, 'log.jsonl'), state?.log);
     this.copiedSeq = this.log.findLast(e => e.op === 'duplicate')?.seq ?? 0;
     if (this.hole) this.doc = { rev: this.doc.rev, status: 'deleted', items: [] };
+    else {
+      const terminal = this.log.findLast(e => e.seq > this.copiedSeq && (e.op === 'close' || e.op === 'abandon'));
+      if (terminal) this.doc = { ...this.doc, status: terminal.op === 'close' ? 'closed' : 'abandoned' };
+    }
   }
 
   syncLog() { this.projection.sync(); }
@@ -445,7 +463,7 @@ export class Instance {
     const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
     if (instanceMessage(e)) return appendMessage(this.series(), instanceAnchor(this.id, e, this.log), e).entry;
-    appendLine(eventsFile(this.series(), this.id), JSON.stringify(e), 0o600);
+    appendLine(eventsFile(this.series(), this.id), JSON.stringify(e), 0o600, ['close', 'abandon'].includes(op));
     if (e.op === 'duplicate') this.copiedSeq = e.seq;
     this.projection.update(e);
     changes.emit('change', this.id);
@@ -453,8 +471,9 @@ export class Instance {
   }
 
   save() {
-    this.doc.rev++;
-    replaceReadOnly(join(this.dir, 'screen.json'), JSON.stringify(this.doc, null, 1));
+    const rev = this.doc.rev + 1;
+    replaceReadOnly(join(this.dir, 'screen.json'), JSON.stringify({ ...this.doc, rev }, null, 1));
+    this.doc.rev = rev;
     changes.emit('change', this.id);
   }
 
@@ -490,7 +509,7 @@ export class Instance {
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
   // accepted as the agent said it did them. It commits the folder in the series owner's name. The instance is closed meanwhile, so nothing
   // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
-  async close(by: Who) {
+  async close(by: Who, quiet = false) {
     const accepted = this.asking(by.email).map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     this.closing = true;
@@ -511,8 +530,13 @@ export class Instance {
       this.closing = false;
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted during the close`);
+    try {
+      this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash, ...(quiet && { quiet: true }) });
+    } catch (e) {
+      if (!this.hole) this.doc.status = 'open';
+      throw e;
+    }
     this.save();
-    this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash });
   }
 
   async abandon(by: string) {
@@ -524,8 +548,13 @@ export class Instance {
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted`);
     this.doc.status = 'abandoned';
+    try {
+      this.append(by, 'abandon');
+    } catch (e) {
+      if (!this.hole) this.doc.status = 'open';
+      throw e;
+    }
     this.save();
-    this.append(by, 'abandon');
   }
 
   // The tombstone precedes waiting for runs and commits: a restart finishes clearing the folder.
