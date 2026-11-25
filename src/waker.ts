@@ -963,7 +963,8 @@ async function checkWake(c: Check, from: string) {
     }
     if (script) {
       // Wait for the sandbox's exit, not merely for the abort, before allowing a normal run of this series.
-      try { result = await runWakeCheck({ token, id: inst.id, view: c.view!, script, signal, checkpoint }); }
+      const live = skills().map(s => ({ id: s.id, dir: realpathSync(s.dir) }));
+      try { result = await runWakeCheck({ token, id: inst.id, view: c.view!, skills: live, script, signal, checkpoint }); }
       catch (e) { failure = (e as Error).message; }
     }
     const w = wakes(), at = Date.now(), now = new Date(at).toISOString();

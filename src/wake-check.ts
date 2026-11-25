@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, lstatSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { FILE_GB, SCOPE, scratch, TASKS, type View } from './runner.ts';
 import { listenRun, PORT, sandboxArgs, unlistenRun } from './sandbox.ts';
@@ -31,7 +31,7 @@ with open(__file__, 'rb') as f:
 exec(code)
 `;
 
-export async function runWakeCheck(o: { token: string; id: string; view: View; script: string; signal: AbortSignal; checkpoint?: () => void }): Promise<{ decision: 'continue' | 'stop'; message: string }> {
+export async function runWakeCheck(o: { token: string; id: string; view: View; skills?: { id: string; dir: string }[]; script: string; signal: AbortSignal; checkpoint?: () => void }): Promise<{ decision: 'continue' | 'stop'; message: string }> {
   const { token, id, view, script, signal } = o, ext = posix.extname(script);
   if (ext !== '.py' && ext !== '.ts') throw new Error('unsupported script type');
   const run = join(scratch, 'runs', token), dir = join(run, 'socket');
@@ -43,13 +43,17 @@ export async function runWakeCheck(o: { token: string; id: string; view: View; s
       signal.throwIfAborted();
       mkdirSync(dir, { recursive: true });
       const lib = lstatSync(view.pylib, { throwIfNoEntry: false })?.isDirectory();
+      const mountedSkills = (o.skills ?? [])
+        .filter(s => /^[a-z0-9][a-z0-9-]*$/.test(s.id) && existsSync(s.dir))
+        .map(s => [realpathSync(s.dir), `/skills/${s.id}`] as [string, string]);
       const mounts = sandboxArgs({
         cwd: view.instance, socketDir: dir,
         ro: [[join(app, 'bin/rf'), '/app/bin/rf'], [join(app, 'src/rf.ts'), '/app/src/rf.ts'], ...(lib ? [[view.pylib, '/pylib'] as [string, string]] : [])],
+        skills: mountedSkills,
         work: { ro: view.ro.filter(([src]) => existsSync(src)), rw: [] },
         env: {
           PATH: '/app/bin:/opt/venv/bin:/usr/local/bin:/usr/bin', LANG: 'C.UTF-8', TZ: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          RF_URL: `http://127.0.0.1:${PORT}`, RF_TOKEN: token, RF_INSTANCE: id, RF_WORKING: `${view.instance}/working`,
+          RF_URL: `http://127.0.0.1:${PORT}`, RF_TOKEN: token, RF_INSTANCE: id, RF_WORKING: `${view.instance}/working`, RF_SKILLS: '/skills',
           ...(view.env.RF_INDEX && { RF_INDEX: view.env.RF_INDEX }),
           PYTHONDONTWRITEBYTECODE: '1',
         },

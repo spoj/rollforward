@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { View } from '../src/runner.ts';
@@ -134,5 +134,51 @@ subprocess.run(['curl', '-sS', '-H', 'Authorization: Bearer ' + os.environ['RF_T
 
 test('a deadline uses the caller’s signal and reports a safe timeout', async () => {
   await assert.rejects(check('sleep.py', 'import time; time.sleep(30)', AbortSignal.timeout(200)), { name: 'TimeoutError', message: 'timed out' });
+  cleaned();
+});
+
+test('mounts live skills read-only at /skills with RF_SKILLS=/skills while staying read-only and offline', async () => {
+  const skillsRoot = join(root, 'skills');
+  const v1 = join(skillsRoot, 'versions', 'audit-helper', '1');
+  const v2 = join(skillsRoot, 'versions', 'audit-helper', '2');
+  const live = join(skillsRoot, 'live');
+  mkdirSync(v1, { recursive: true });
+  mkdirSync(v2, { recursive: true });
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(v1, 'SKILL.md'), '---\nname: audit-helper\ndescription: test\n---\n');
+  writeFileSync(join(v1, 'helper.py'), 'TAG = "v1-ok"\n');
+  writeFileSync(join(v2, 'helper.py'), 'TAG = "v2-unmounted"\n');
+  symlinkSync(join('..', 'versions', 'audit-helper', '1'), join(live, 'audit-helper'));
+  writeFileSync(join(prior, 'working', 'skills_check.py'), `
+import errno, json, os, socket, sys
+from pathlib import Path
+assert os.environ['RF_SKILLS'] == '/skills'
+sys.path.insert(0, '/skills/audit-helper')
+import helper
+assert helper.TAG == 'v1-ok'
+assert (Path('/skills/audit-helper/SKILL.md').read_text()).startswith('---')
+assert not Path(${JSON.stringify(v2)}).exists()
+assert not Path(${JSON.stringify(join(root, 'secret'))}).exists()
+for at in ('/skills', '/skills/audit-helper'):
+    try:
+        Path(at, 'blocked').write_text('no')
+    except OSError as e:
+        assert e.errno == errno.EROFS
+    else:
+        raise AssertionError(f'{at} was writable')
+try:
+    socket.create_connection(('1.1.1.1', 443), timeout=1)
+except OSError:
+    pass
+else:
+    raise AssertionError('outbound network reachable')
+print(json.dumps({'decision': 'stop', 'message': 'Skill read ok: ' + helper.TAG}))
+`);
+  const result = await runWakeCheck({
+    token, id: 'today', view,
+    skills: [{ id: 'audit-helper', dir: join(live, 'audit-helper') }],
+    script: `${previous}/working/skills_check.py`, signal: AbortSignal.timeout(5_000),
+  });
+  assert.deepEqual(result, { decision: 'stop', message: 'Skill read ok: v1-ok' });
   cleaned();
 });

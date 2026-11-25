@@ -109,7 +109,7 @@ export const userland = () => [
 
 // bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable, the socket at /run/rf, and `env` as
 // its whole environment. HOME and /tmp are on the run's scratch, or empty read-only mounts for a wake check.
-export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; tmp?: string; ro: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
+export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; tmp?: string; ro: [string, string][]; skills?: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
     ...userland(),
@@ -117,8 +117,9 @@ export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; 
     ...(o.tmp ? ['--bind', o.tmp, '/tmp'] : ['--tmpfs', '/tmp', '--remount-ro', '/tmp']),
     ...(o.home ? ['--bind', o.home, '/home/agent'] : ['--tmpfs', '/home/agent', '--remount-ro', '/home/agent']),
     '--ro-bind', o.socketDir, '/run/rf',
-    // /app holds only what is bound there, read-only, as /work does.
+    // /app holds only what is bound there, read-only, as /work and /skills do.
     '--tmpfs', '/app', ...o.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/app',
+    ...(o.skills ? ['--tmpfs', '/skills', ...o.skills.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/skills'] : []),
     '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',
     ...Object.entries({ ...o.env, HOME: '/home/agent', TMPDIR: '/tmp' }).flatMap(([k, v]) => ['--setenv', k, v]),
     '--chdir', o.cwd,
