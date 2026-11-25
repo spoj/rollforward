@@ -13,7 +13,7 @@ import { PRINT, websitesOf, type Browsers } from './browsers.ts';
 import { builtInAllowed } from './sandbox.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from './series.ts';
 import { pushed, skills } from './skills.ts';
-import { AGENT, commit, committed, forget } from './git.ts';
+import { AGENT, commit, commitLogIfChanged, committed, forget } from './git.ts';
 import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
 import { pruneGrants } from './grants.ts';
@@ -697,18 +697,18 @@ export function closed(inst: Instance, by: string, quiet?: boolean, followup?: T
       })();
   const commits: Promise<unknown>[] = [];
   if (was) {
-    let corr = was.log.find(e => e.op === 'correction' && e.kind === 'superseded' && (e.see as { inst?: string } | undefined)?.inst === inst.id);
+    let corr = was.log.find(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null && (e.see as { inst?: string } | undefined)?.inst === inst.id);
     if (!corr) {
       corr = was.append(by, 'correction', { kind: 'superseded', text: `${inst.label} supersedes it`, see: { inst: inst.id, label: inst.label } }, durable);
     }
-    let echoed = inst.log.find(e => e.op === 'corrected' && e.kind === 'superseded' && e.inst === was.id && e.seq === corr!.seq);
+    let echoed = inst.log.find(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null && e.inst === was.id && e.seq === corr!.seq);
     if (!echoed) {
       echoed = inst.append(by, 'corrected', { inst: was.id, label: was.label, seq: corr.seq, kind: 'superseded' }, durable);
     }
     const who = by === 'agent' ? AGENT : { name: users()[by]?.name ?? by, email: by };
     for (const [i, m, x] of [[was, `Correction: ${was.label} is superseded, see ${inst.label}`, corr], [inst, `Corrected: ${was.label} is superseded`, echoed]] as const) {
       if (i.doc.status === 'closed') {
-        const p = commit(i.dir, who, m);
+        const p = commitLogIfChanged(i.dir, who, m);
         commits.push(followup ? p : p.catch(err => i.append('server', 'commit', { cause: x.seq, error: err.message })));
       }
     }

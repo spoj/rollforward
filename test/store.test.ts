@@ -513,16 +513,19 @@ test('terminal recovery matches close by op+seq (not shadowed by corrected), rep
     await recover();
 
     const r2 = createInstance('monthly', '2026-09-r2', owner);
-    // Append a `corrected` entry whose `seq` field collides with the upcoming close event's seq (r2.log.length + 2 = 3).
-    r2.append(owner, 'corrected', { inst: base.id, label: base.label, seq: 3, kind: 'wrong' });
-    assert.equal(r2.log.length, 2);
+    // An existing item-level `superseded` correction pointing to r2 must NOT satisfy the whole-instance supersession replay check.
+    const itemCorr = base.append(owner, 'correction', { item: 'item1', kind: 'superseded', text: 'item1 superseded', see: { inst: r2.id, label: r2.label } }, true);
+    r2.append(owner, 'corrected', { item: 'item1', inst: base.id, label: base.label, seq: itemCorr.seq, kind: 'superseded' }, true);
+    // Append a `corrected` entry whose `seq` field collides with the upcoming close event's seq (r2.log.length + 2 = 4).
+    r2.append(owner, 'corrected', { inst: base.id, label: base.label, seq: 4, kind: 'wrong' });
+    assert.equal(r2.log.length, 3);
     setWake(r2.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'cancel on close' });
     const r2Auth = authority(r2);
     const followup = await r2.close(who, { quiet: true, authority: r2Auth });
-    assert.equal(followup.seq, 3, 'close event seq collides with earlier corrected.seq');
+    assert.equal(followup.seq, 4, 'close event seq collides with earlier corrected.seq');
     assert.equal(followup.supersedes, base.id);
 
-    // Simulate a crash partway through supersession: `correction` landed on `base`, but `corrected` (superseded) did NOT land on `r2`,
+    // Simulate a crash partway through supersession: whole-instance `correction` landed on `base`, but `corrected` did NOT land on `r2`,
     // and neither repo was committed for the supersession yet.
     const corr = base.append(owner, 'correction', { kind: 'superseded', text: `${r2.label} supersedes it`, see: { inst: r2.id, label: r2.label } }, true);
 
@@ -533,11 +536,30 @@ test('terminal recovery matches close by op+seq (not shadowed by corrected), rep
     assert.deepEqual(pendingTerminalFollowups(), [], 'pending follow-up cleared after supersession commits complete');
     assert.deepEqual(wakesOf(r2.id), [], 'close cancelled r2 pending wakes');
     assert.equal(instance(next.id).log.filter(e => e.op === 'wake' && (e.closed as any)?.inst === r2.id).length, 1, 'r2 close woke close-time recipient');
-    assert.equal(instance(base.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded').length, 1, 'correction not duplicated on replay');
-    const echoed = instance(r2.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.inst === base.id && e.seq === corr.seq);
-    assert.equal(echoed.length, 1, 'missing corrected side completed on replay');
+    assert.equal(instance(base.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance correction recorded once despite prior item-level correction');
+    const echoed = instance(r2.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null && e.inst === base.id && e.seq === corr.seq);
+    assert.equal(echoed.length, 1, 'missing whole-instance corrected side completed on replay');
     assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(base.id).dir, encoding: 'utf8' }), /Correction: 2026-09 is superseded/);
     assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(r2.id).dir, encoding: 'utf8' }), /Corrected: 2026-09 is superseded/);
+
+    // Simulate a crash AFTER both Git commits landed and BEFORE ack: replaying must NOT create duplicate Git commits.
+    const baseCommits = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(base.id).dir, encoding: 'utf8' }).trim();
+    const r2Commits = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(r2.id).dir, encoding: 'utf8' }).trim();
+    writeFileSync(join(tmp, '.rf', 'terminal-pending.json'), JSON.stringify({ [followup.key]: followup }));
+    openStore(tmp);
+    await recover();
+    assert.deepEqual(pendingTerminalFollowups(), []);
+    assert.equal(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(base.id).dir, encoding: 'utf8' }).trim(), baseCommits, 'no duplicate Git commit on base during replay');
+    assert.equal(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(r2.id).dir, encoding: 'utf8' }).trim(), r2Commits, 'no duplicate Git commit on r2 during replay');
+
+    // Also verify a fresh superseding close when ONLY an item-level correction existed still records both whole-instance entries!
+    const r3 = createInstance('monthly', '2026-09-r3', owner);
+    const itemOnly = instance(r2.id).append(owner, 'correction', { item: 'line9', kind: 'superseded', text: 'line9 superseded', see: { inst: r3.id, label: r3.label } }, true);
+    r3.append(owner, 'corrected', { item: 'line9', inst: r2.id, label: r2.label, seq: itemOnly.seq, kind: 'superseded' }, true);
+    await r3.close(who, { quiet: true, authority: authority(r3) });
+    await recover();
+    assert.equal(instance(r2.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance correction appended despite prior item-level correction');
+    assert.equal(instance(r3.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance corrected appended despite prior item-level corrected');
 
     // 2) Failure writing `.rf/terminal-pending.json` rolls back in-memory doc.status to `open`.
     const blocked = createInstance('monthly', '2026-11', owner);

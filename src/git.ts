@@ -43,6 +43,24 @@ export function commit(dir: string, who: Who, message: string, after?: Promise<u
   return next;
 }
 
+// Commits a closed instance's synced log.jsonl only when it differs from HEAD:log.jsonl, so replay never creates duplicate commits.
+export function commitLogIfChanged(dir: string, who: Who, message: string): Promise<string | undefined> {
+  if (gone.has(dir)) return Promise.reject(new Error('the instance was deleted, with its history'));
+  const next = (queue.get(dir) ?? Promise.resolve()).then(async () => {
+    syncInstanceLog(dir);
+    if (existsSync(join(dir, '.git')) && existsSync(join(dir, 'log.jsonl'))) {
+      const [workBlob, headBlob] = await Promise.all([
+        git(dir, 'hash-object', 'log.jsonl').catch(() => ''),
+        git(dir, 'rev-parse', '-q', '--verify', 'HEAD:log.jsonl').catch(() => ''),
+      ]);
+      if (workBlob && headBlob && workBlob === headBlob) return undefined;
+    }
+    return snapshot(dir, who, message);
+  });
+  queue.set(dir, next.catch(() => {}));
+  return next;
+}
+
 // Once the folder's commits queued so far are done.
 export const committed = (dir: string) => queue.get(dir);
 
