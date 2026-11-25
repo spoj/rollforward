@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { find, INLINE, killTree, parseStat, redact, sample, scriptOf, startOf, type Sandbox } from '../src/monitor.ts';
+import { find, INLINE, killTree, parseStat, redact, sample, scriptOf, signal, startOf, type Sandbox } from '../src/monitor.ts';
 
 // The system monitor on a /proc of the test's own, as Linux writes one: a server, two runs' sandboxes, one busy, and a process of the
 // host's own beside them; and kills of real processes, where there are any.
@@ -172,4 +172,21 @@ test('a kill ends what ignores SIGTERM with SIGKILL once its grace is over, and 
   assert.ok(Date.now() - at >= 300, 'after its grace');
   await exited;
   for (const pid of all) assert.ok(gone(pid), `${pid} ended`);
+});
+
+test('pidfd signaling refuses a mismatched start time without harming the live process, and kills on exact start', linux, async () => {
+  const child = spawn('sleep', ['60'], { stdio: 'ignore' });
+  try {
+    const start = statOf(child.pid!)!.start;
+    signal('/proc', child.pid!, start + 1, 'SIGTERM');
+    await new Promise(ok => setTimeout(ok, 50));
+    assert.ok(!gone(child.pid!), 'mismatched start time must not signal a live process');
+
+    const exited = once(child, 'exit');
+    signal('/proc', child.pid!, start, 'SIGTERM');
+    await exited;
+    assert.ok(gone(child.pid!), 'matching start time terminates the process via pidfd');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
 });

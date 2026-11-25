@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { cpus, freemem, loadavg, totalmem } from 'node:os';
 import { posix } from 'node:path';
@@ -208,8 +209,39 @@ const alive = (proc: string, pid: number, start: number) => {
   const s = parseStat(read(`${proc}/${pid}/stat`) ?? '');
   return live(s) && s.start === start;
 };
-// A signal to the process it was, by its start; one that ended meanwhile takes none.
-function signal(proc: string, pid: number, start: number, sig: NodeJS.Signals) {
+// Pin the kernel process instance via pidfd, re-verify its start time while holding the fd, and deliver the signal via pidfd_send_signal
+// so a recycled PID can never receive a signal meant for an exited process.
+const PIDFD_SIGNAL = `
+import os, signal, sys
+proc, pid, expected, sig_name = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+sig = getattr(signal, sig_name)
+try:
+    fd = os.pidfd_open(pid, 0)
+except ProcessLookupError:
+    sys.exit(0)
+try:
+    with open(f"{proc}/{pid}/stat", "r", encoding="latin-1") as f:
+        s = f.read()
+    i = s.rfind(")")
+    if i < 0:
+        sys.exit(0)
+    rest = s[i + 2:].split(" ")
+    if len(rest) <= 19 or rest[0] in ("Z", "X", "x") or int(rest[19]) != expected:
+        sys.exit(0)
+    try:
+        signal.pidfd_send_signal(fd, sig)
+    except ProcessLookupError:
+        pass
+except FileNotFoundError:
+    pass
+finally:
+    os.close(fd)
+`;
+export function signal(proc: string, pid: number, start: number, sig: NodeJS.Signals) {
+  if (process.platform === 'linux' && proc === PROC) {
+    execFileSync('python3', ['-c', PIDFD_SIGNAL, proc, String(pid), String(start), sig], { stdio: 'ignore' });
+    return;
+  }
   if (!alive(proc, pid, start)) return;
   try { process.kill(pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
 }
