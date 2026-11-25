@@ -26,8 +26,10 @@ function fixture(t: TestContext) {
 
 const state = () => readJson<State>('wakes.json', { pending: {}, fired: {}, requests: {} });
 
-test('request provenance is canonical and survives a restart', t => {
-  const root = fixture(t), source = createInstance('origin', 'Author', by), target = createInstance('target', 'Existing', by);
+test('request provenance is canonical and survives a restart, while cross-series wakes are rejected', t => {
+  const root = fixture(t), other = createInstance('origin', 'Author', by), source = createInstance('target', 'Author', by), target = createInstance('target', 'Existing', by);
+  assert.throws(() => setWake(target.id, { ...schedule, inst: other.id }), /another series: runs can only wake their own series/);
+  assert.throws(() => setWake('target', { ...schedule, inst: other.id, label: 'Next' }), /another series: runs can only wake their own series/);
   const targeted = setWake(target.id, { ...schedule, inst: source.id }).id;
   const floating = setWake('target', { ...schedule, inst: source.id, label: 'Next' }).id;
   fire();
@@ -64,8 +66,8 @@ test('only the exact saved decision excuses a missing request row after restart'
   }
 });
 
-test('deleting a source clears cross-series request bodies with or without scheduler references', async t => {
-  const root = fixture(t), source = createInstance('origin', 'Author', by), dest = createInstance('target', 'Existing', by);
+test('deleting a source clears its request bodies with or without scheduler references', async t => {
+  const root = fixture(t), source = createInstance('target', 'Author', by), dest = createInstance('target', 'Existing', by);
   const decided = setWake(dest.id, { ...schedule, inst: source.id }).id;
   const waiting = setWake('target', { ...schedule, inst: source.id, label: 'Next' }).id;
   const unrelated = setWake('target', { at, from: 'person', label: 'Next' }).id;

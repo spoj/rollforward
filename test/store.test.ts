@@ -352,36 +352,32 @@ test('screen put distinguishes a missing rev from a stale rev without leaking th
   }
 });
 
-test('close and abandon persist their terminal audit event before screen.json, reconcile on startup, and replay post-close wakes idempotently', async () => {
+test('close and abandon persist their terminal audit event before screen.json, repair on startup, prune own pending wakes on recover, and never fan out or auto-supersede', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-'));
   const { saveTree, writeJson } = await import('../src/system.ts');
-  const { authority } = await import('../src/logins.ts');
   const { ownSeries } = await import('./owner-fixture.ts');
-  const { ackTerminalFollowup, pendingTerminalFollowups } = await import('../src/store.ts');
-  const { closed, recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
+  const { recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
   const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
   try {
     initSystem(tmp);
     openStore(tmp);
     saveTree({ workspaces: { w: { name: 'W', owners: [owner], members: [] } }, series: { monthly: { name: 'Monthly', workspace: 'w' } } });
     writeJson('users.json', { [owner]: { name: 'Alex', role: 'user' } });
-    ownSeries('monthly', owner, [], false);
+    ownSeries('monthly', owner, [], true);
 
-    // 1) Close fails if append fails: never leaves terminal screen.json or stale pending follow-up, and retries cleanly.
+    // 1) Close fails if append fails: never leaves terminal screen.json or partial state, and retries cleanly.
     const failClose = createInstance('monthly', '2026-01', owner);
     const origAppend = failClose.append.bind(failClose);
     failClose.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
       if (op === 'close') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
       return origAppend(by, op, fields);
     }) as typeof failClose.append;
-    await assert.rejects(failClose.close(who, { authority: authority(failClose) }), /ENOSPC/);
+    await assert.rejects(failClose.close(who), /ENOSPC/);
     assert.equal(failClose.doc.status, 'open');
     assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'open');
     assert.equal(failClose.log.some(e => e.op === 'close'), false);
-    assert.deepEqual(pendingTerminalFollowups(), [], 'failed append cleans up pending follow-up');
     failClose.append = origAppend;
-    const f1 = await failClose.close(who, { authority: authority(failClose) });
-    ackTerminalFollowup(f1.key);
+    await failClose.close(who);
     assert.equal(failClose.doc.status, 'closed');
     assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'closed');
 
@@ -397,25 +393,23 @@ test('close and abandon persist their terminal audit event before screen.json, r
     assert.equal(JSON.parse(readFileSync(join(failAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
     assert.equal(failAbandon.log.some(e => e.op === 'abandon'), false);
 
-    // 3) Simulated crash between durable close/abandon event append and screen.json replacement,
-    // PLUS a new draft opened AFTER close (must NOT receive recovered close wake).
-    const cutClose = createInstance('monthly', '2026-03', owner);
+    // 3) Simulated crash between durable close/abandon append and screen.json save:
+    // openStore() repairs screen.json, and recover() prunes pending wakes on closed/abandoned instances
+    // even across a second restart after screen.json is already terminal.
+    const cutClose = createInstance('monthly', '20261124', owner);
     const cutAbandon = createInstance('monthly', '2026-04', owner);
-    const later = createInstance('monthly', '2026-05', owner);
-    setWake(cutClose.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
-    setWake(cutAbandon.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
+    const later = createInstance('monthly', '20261125', owner);
+    setWake(cutClose.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending close' });
+    setWake(cutAbandon.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending abandon' });
+    setWake(later.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'keep open wake' });
 
-    const closeAuth = authority(cutClose);
     cutClose.save = () => {
       assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
       assert.equal(cutClose.log.at(-1)!.op, 'close');
       throw new Error('simulated crash before screen save');
     };
-    await assert.rejects(cutClose.close(who, { quiet: true, authority: closeAuth }), /simulated crash before screen save/);
+    await assert.rejects(cutClose.close(who, true), /simulated crash before screen save/);
     assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
-
-    // Open a brand-new draft AFTER cutClose closed: must NOT receive cutClose's recovered close notification.
-    const openedAfterClose = createInstance('monthly', '2026-06', owner);
 
     cutAbandon.save = () => {
       assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
@@ -425,48 +419,28 @@ test('close and abandon persist their terminal audit event before screen.json, r
     await assert.rejects(cutAbandon.abandon(owner), /simulated crash before screen save/);
     assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
 
-    // Simulate a second crash AFTER openStore repairs screen.json, BEFORE recover() runs!
+    // First restart repairs screen.json; second restart runs with screen.json already terminal.
     openStore(tmp);
     assert.equal(instance(cutClose.id).doc.status, 'closed');
     assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'closed');
     assert.equal(instance(cutAbandon.id).doc.status, 'abandoned');
     assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'abandoned');
-    // Restart AGAIN with screen.json ALREADY terminal: durable pending follow-ups must STILL survive and run!
     openStore(tmp);
-    assert.equal(pendingTerminalFollowups().length, 2, 'pending follow-ups survive restart even after screen.json is already terminal');
 
     recover();
-    assert.deepEqual(pendingTerminalFollowups(), [], 'pending follow-ups acknowledged only after recover() completes');
-    assert.deepEqual(wakesOf(cutClose.id), [], 'reconciled close cancels pending wakes');
-    assert.deepEqual(wakesOf(cutAbandon.id), [], 'reconciled abandon cancels pending wakes');
-    const wakesAfterRecover = instance(later.id).log.filter(e => e.op === 'wake');
-    assert.equal(wakesAfterRecover.length, 1, 'reconciled close notifies close-time later open instance');
-    assert.equal(wakesAfterRecover[0].quiet, true, 'reconciled close preserves quiet flag');
-    assert.deepEqual(wakesAfterRecover[0].authority, closeAuth, 'reconciled close uses captured close-time authority');
-    assert.match(String(wakesAfterRecover[0].text), /2026-03 closed/);
-    assert.equal(instance(openedAfterClose.id).log.filter(e => e.op === 'wake').length, 0, 'draft opened after close is NOT woken on replay');
+    assert.deepEqual(wakesOf(cutClose.id), [], 'recover() prunes pending wakes targeting closed instance');
+    assert.deepEqual(wakesOf(cutAbandon.id), [], 'recover() prunes pending wakes targeting abandoned instance');
+    assert.equal(wakesOf(later.id).length, 1, 'recover() preserves pending wakes targeting open instances');
+    assert.equal(instance(later.id).log.filter(e => e.op === 'wake').length, 0, 'closing 20261124 never wakes open 20261125');
 
-    // Replaying closed() again for the same close event is idempotent.
-    closed(instance(cutClose.id), owner, true);
-    assert.equal(instance(later.id).log.filter(e => e.op === 'wake').length, 1, 'closed() replay is idempotent by close-event identity');
-
-    // 4) Crash AFTER screen.json is closed + consent change before replay -> MUST fail closed (no new lease minted!).
-    const afterScreen = createInstance('monthly', '2026-07', owner);
-    const recipient = createInstance('monthly', '2026-08', owner);
-    setWake(afterScreen.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'still pending' });
-    const oldAuth = authority(afterScreen);
-    // Complete close() (both append AND screen.json save succeed), but crash BEFORE cancelWakes/closed/ack!
-    await afterScreen.close(who, { quiet: true, authority: oldAuth });
-    assert.equal(JSON.parse(readFileSync(join(afterScreen.dir, 'screen.json'), 'utf8')).status, 'closed');
-    assert.equal(pendingTerminalFollowups().length, 1, 'follow-up remains pending after screen save until acknowledged');
-
-    // Owner's consent changes (new epoch / new login) before recovery runs.
-    ownSeries('monthly', owner, ['m365:onedrive'], true);
-    openStore(tmp);
-    recover();
-    assert.deepEqual(wakesOf(afterScreen.id), [], 'pending wakes still cancelled on recovery');
-    assert.equal(instance(recipient.id).log.filter(e => e.op === 'wake').length, 0, 'recovered close fails closed and does NOT mint a new lease under changed consent');
-    assert.deepEqual(pendingTerminalFollowups(), []);
+    // 4) Closing an -r2 revision does NOT mutate the base closed period.
+    const base = createInstance('monthly', '202611', owner);
+    await base.close(who);
+    const baseLogBefore = base.log.length;
+    const r2 = createInstance('monthly', '202611-r2', owner);
+    await r2.close(who);
+    assert.equal(base.log.length, baseLogBefore, 'closing 202611-r2 does not append correction to 202611');
+    assert.equal(r2.log.some(e => e.op === 'corrected'), false, 'closing 202611-r2 does not append corrected');
   } finally {
     stopWaker();
     rmSync(tmp, { recursive: true, force: true });
@@ -485,94 +459,6 @@ test('Instance.append rejects unsafe integers and non-finite numbers before writ
     openStore(tmp);
     assert.equal(instance(inst.id).log.length, 1);
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-});
-
-test('terminal recovery matches close by op+seq (not shadowed by corrected), replays half-recorded supersession idempotently, and rolls back status on pending write failure', async () => {
-  const { execFileSync } = await import('node:child_process');
-  const { initSystem, saveTree } = await import('../src/system.ts');
-  const { upsertUser } = await import('../src/auth.ts');
-  const { authority } = await import('../src/logins.ts');
-  const { ownSeries } = await import('./owner-fixture.ts');
-  const { pendingTerminalFollowups } = await import('../src/store.ts');
-  const { recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
-  const tmp = mkdtempSync(join(tmpdir(), 'rf-store-reverify-'));
-  try {
-    initSystem(tmp);
-    openStore(tmp);
-    const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
-    upsertUser(owner, { name: 'Alex', role: 'user' });
-    saveTree({ workspaces: { w: { name: 'W', owners: [owner], members: [] } }, series: { monthly: { name: 'Monthly', workspace: 'w' } } });
-    ownSeries('monthly', owner, [], true);
-
-    // 1) An earlier `corrected` event whose `seq` field equals the subsequent `close` event's seq must NOT shadow `close`.
-    const base = createInstance('monthly', '2026-09', owner);
-    const next = createInstance('monthly', '2026-10', owner);
-    await base.close(who, { quiet: true, authority: authority(base) });
-    await recover();
-
-    const r2 = createInstance('monthly', '2026-09-r2', owner);
-    // An existing item-level `superseded` correction pointing to r2 must NOT satisfy the whole-instance supersession replay check.
-    const itemCorr = base.append(owner, 'correction', { item: 'item1', kind: 'superseded', text: 'item1 superseded', see: { inst: r2.id, label: r2.label } }, true);
-    r2.append(owner, 'corrected', { item: 'item1', inst: base.id, label: base.label, seq: itemCorr.seq, kind: 'superseded' }, true);
-    // Append a `corrected` entry whose `seq` field collides with the upcoming close event's seq (r2.log.length + 2 = 4).
-    r2.append(owner, 'corrected', { inst: base.id, label: base.label, seq: 4, kind: 'wrong' });
-    assert.equal(r2.log.length, 3);
-    setWake(r2.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'cancel on close' });
-    const r2Auth = authority(r2);
-    const followup = await r2.close(who, { quiet: true, authority: r2Auth });
-    assert.equal(followup.seq, 4, 'close event seq collides with earlier corrected.seq');
-    assert.equal(followup.supersedes, base.id);
-
-    // Simulate a crash partway through supersession: whole-instance `correction` landed on `base`, but `corrected` did NOT land on `r2`,
-    // and neither repo was committed for the supersession yet.
-    const corr = base.append(owner, 'correction', { kind: 'superseded', text: `${r2.label} supersedes it`, see: { inst: r2.id, label: r2.label } }, true);
-
-    openStore(tmp);
-    assert.equal(pendingTerminalFollowups().length, 1, 'openStore must NOT prune close follow-up shadowed by earlier corrected.seq');
-    await recover();
-
-    assert.deepEqual(pendingTerminalFollowups(), [], 'pending follow-up cleared after supersession commits complete');
-    assert.deepEqual(wakesOf(r2.id), [], 'close cancelled r2 pending wakes');
-    assert.equal(instance(next.id).log.filter(e => e.op === 'wake' && (e.closed as any)?.inst === r2.id).length, 1, 'r2 close woke close-time recipient');
-    assert.equal(instance(base.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance correction recorded once despite prior item-level correction');
-    const echoed = instance(r2.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null && e.inst === base.id && e.seq === corr.seq);
-    assert.equal(echoed.length, 1, 'missing whole-instance corrected side completed on replay');
-    assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(base.id).dir, encoding: 'utf8' }), /Correction: 2026-09 is superseded/);
-    assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(r2.id).dir, encoding: 'utf8' }), /Corrected: 2026-09 is superseded/);
-
-    // Simulate a crash AFTER both Git commits landed and BEFORE ack: replaying must NOT create duplicate Git commits.
-    const baseCommits = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(base.id).dir, encoding: 'utf8' }).trim();
-    const r2Commits = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(r2.id).dir, encoding: 'utf8' }).trim();
-    writeFileSync(join(tmp, '.rf', 'terminal-pending.json'), JSON.stringify({ [followup.key]: followup }));
-    openStore(tmp);
-    await recover();
-    assert.deepEqual(pendingTerminalFollowups(), []);
-    assert.equal(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(base.id).dir, encoding: 'utf8' }).trim(), baseCommits, 'no duplicate Git commit on base during replay');
-    assert.equal(execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd: instance(r2.id).dir, encoding: 'utf8' }).trim(), r2Commits, 'no duplicate Git commit on r2 during replay');
-
-    // Also verify a fresh superseding close when ONLY an item-level correction existed still records both whole-instance entries!
-    const r3 = createInstance('monthly', '2026-09-r3', owner);
-    const itemOnly = instance(r2.id).append(owner, 'correction', { item: 'line9', kind: 'superseded', text: 'line9 superseded', see: { inst: r3.id, label: r3.label } }, true);
-    r3.append(owner, 'corrected', { item: 'line9', inst: r2.id, label: r2.label, seq: itemOnly.seq, kind: 'superseded' }, true);
-    await r3.close(who, { quiet: true, authority: authority(r3) });
-    await recover();
-    assert.equal(instance(r2.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance correction appended despite prior item-level correction');
-    assert.equal(instance(r3.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null).length, 1, 'whole-instance corrected appended despite prior item-level corrected');
-
-    // 2) Failure writing `.rf/terminal-pending.json` rolls back in-memory doc.status to `open`.
-    const blocked = createInstance('monthly', '2026-11', owner);
-    const blocker = join(tmp, '.rf', 'terminal-pending.json.tmp');
-    mkdirSync(blocker, { recursive: true });
-    try {
-      await assert.rejects(blocked.close(who, { quiet: true, authority: authority(blocked) }));
-      assert.equal(blocked.doc.status, 'open', 'in-memory status rolled back to open on pending write failure');
-    } finally {
-      rmSync(blocker, { recursive: true, force: true });
-    }
-  } finally {
-    stopWaker();
     rmSync(tmp, { recursive: true, force: true });
   }
 });

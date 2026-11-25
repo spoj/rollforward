@@ -170,9 +170,12 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   // 1) Target moved to another workspace after run-created weekly wake was set (including after source deletion)
   const moved = await setupPair('moved');
   const movedDeleted = await setupPair('moved-del');
-  // 2) Source closed in the same workspace (cadence must keep firing & re-arming)
+  // 2) Same-workspace cross-series legacy persisted wake (must be dropped cleanly without starting anything)
+  const sameWsCross = await setupPair('same-ws-cross');
+  // 3) Closed source in the SAME series (cadence must keep firing & re-arming)
   const closedLocal = await setupPair('closed');
-  assert.equal((await call('POST', `/api/instances/${closedLocal.inst.id}/close`, JSON.stringify({ quiet: true }), bobCookie)).status, 200);
+  const closedOwnInst = await (await call('POST', `/api/series/${closedLocal.target.id}`, JSON.stringify({ label: 'one', quiet: true }), bobCookie)).json();
+  assert.equal((await call('POST', `/api/instances/${closedOwnInst.id}/close`, JSON.stringify({ quiet: true }), bobCookie)).status, 200);
   assert.equal((await call('PUT', `/api/series/${closedLocal.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [] }), bobCookie)).status, 200);
 
   const wakesFile = join(root, '.rf', 'wakes.json');
@@ -184,7 +187,8 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   };
   w.pending['wk_moved'] = { target: moved.target.id, at: dueSoon, from: 'Source-moved/Feeder/one', inst: moved.inst.id, label: '2026-11-15', days, text: 'from moved', ...snapshot(moved) };
   w.pending['wk_moved_del'] = { target: movedDeleted.target.id, at: dueSoon, from: 'Source-moved-del/Feeder/one', inst: movedDeleted.inst.id, label: '2026-11-15', days, text: 'from moved deleted', ...snapshot(movedDeleted) };
-  w.pending['wk_closed'] = { target: closedLocal.target.id, at: dueSoon, from: 'Source-closed/Feeder/one', inst: closedLocal.inst.id, label: '2026-11-15', days, text: 'from closed', ...snapshot(closedLocal) };
+  w.pending['wk_same_ws_cross'] = { target: sameWsCross.target.id, at: dueSoon, from: 'Source-same-ws-cross/Feeder/one', inst: sameWsCross.inst.id, label: '2026-11-15', days, text: 'from same ws other series', ...snapshot(sameWsCross) };
+  w.pending['wk_closed'] = { target: closedLocal.target.id, at: dueSoon, from: 'Source-closed/Target/one', inst: closedOwnInst.id, label: '2026-11-15', days, text: 'from closed', ...snapshot(closedLocal) };
   writeFileSync(wakesFile, JSON.stringify(w, null, 1));
 
   assert.equal((await call('POST', `/api/instances/${movedDeleted.inst.id}/delete`, '{}', bobCookie)).status, 200);
@@ -201,9 +205,11 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   await nap(1000);
 
   const carolAll = (await json('/api', carolCookie)).flatMap((x: any) => x.series);
+  const bobAll = (await json('/api', bobCookie)).flatMap((x: any) => x.series);
   const carolSer = carolAll.find((s: any) => s.id === moved.target.id);
   const carolDelSer = carolAll.find((s: any) => s.id === movedDeleted.target.id);
-  const bobClosedSer = (await json('/api', bobCookie)).flatMap((x: any) => x.series).find((s: any) => s.id === closedLocal.target.id);
+  const bobSameWsCrossSer = bobAll.find((s: any) => s.id === sameWsCross.target.id);
+  const bobClosedSer = bobAll.find((s: any) => s.id === closedLocal.target.id);
   const finalWakes = JSON.parse(readFileSync(wakesFile, 'utf8'));
 
   assert.equal(carolSer.instances.length, 0, 'cross-workspace run wake must not start an instance');
@@ -211,8 +217,10 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   assert.equal(finalWakes.pending['wk_moved'], undefined, 'cross-workspace weekly run wake must not re-arm');
   assert.equal(carolDelSer.instances.length, 0, 'deleted cross-workspace run wake must not start an instance');
   assert.equal(finalWakes.pending['wk_moved_del'], undefined, 'deleted cross-workspace weekly run wake must not re-arm');
-  assert.equal(bobClosedSer.instances.length, 1, 'closed same-workspace source cadence still fires');
-  assert.ok(finalWakes.pending['wk_closed'], 'closed same-workspace weekly cadence still re-arms');
+  assert.equal(bobSameWsCrossSer.instances.length, 0, 'same-workspace cross-series persisted wake must not start an instance');
+  assert.equal(finalWakes.pending['wk_same_ws_cross'], undefined, 'same-workspace cross-series persisted wake was dropped');
+  assert.equal(bobClosedSer.instances.length, 2, 'closed same-series source cadence still fires and creates next period');
+  assert.ok(finalWakes.pending['wk_closed'], 'closed same-series weekly cadence still re-arms');
 });
 
 test('R4-DATA-04: streaming upload/attach recheck archive, proposals refuse moving archived series, and archive refuses in-flight close/abandon', async () => {

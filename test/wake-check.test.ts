@@ -182,7 +182,7 @@ test('a stalled check confirmation cannot postpone the deadline', { timeout: 15_
   }
 });
 
-test('a weekly wake checks the new period using the prior closed script and keeps its weekly time after the backstop', async () => {
+test('a weekly wake checks the new period using the prior closed script without creating an empty instance on stop, and keeps its weekly time after the backstop', async () => {
   const { iid, sid, check } = await fixture('Weekly', `print('{"decision":"stop","message":"Nothing this period"}')\n`, 'py', '2000-01-01');
   const close = await call('POST', `/api/instances/${iid}/close`, { quiet: true });
   assert.equal(close.status, 200, await close.text());
@@ -191,12 +191,18 @@ test('a weekly wake checks the new period using the prior closed script and keep
   const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][at.getDay()];
   await json(`/api/wakes/${sid}`, 'PUT', { at: at.toISOString(), days, check, deadline, label });
   const listing = async () => (await json('/api'))[0].series.find(s => s.id === sid);
-  const target = await until('the new period to stop', async () => (await listing()).instances.find(i => i.label === label && i.wakeCheck));
-  assert.equal(target.wakeCheck.message, 'Nothing this period');
   const next = new Date(at);
   next.setDate(at.getDate() + 7);
-  assert.equal((await listing()).wakes[0].at, next.toISOString());
-  await until('a run in the stopped period at the deadline', async () => (await info(target.id)).log.some(e => e.op === 'done'));
+  await until('the weekly check to stop and advance without creating an empty instance', async () => (await listing()).wakes[0]?.at === next.toISOString());
+  assert.equal((await listing()).instances.length, 1, 'stop creates zero empty open instances on disk');
+  assert.equal((await listing()).wakes[0].skipCount, 1);
+  assert.equal((await listing()).wakes[0].lastSkipMessage, 'Nothing this period');
+  const target = await until('the deadline to create and run the stopped period', async () => {
+    const inst = (await listing()).instances.find(i => i.label === label);
+    if (!inst) return false;
+    return (await info(inst.id)).log.some(e => e.op === 'done') && inst;
+  });
+  assert.equal(target.label, label);
   assert.equal((await listing()).wakes[0].at, next.toISOString());
   assert.equal((await listing()).instances.length, 2);
 });
@@ -434,4 +440,55 @@ test('re-registering an equivalent recurring wake preserves skipSince/skipCount 
     nextConfirmation = undefined;
     release.resolve();
   }
+});
+
+test('weekly series wake-check returning stop 4 times leaks 0 empty open instances, and 5th continue creates the instance cleanly', { timeout: 30_000 }, async () => {
+  const modeFile = join(tmp, 'weekly-noleak-mode.txt');
+  writeFileSync(modeFile, 'stop');
+  // Seed a closed period holding the check script (which reads a sibling file via Python or simply switches after 4 stops via RF_INDEX? No, bwrap cannot see tmp outside /work, so put mode file inside the closed instance's working/ or update the script file in the closed instance's working/!).
+  const { iid, sid, check } = await fixture('WeeklyNoLeak', `print('{"decision":"stop","message":"Quiet week"}')\n`, 'py', '2026-01-01');
+  const close = await call('POST', `/api/instances/${iid}/close`, { quiet: true });
+  assert.equal(close.status, 200, await close.text());
+
+  const at = new Date(iso(1200));
+  const label = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+  const days = 'mon,tue,wed,thu,fri,sat,sun';
+  const created = await json(`/api/wakes/${sid}`, 'PUT', { at: at.toISOString(), days, check, label, backstopHours: 168 });
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  const listing = async () => (await json('/api'))[0].series.find((s: any) => s.id === sid);
+
+  // Fire 4 consecutive stops (exceeding MAX_OPEN=3!): open instance count must remain 0 and no requests created.
+  for (let n = 1; n <= 4; n++) {
+    await until(`stop #${n} recorded`, async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === n);
+    const ser = await listing();
+    assert.equal(ser.instances.filter((i: any) => i.status === 'open').length, 0, `stop #${n} created 0 empty open instances`);
+    assert.equal(ser.requests.length, 0, `stop #${n} did not hit MAX_OPEN`);
+    if (n < 4) {
+      const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+      w.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+      delete w.fired[sid];
+      writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+    }
+  }
+
+  // On the 5th firing, switch the check script to return `continue`: must create the new period cleanly and run Pi with 4 skipped checks.
+  const scriptPath = join(root, 'instances', iid, check);
+  writeFileSync(scriptPath, `print('{"decision":"continue","message":"New batch ready"}')\n`);
+  const w5 = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  const expectedLabel = w5.pending[created.id].label;
+  w5.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+  delete w5.fired[sid];
+  writeFileSync(wakesFile, JSON.stringify(w5, null, 1));
+
+  const createdInst = await until('5th continue creates instance and completes Pi run', async () => {
+    const inst = (await listing()).instances.find((i: any) => i.label === expectedLabel);
+    if (!inst) return false;
+    return (await info(inst.id)).log.some((e: any) => e.op === 'done') && inst;
+  });
+  const instData = await info(createdInst.id);
+  const wakeEntry = instData.log.find((e: any) => e.op === 'wake');
+  assert.equal(wakeEntry?.text, 'New batch ready');
+  assert.equal(wakeEntry?.skippedChecks?.count, 4);
+  assert.equal((await listing()).instances.filter((i: any) => i.status === 'open').length, 1);
+  rmSync(modeFile, { force: true });
 });

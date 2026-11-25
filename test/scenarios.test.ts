@@ -1596,10 +1596,14 @@ test('a run waking its own workspace is logged in .rf/log.jsonl, and cross-works
 
   const { id: ownWs } = await (await call('POST', '/api/workspaces', { name: 'WakeAuditOwn' })).json();
   const { id: ownSeries } = await (await call('POST', '/api/series', { workspace: ownWs, name: 'Ops', logins: [], autonomous: true })).json();
+  const { id: siblingSeries } = await (await call('POST', '/api/series', { workspace: ownWs, name: 'Sibling', logins: [], autonomous: true })).json();
+  const { id: siblingInst } = await (await call('POST', `/api/series/${siblingSeries}`, { label: '2026-11', quiet: true })).json();
   const probe: Script = {
     bash: [
       `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretSeries}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'PUT',headers:{authorization:'Bearer '+process.env.RF_TOKEN,'content-type':'application/json'}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end(JSON.stringify({at:'+2h',label:'x'}));"`,
       `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${secretWake}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'DELETE',headers:{authorization:'Bearer '+process.env.RF_TOKEN}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end();"`,
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${siblingSeries}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'PUT',headers:{authorization:'Bearer '+process.env.RF_TOKEN,'content-type':'application/json'}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end(JSON.stringify({at:'+2h',label:'x'}));"`,
+      `node -e "const http=require('http'),u=new URL(process.env.RF_URL+'/api/wakes/${siblingInst}');const r=http.request({hostname:u.hostname,port:u.port,path:u.pathname,method:'PUT',headers:{authorization:'Bearer '+process.env.RF_TOKEN,'content-type':'application/json'}},s=>{let d='';s.on('data',c=>d+=c);s.on('end',()=>console.log(s.statusCode+' '+d))});r.end(JSON.stringify({at:'+2h'}));"`,
       'rf wake . +2h --text "Follow up"',
     ],
     report: 'Checked wakes.', saw: [],
@@ -1612,6 +1616,8 @@ test('a run waking its own workspace is logged in .rf/log.jsonl, and cross-works
   assert.match(probe.saw[0], /^403 /);
   assert.doesNotMatch(probe.saw[1], /TopSecretMna|DealAlpha/);
   assert.match(probe.saw[1], /^404 /);
+  assert.match(probe.saw[2], /^403 .*another series: runs can only wake their own series/);
+  assert.match(probe.saw[3], /^403 .*another series: runs can only wake their own series/);
 
   const rfActs = readFileSync(join(root, '.rf', 'log.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   const putAct = rfActs.findLast((a: any) => a.by === 'agent' && a.method === 'PUT' && a.inst === ownInst);
