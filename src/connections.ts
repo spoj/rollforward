@@ -570,10 +570,12 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
       if (s === openrouter && !mine && !answer.failed) keyOut(apiKey, answer.status, answer.events.at(-1), method);
       if (mine && answer.status === 402) {
-        // A revoked lease or a replacement key must not receive a late expiry.
-        if (!current() || logins(runner).find(l => l.id === mine.id)?.since !== mine.since) return;
-        saveLogin(runner, { ...mine, expired: true });
-        logExpired(a, 'openrouter', loginGeneration(mine) ?? '', 'OpenRouter', runner);
+        // A revoked lease, a disabled key, or a replacement key must not receive a late expiry.
+        if (!current()) return;
+        const now = logins(runner).find(l => l.id === mine.id);
+        if (!now?.enabled || now.since !== mine.since || loginGeneration(now) !== loginGeneration(mine)) return;
+        saveLogin(runner, { ...now, expired: true });
+        logExpired(a, 'openrouter', loginGeneration(now) ?? '', 'OpenRouter', runner);
       }
     } finally {
       sending.delete(req);
