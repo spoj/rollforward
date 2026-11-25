@@ -655,7 +655,15 @@ export type SeriesWakeCheck = {
   at: string; series: string; label: string; schedule: string; check: string;
   runner: string; from: string; seconds: number; message: string;
 };
-const MAX_SERIES_CHECKS = 200;
+const MAX_CHECKS_PER_SERIES = 20;
+function trimSeriesChecks(list: SeriesWakeCheck[]): SeriesWakeCheck[] {
+  const counts = new Map<string, number>(), kept: SeriesWakeCheck[] = [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const c = list[i], n = (counts.get(c.series) ?? 0) + 1;
+    if (n <= MAX_CHECKS_PER_SERIES) { counts.set(c.series, n); kept.push(c); }
+  }
+  return kept.reverse();
+}
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request>; checks?: SeriesWakeCheck[] };
 
 // Keep the request scope in its pointer too: a tombstone can explain a missing row even after the canonical body has been purged.
@@ -920,7 +928,9 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
     if (inst.doc.status !== 'open' || inst.closing || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
   } else {
     if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) return false;
-    if (c.label && labels(seriesId).some(l => l.label === c.label && instance(l.id).hole)) return false;
+    // If any instance with the target label now exists (open, closing, closed, abandoned, or deleted),
+    // invalidate this missing-target check so fire() re-resolves against the real instance.
+    if (c.label && labels(seriesId).some(l => l.label === c.label)) return false;
   }
   const reachable = [seriesId, ...reach(t, seriesId)];
   return !c.view || Object.values(c.view.series).every(id => reachable.includes(id));
@@ -942,7 +952,7 @@ async function checkWake(c: Check, from: string) {
     signal.throwIfAborted();
     if (Date.now() >= expires || !currentCheck(c) || (c.indexes && !c.indexes.valid())) throw new HttpError(409, 'the check can no longer run');
   };
-  let result: Awaited<ReturnType<typeof runWakeCheck>> | undefined, failure = '';
+  let result: Awaited<ReturnType<typeof runWakeCheck>> | undefined, failure = '', retryAgainstTarget = false;
   try {
     // The wake stays pending until decided, including across a restart. A slow confirmation or cache copy cannot hold its budget.
     const aborted = Promise.withResolvers<never>(), listen = addAbortListener(signal, () => aborted.reject(signal.reason));
@@ -1002,7 +1012,11 @@ async function checkWake(c: Check, from: string) {
     }
     const w = wakes(), at = Date.now(), now = new Date(at).toISOString();
     const liveWake = w.pending[id];
-    if (!liveWake || !currentCheck(c, w)) return;
+    if (!liveWake || !currentCheck(c, w)) {
+      retryAgainstTarget = !inst && !!liveWake && !!c.label
+        && labels(seriesId).some(l => l.label === c.label && !instance(l.id).closing);
+      return;
+    }
     const forced = at >= deadline || (budget.aborted && expires === deadline);
     if (budget.aborted || at >= expires) { result = undefined; failure = 'timed out'; }
     else if (indexCut.signal.aborted || (c.indexes && !c.indexes.valid())) { result = undefined; failure = 'index snapshot changed'; }
@@ -1023,7 +1037,7 @@ async function checkWake(c: Check, from: string) {
       } else {
         const list = Array.isArray(w.checks) ? w.checks : [];
         list.push({ at: now, series: seriesId, label: c.label ?? '', schedule: id, check: liveWake.check!, runner: lease.owner, from, seconds, message: result.message });
-        w.checks = list.length > MAX_SERIES_CHECKS ? list.slice(-MAX_SERIES_CHECKS) : list;
+        w.checks = trimSeriesChecks(list);
       }
       const next = w.pending[id];
       if (liveWake.deadline) {
@@ -1042,12 +1056,8 @@ async function checkWake(c: Check, from: string) {
       const text = forced ? liveWake.text : failure ? `wake check failed: ${failure}` : result?.message;
       const skippedChecks = skippedOf(liveWake, now);
       const wakeEntry = { ...scheduled(liveWake, id, from, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) };
-      const targetInst = inst ?? (() => {
-        const knownId = c.label ? labels(seriesId).find(l => l.label === c.label)?.id : undefined;
-        return knownId ? instance(knownId) : undefined;
-      })();
-      if (targetInst) {
-        if (targetInst.doc.status === 'open') wakeWith(targetInst, [wakeEntry]);
+      if (inst) {
+        wakeWith(inst, [wakeEntry]);
       } else if (instances(seriesId).filter(i => i.doc.status === 'open').length < MAX_OPEN) {
         startWith(seriesId, c.label!, liveWake.inst ? 'agent' : liveWake.from, [wakeEntry]);
       } else {
@@ -1066,6 +1076,7 @@ async function checkWake(c: Check, from: string) {
       }
       startWaiting();
       if (draining) changes.emit('change', 'tree');
+      if (retryAgainstTarget) queueMicrotask(() => fire());
     }
   }
 }

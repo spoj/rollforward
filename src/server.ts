@@ -187,7 +187,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
     const check = wakeCheckView(token);
     if (!check) throw new HttpError(401, 'no run for this token');
     if (req.method === 'GET' && ((check.inst && url.pathname === `/api/instances/${check.inst.id}/screen`) || (!check.inst && url.pathname === '/api/check/screen')))
-      return send(res, 200, check.inst ? check.inst.doc : { rev: 0, status: 'open', items: [], ...(check.label && { label: check.label }) });
+      return send(res, 200, check.inst ? check.inst.doc : { rev: 1, status: 'open', items: [], ...(check.label && { label: check.label }) });
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });

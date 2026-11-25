@@ -498,7 +498,7 @@ test('one-off series wake-check without an open instance supports rf show, mount
 import errno, json, os, subprocess
 from pathlib import Path
 screen = json.loads(subprocess.check_output(['rf', 'show']))
-assert screen['status'] == 'open' and screen['items'] == [] and screen['label'] == '2026-04-08', screen
+assert screen['rev'] == 1 and screen['status'] == 'open' and screen['items'] == [] and screen['label'] == '2026-04-08', screen
 working = Path(os.environ['RF_WORKING'])
 assert list(working.iterdir()) == [], f'RF_WORKING not empty: {list(working.iterdir())}'
 assert not (working / 'state.json').exists(), 'prior period state.json leaked into RF_WORKING'
@@ -543,4 +543,84 @@ test('series-level wake-check open fallback selects open period before target la
   assert.equal(row.message, 'picked march');
   const series = (await json('/api'))[0].series.find((s: any) => s.id === sid);
   assert.equal(series.instances.some((i: any) => i.label === '2026-04'), false, 'future May script must not be chosen for April');
+});
+
+test('creating the target label mid-check invalidates the missing-target check and re-runs against the real target instance', async () => {
+  const { sid, iid, check } = await fixture('MidCreate', `
+import json, os, time
+from pathlib import Path
+if not os.environ.get('RF_INSTANCE'):
+    time.sleep(0.8)
+    print(json.dumps({'decision': 'stop', 'message': 'stale empty-view stop'}))
+else:
+    marker = (Path(os.environ['RF_WORKING']) / 'real.txt').read_text().strip()
+    print(json.dumps({'decision': 'continue', 'message': f'saw real target: {marker}'}))
+`, 'py', '2026-06-01');
+  assert.equal((await call('POST', `/api/instances/${iid}/close`, {})).status, 200);
+
+  // Wait for confirm() to fire so Python launches its empty-view check, then create the real target 2026-06-08 while Python is mid-sleep.
+  const started = Promise.withResolvers<void>();
+  nextConfirmation = async () => { started.resolve(); };
+  const createdWake = await json(`/api/wakes/${sid}`, 'PUT', { at: iso(400), label: '2026-06-08', check });
+  await started.promise;
+  await nap(200);
+  const { id: realId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-06-08', quiet: true });
+  writeFileSync(join(root, 'instances', realId, 'working', 'real.txt'), 'real-payload');
+
+  // The invalidated empty-view check must NOT record a series stop or consume the wake;
+  // instead the wake re-runs against the real instance, sees working/real.txt, and wakes Pi.
+  const doneInst = await until('re-run against real target instance wakes Pi', async () => {
+    const d = await info(realId);
+    return d.log.some((e: any) => e.op === 'done') && d;
+  });
+  const wakeEntry = doneInst.log.find((e: any) => e.op === 'wake' && e.schedule === createdWake.id);
+  assert.equal(wakeEntry?.text, 'saw real target: real-payload');
+  const rows = await json('/api/runs?since=2000-01-01');
+  assert.equal(rows.some((r: any) => r.path === 'Test/MidCreate/2026-06-08' && r.message === 'stale empty-view stop'), false, 'invalidated empty-view stop must never be persisted');
+});
+
+test('series-level wake-check stop retention is isolated per series across workspaces (>20 stops in ws A never evict ws B)', async () => {
+  const wsA = (await json('/api/workspaces', 'POST', { name: 'NoisyWs' })).id;
+  const wsB = (await json('/api/workspaces', 'POST', { name: 'QuietWs' })).id;
+  const { id: sidA } = await json('/api/series', 'POST', { workspace: wsA, name: 'Noisy', logins: [], autonomous: true });
+  const { id: sidB } = await json('/api/series', 'POST', { workspace: wsB, name: 'Quiet', logins: [], autonomous: true });
+  const { id: instA } = await json(`/api/series/${sidA}`, 'POST', { label: '2026-01', quiet: true });
+  const { id: instB } = await json(`/api/series/${sidB}`, 'POST', { label: '2026-01', quiet: true });
+  writeFileSync(join(root, 'instances', instA, 'working', 'chk.py'), `print('{"decision":"stop","message":"noisy stop"}')\n`);
+  writeFileSync(join(root, 'instances', instB, 'working', 'chk.py'), `print('{"decision":"stop","message":"quiet stop must survive"}')\n`);
+  assert.equal((await call('POST', `/api/instances/${instA}/close`, {})).status, 200);
+  assert.equal((await call('POST', `/api/instances/${instB}/close`, {})).status, 200);
+
+  // Record 1 stop in QuietWs first.
+  await json(`/api/wakes/${sidB}`, 'PUT', { at: iso(300), label: '2026-02', check: 'working/chk.py' });
+  await until('quiet ws stop recorded', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'QuietWs/Quiet/2026-02' && r.outcome === 'wake-check-stop');
+  });
+
+  // Seed 20 prior stops in NoisyWs and fire 2 more real stops so NoisyWs trims past 20.
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  w.checks = w.checks ?? [];
+  for (let i = 1; i <= 20; i++) {
+    w.checks.push({
+      at: new Date(Date.now() - (30 - i) * 1000).toISOString(),
+      series: sidA, label: `2026-02-${String(i).padStart(2, '0')}`, schedule: `seed_${i}`, check: 'working/chk.py',
+      runner: admin, from: admin, seconds: 0, message: `seeded noisy ${i}`,
+    });
+  }
+  writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+  await json(`/api/wakes/${sidA}`, 'PUT', { at: iso(300), label: '2026-02-21', check: 'working/chk.py' });
+  await until('21st noisy stop recorded', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'NoisyWs/Noisy/2026-02-21' && r.outcome === 'wake-check-stop');
+  });
+
+  const rows = await json('/api/runs?since=2000-01-01');
+  const noisyRows = rows.filter((r: any) => r.path.startsWith('NoisyWs/Noisy/') && r.outcome === 'wake-check-stop');
+  const quietRows = rows.filter((r: any) => r.path === 'QuietWs/Quiet/2026-02' && r.outcome === 'wake-check-stop');
+  assert.equal(noisyRows.length, 20, 'noisy series capped at 20 checks');
+  assert.equal(noisyRows.some((r: any) => r.message === 'seeded noisy 1'), false, 'oldest noisy check evicted');
+  assert.equal(quietRows.length, 1, 'quiet workspace stop survives noisy workspace eviction');
+  assert.equal(quietRows[0].message, 'quiet stop must survive');
 });
