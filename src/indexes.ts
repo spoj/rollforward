@@ -319,6 +319,7 @@ async function tidy(c: Cache) {
     }
   };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
+  const parentFields = new Map<string, { parentFolderId: string } | { parentReference: { driveId?: string; id?: string } }>(), needsParent = new Set<string>();
   for await (const line of read()) {
     let it: any;
     try {
@@ -330,7 +331,15 @@ async function tidy(c: Cache) {
     if (it.deleted || it['@removed']) gone.add(it.id);
     else gone.delete(it.id);
     const p = it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId;
-    if (p !== undefined) parent.set(it.id, p);
+    if (p !== undefined) {
+      parent.set(it.id, p);
+      parentFields.set(it.id, it.parentFolderId !== undefined
+        ? { parentFolderId: it.parentFolderId }
+        : { parentReference: { ...(it.parentReference.driveId !== undefined && { driveId: it.parentReference.driveId }), ...(it.parentReference.id !== undefined && { id: it.parentReference.id }) } });
+      needsParent.delete(it.id);
+    } else if (parentFields.has(it.id)) {
+      needsParent.add(it.id);
+    }
   }
   const dead = new Map<string, boolean>();
   const under = (id: string | undefined): boolean => {
@@ -348,7 +357,14 @@ async function tidy(c: Cache) {
         const id = ids[i];
         if (last.get(id) === i++ && !under(id)) {
           kept++;
-          yield ndjson(line);
+          if (needsParent.has(id)) {
+            const it = JSON.parse(line), pf = parentFields.get(id)!;
+            if ('parentFolderId' in pf) it.parentFolderId = pf.parentFolderId;
+            else it.parentReference = { ...(it.parentReference && typeof it.parentReference === 'object' ? it.parentReference : {}), ...pf.parentReference };
+            yield ndjson(JSON.stringify(it));
+          } else {
+            yield ndjson(line);
+          }
         }
       }
     }, createZstdCompress(), createWriteStream(next));
