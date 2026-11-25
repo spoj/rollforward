@@ -292,7 +292,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     const left = !!(e as { left?: boolean }).left && ownerOf(inst).by === runner;
     if (stopping || inst.doc.status !== 'open' || (!left && !due(inst))) return bail(inst, tried);
     if (!left && !sameAuthority(inst, lease)) return bail(inst, tried);
-    if (!left && ([...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun || pending(inst, Math.max(seen, stopped(inst))).at(-1) !== cause)) return begin(inst, tried);
+    if (!left && ((e as { superseded?: boolean }).superseded || [...retiring].some(a => a.inst.seriesId === series) || inst.log.findLast(e => e.op === 'run') !== lastRun || pending(inst, Math.max(seen, stopped(inst))).at(-1) !== cause)) return begin(inst, tried);
     if ((e as HttpError).status !== 401) {
       console.error(`a run of ${inst.id} waits a minute: Microsoft didn't confirm ${runner}'s sign-in`, e);
       return void setTimeout(() => kick(inst), 60_000).unref();

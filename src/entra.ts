@@ -77,10 +77,14 @@ export function keepSignIn(email: string, refresh?: string) {
 // as they come.
 export async function confirm(email: string, checkpoint?: () => void, signal?: AbortSignal) {
   const fenced = !!(checkpoint || signal), generation = signInGenerations.get(email);
+  const checkGeneration = () => {
+    if (signInGenerations.get(email) !== generation)
+      throw Object.assign(new HttpError(409, `${email} signed in again while Microsoft confirmed their sign-in`), { superseded: true });
+  };
   const check = () => {
     signal?.throwIfAborted();
     checkpoint?.();
-    if (fenced && signInGenerations.get(email) !== generation) throw new HttpError(409, `${email} signed in again while Microsoft confirmed their sign-in`);
+    checkGeneration();
   };
   check();
   if (users()[email]?.disabled) throw Object.assign(new HttpError(401, `${email} is disabled here`), { left: true });
@@ -91,7 +95,7 @@ export async function confirm(email: string, checkpoint?: () => void, signal?: A
   check();
   let applied = false;
   try {
-    const r = await renew(secret(email, 'entra'), [], fenced ? check : undefined, signal).catch((error: unknown) => ({ error }));
+    const r = await renew(secret(email, 'entra'), [], check, signal).catch((error: unknown) => ({ error }));
     check();
     const departed = 'error' in r;
     if (departed) {
@@ -110,12 +114,13 @@ export async function confirm(email: string, checkpoint?: () => void, signal?: A
     await dropUnpermittedVpns(only);
     if (departed) throw Object.assign(r.error, { left: true });
   } finally {
-    if (applied || !fenced) {
+    if (applied || (!fenced && signInGenerations.get(email) === generation)) {
       try {
         const { active } = await import('./waker.ts');
         await Promise.all([...active.values()].map(a => a.browsers?.closeUnlent()));
       } finally {
-        check();
+        if (fenced) check();
+        else if (!applied) checkGeneration();
       }
     }
   }

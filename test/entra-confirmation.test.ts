@@ -1,5 +1,6 @@
 import { after, afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,7 @@ const ALICE = 'alice@synthetic.test', original = 'original-refresh', rotated = '
 const idToken = (claims: object) => `test.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.`;
 const renewed = { status: 200, body: { access_token: 'synthetic', id_token: idToken({ groups: ['renewed'] }), refresh_token: rotated } };
 const departed = { status: 400, body: { error: 'invalid_grant', error_description: 'AADSTS50057: The account is disabled.' } };
+const expiredGrant = { status: 400, body: { error: 'invalid_grant', error_description: 'AADSTS700082: The refresh token has expired.' } };
 const renewalRequests: (string | null)[] = [];
 let issuer: string, root: string, signInRefresh: string | undefined, refreshAnswer: { status: number; body: unknown };
 const discoveryPath = '/.well-known/openid-configuration', tokenPath = '/token';
@@ -160,4 +162,109 @@ test('cancellation during committed cleanup does not hold a replacement confirma
     cleanup.release.resolve();
   }
   await assert.rejects(pending, e => e === ended);
+});
+
+for (const [label, refresh, answer] of [
+  ['rotation', 'interactive-refresh', renewed],
+  ['departure', 'interactive-refresh', departed],
+  ['expired 401', 'interactive-refresh', expiredGrant],
+  ['rotation without new token', undefined, renewed],
+] as const) {
+  test(`ordinary confirm(email) without checkpoint/signal fences a late ${label} against an interactive sign-in`, { timeout: 5000 }, async () => {
+    refreshAnswer = answer;
+    signInRefresh = refresh;
+    const gate = hold(tokenPath);
+    const pending = confirm(ALICE);
+    await gate.entered.promise;
+    await signIn();
+    const expectedRefresh = refresh ?? original;
+    assert.equal(secret(ALICE, 'entra'), expectedRefresh);
+    assert.deepEqual(users()[ALICE].groups, ['interactive']);
+    gate.release.resolve();
+    await assert.rejects(pending, (e: unknown) => (e as HttpError).status === 409 && (e as { superseded?: boolean }).superseded === true);
+    assert.equal(secret(ALICE, 'entra'), expectedRefresh);
+    assert.deepEqual(users()[ALICE].groups, ['interactive']);
+    assert.equal(users()[ALICE].disabled, undefined);
+  });
+}
+
+test('ordinary Pi start retries superseded confirm(runner) on racing keepSignIn() without appending expired', { timeout: 15_000 }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rf-entra-waker-'));
+  try {
+    execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      import { mock } from 'node:test';
+      import { createServer } from 'node:http';
+      const root = ${JSON.stringify(dir)}, ALICE = 'alice@synthetic.test';
+      const idToken = c => 'test.' + Buffer.from(JSON.stringify(c)).toString('base64url') + '.';
+      const gate = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+      const seenTokens = [];
+      const idp = createServer(async (req, res) => {
+        const u = new URL(req.url, 'http://127.0.0.1');
+        if (u.pathname === '/.well-known/openid-configuration') {
+          const base = 'http://127.0.0.1:' + idp.address().port;
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ issuer: base, authorization_endpoint: base + '/authorize', token_endpoint: base + '/token' }));
+          return;
+        }
+        if (u.pathname === '/token') {
+          const form = new URLSearchParams(Buffer.concat(await Array.fromAsync(req)).toString());
+          const rt = form.get('refresh_token');
+          seenTokens.push(rt);
+          if (rt === 'stale-refresh') {
+            gate.entered.resolve();
+            await gate.release.promise;
+            res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'invalid_grant', error_description: 'AADSTS700082: expired' }));
+            return;
+          }
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ access_token: 'ok', id_token: idToken({ groups: ['fresh-group'] }), refresh_token: 'rotated-fresh' }));
+          return;
+        }
+        res.writeHead(404).end();
+      });
+      await new Promise(ok => idp.listen(0, '127.0.0.1', ok));
+      const base = 'http://127.0.0.1:' + idp.address().port;
+      Object.assign(process.env, { RF_OIDC_ISSUER: base, RF_OIDC_CLIENT_ID: 'rf-test', RF_OIDC_CLIENT_SECRET: 'synthetic', RF_PUBLIC_URL: base, RF_OIDC_REDIRECT_URI: base + '/auth/callback', RF_MIN_FREE_GB: '0' });
+      const runner = await import('./src/runner.ts');
+      const started = Promise.withResolvers();
+      mock.module('./src/runner.ts', { namedExports: { ...runner, startRun: async () => ({
+        turn: async () => { started.resolve(); return { settled: new Promise(() => {}) }; },
+        steer: async () => {}, interrupt: async () => {}, stop: async () => {},
+      }) } });
+      const { initSystem, saveTree, writeJson } = await import('./src/system.ts');
+      const { openStore, createInstance } = await import('./src/store.ts');
+      const { ownSeries } = await import('./test/owner-fixture.ts');
+      const { keepSignIn } = await import('./src/entra.ts');
+      const { secret } = await import('./src/logins.ts');
+      const { users } = await import('./src/auth.ts');
+      const { kick, active, stop } = await import('./src/waker.ts');
+      initSystem(root); openStore(root);
+      saveTree({ workspaces: { w: { name: 'W', owners: [ALICE], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+      writeJson('users.json', { [ALICE]: { role: 'user', groups: ['old-group'], epoch: 1 } });
+      ownSeries('s', ALICE);
+      keepSignIn(ALICE, 'stale-refresh');
+      const inst = createInstance('s', 'i1', ALICE);
+      inst.append(ALICE, 'comment', { text: 'Start run', thread: 'c2' });
+      try {
+        kick(inst);
+        await gate.entered.promise;
+        keepSignIn(ALICE, 'fresh-refresh');
+        gate.release.resolve();
+        await started.promise;
+        assert.deepEqual(seenTokens, ['stale-refresh', 'fresh-refresh']);
+        assert.equal(inst.log.some(e => e.op === 'expired'), false, 'superseded 401 must not append expired');
+        assert.equal(inst.log.some(e => e.op === 'run'), true, 'run started after retrying with fresh sign-in');
+        assert.equal(secret(ALICE, 'entra'), 'rotated-fresh');
+        assert.deepEqual(users()[ALICE].groups, ['fresh-group']);
+      } finally {
+        clearTimeout(active.get('s')?.timer);
+        stop();
+        idp.close();
+        idp.closeAllConnections();
+      }
+    `], { cwd: join(import.meta.dirname, '..'), timeout: 15_000, stdio: 'pipe' });
+  } catch (e) {
+    assert.fail((e as { stderr?: Buffer }).stderr?.toString() || String(e));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
