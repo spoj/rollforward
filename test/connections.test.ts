@@ -288,7 +288,7 @@ before(async () => {
       if (!runs.has(token)) return undefined;
       if (!callRuns.has(token)) callRuns.set(token, { inst: runs.get(token)!, runner: runs.get(token)!.log.find(e => e.op === 'run')!.runner as string, n: 1, links: new Map(), cost: 0 });
       const r = callRuns.get(token)!;
-      return { egress() {}, browsers: () => { throw new Error('no browsers here'); }, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
+      return { egress(h, ok) { egressChecks.push([h, ok]); }, browsers: () => { throw new Error('no browsers here'); }, intercepts: h => c.intercepts(r, h), call: (h, q, s) => c.call(r, h, q, s) };
     },
   }).listen(sock);
   runs.set('run', inst);
@@ -307,6 +307,7 @@ beforeEach(() => {
   saveSeriesSettings(seriesDir, { version: 1, owner: ALICE, epoch: 1, since: '', consent: { by: ALICE, at: '', workspace: 'w', logins: ticks, autonomous: false } });
 });
 
+const egressChecks: [string, boolean][] = [];
 const share = (link: string) => `/shares/u!${Buffer.from(link).toString('base64url')}`;
 const calls = () => log.filter(e => e.op === 'call').map(e => e.data);
 
@@ -948,10 +949,18 @@ test("a run queries Databricks at its own address as the runner: statements on a
   }
   assert.equal(statements.length, before, 'none reached the warehouse');
   const { caCacheSize } = await import('../src/ca.ts');
-  const caBefore = caCacheSize();
-  await assert.rejects(via('GET', `${D}/api/2.1/unity-catalog/catalogs`), /CONNECT answered 403/, 'a run that ticked no warehouse there is refused at CONNECT before TLS');
-  await assert.rejects(via('GET', 'https://unlisted-churn-host.azuredatabricks.net/api/2.1/unity-catalog/catalogs', { token: 'dbx' }), /CONNECT answered 403/, 'arbitrary wildcard host refused before TLS');
-  assert.equal(caCacheSize(), caBefore, 'refused wildcard hosts never allocate CA TLS contexts');
+  const { writeJson } = await import('../src/system.ts');
+  const caBefore = caCacheSize(), egressBefore = egressChecks.length;
+  // Even if admin egress allowlists an unticked Databricks wildcard host, CONNECT must DENY it (no raw TLS fallback and no CA context).
+  writeJson('egress.json', ['unlisted-churn-host.azuredatabricks.net']);
+  try {
+    await assert.rejects(via('GET', `${D}/api/2.1/unity-catalog/catalogs`), /CONNECT answered 403/, 'a run that ticked no warehouse there is refused at CONNECT before TLS');
+    await assert.rejects(via('GET', 'https://unlisted-churn-host.azuredatabricks.net/api/2.1/unity-catalog/catalogs', { token: 'dbx' }), /CONNECT answered 403/, 'arbitrary wildcard host refused before TLS even when listed in admin egress');
+    assert.equal(caCacheSize(), caBefore, 'refused wildcard hosts never allocate CA TLS contexts');
+    assert.equal(egressChecks.slice(egressBefore).some(([h]) => h.endsWith('.azuredatabricks.net')), false, 'denied wildcard hosts never fall through to raw egress');
+  } finally {
+    writeJson('egress.json', []);
+  }
   const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');

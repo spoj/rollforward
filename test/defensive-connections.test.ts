@@ -152,6 +152,9 @@ before(async () => {
       return send({ id: 'fileInB', name: 'secret.txt', file: {}, parentReference: { driveId: 'b!d1', id: 'folderB' } });
     }
     if (u.pathname === '/v1.0/drives/b!d1/items/fileInB/content') {
+      if (u.searchParams.get('sse') === '1') {
+        return void res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'zstd' }).end(Buffer.from('not-zstd-raw-sse-bytes'));
+      }
       return void res.writeHead(200, { 'content-type': 'text/plain' }).end('secret-b-bytes');
     }
     if (u.pathname === '/v1.0/drives/b!d1/root:/FolderA/report%20%231.xlsx:') {
@@ -653,6 +656,18 @@ test('Oversized JSON and compressed bombs stay streamed without unbounded buffer
       /CONNECT 403/,
       'oversized decompressed metadata must not grant extracted links',
     );
+
+    // 3. Non-service text/event-stream (e.g. Graph file content) never enters SSE usage decoding / zlib buffering.
+    folderBParent = 'folderA';
+    const gInst = makeInst(['m365:item:b!d1/folderA']);
+    runs.set('sse-graph', gInst);
+    callRuns.set('sse-graph', { inst: gInst, runner: USER, n: 1, links: new Map(), cost: 0 });
+    calls.length = 0;
+    const sseGraph = await viaProxy('GET', 'https://graph.microsoft.com/v1.0/drives/b!d1/items/fileInB/content?sse=1', { token: 'sse-graph' });
+    assert.equal(sseGraph.status, 200);
+    assert.equal(sseGraph.text, 'not-zstd-raw-sse-bytes');
+    assert.equal(calls.at(-1)?.data.status, 200);
+    assert.equal(calls.at(-1)?.data.failed, undefined);
   } finally {
     if (prevCap === undefined) delete process.env.RF_PROXY_META_BYTES;
     else process.env.RF_PROXY_META_BYTES = prevCap;

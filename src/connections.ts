@@ -131,19 +131,15 @@ export const upstreams: Record<string, string> = {};
 
 const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
-export const intercepts = (a: CallRun, host: string) => {
-  if (own(host) || [...a.links.keys()].some(u => new URL(u).host === host)) return true;
-  let ticks: string[] | undefined;
-  const leased = () => {
-    if (ticks !== undefined) return ticks;
-    try { return (ticks = lender(a.inst, a.n).logins); } catch { return (ticks = []); }
-  };
-  return connections().some(c => {
-    const hs = types[c.type].hosts?.(c) ?? [];
-    return hs.some(h => h.startsWith('*.')
-      ? covers(h, host) && leased().some(t => t.startsWith(`${loginOf(c).id}:${host}/`))
-      : h === host);
-  });
+export const intercepts = (a: CallRun, host: string): 'intercept' | 'deny' | 'passthrough' => {
+  if (own(host) || [...a.links.keys()].some(u => new URL(u).host === host)) return 'intercept';
+  const conns = connections();
+  if (conns.some(c => (types[c.type].hosts?.(c) ?? []).some(h => !h.startsWith('*.') && h === host))) return 'intercept';
+  const wildcardMatches = conns.filter(c => (types[c.type].hosts?.(c) ?? []).some(h => h.startsWith('*.') && covers(h, host)));
+  if (!wildcardMatches.length) return 'passthrough';
+  let ticks: string[] = [];
+  try { ticks = lender(a.inst, a.n).logins; } catch {}
+  return wildcardMatches.some(c => ticks.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ? 'intercept' : 'deny';
 };
 
 const HOP = ['connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
@@ -691,7 +687,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           }
         }
       };
-      const decoder = o.keep && isSse ? new StringDecoder('utf8') : undefined;
+      const decoder = o.keep && o.service && isSse ? new StringDecoder('utf8') : undefined;
       const unzip = decoder && (isGzip ? createGunzip() : enc === 'deflate' ? createInflate() : enc === 'br' ? createBrotliDecompress() : enc === 'zstd' ? createZstdDecompress() : undefined);
       const decoded = unzip && new Promise<void>(resolve => {
         unzip.on('data', (b: Buffer) => feedText(decoder!.write(b)));
