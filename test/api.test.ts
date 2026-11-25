@@ -1312,7 +1312,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--mine\] \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);
   const wakeHelp = await rf('help', 'wake');
-  assert.match(wakeHelp, /^rf wake PATH AT.*\[--check PATH \[--deadline ISO\]\] \| rf wake --cancel ID\n/);
+  assert.match(wakeHelp, /^rf wake PATH AT.*\[--check PATH \[--deadline ISO\] \[--max-stale MIN\] \[--backstop-hours H\]\] \| rf wake --cancel ID\n/);
   assert.match(wakeHelp, /AT now, \+<n>m\|h\|d or a date/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));

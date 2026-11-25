@@ -1326,7 +1326,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!run && !t.series[to] && by === owner) see(by, to, instance(to).log.at(-1)!.seq);
       return void (cancelWake(id), send(res, 200, 'ok'));
     }
-    const { at: when = '', label, days, text, check, deadline } = payload, w = String(when);
+    const { at: when = '', label, days, text, check, deadline, maxStaleMin, backstopHours } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (text != null && (typeof text !== 'string' || text.length > 500)) throw new HttpError(400, "a wake's text is a short message, 500 characters at most");
@@ -1336,6 +1336,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const until = typeof deadline === 'string' && /^\d{4}-\d{2}-\d{2}T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(deadline) ? Date.parse(deadline) : NaN;
     if (deadline !== undefined && (!check || !Number.isFinite(until) || until <= at))
       throw new HttpError(400, 'deadline: a timestamp with its offset, after the scheduled wake and only with a check');
+    const parsedMaxStale = typeof maxStaleMin === 'number' ? maxStaleMin
+      : typeof maxStaleMin === 'string' && /^\d+$/.test(maxStaleMin) ? Number(maxStaleMin) : NaN;
+    if (maxStaleMin !== undefined && (!check || !Number.isSafeInteger(parsedMaxStale) || parsedMaxStale < 1 || parsedMaxStale > 10_080))
+      throw new HttpError(400, 'maxStaleMin: an integer from 1 to 10080 minutes, and only with a check');
+    const parsedBackstop = typeof backstopHours === 'number' ? backstopHours
+      : typeof backstopHours === 'string' && /^\d+$/.test(backstopHours) ? Number(backstopHours) : NaN;
+    if (backstopHours !== undefined && (!check || !Number.isSafeInteger(parsedBackstop) || parsedBackstop < 1 || parsedBackstop > 168))
+      throw new HttpError(400, 'backstopHours: an integer from 1 to 168 hours, and only with a check');
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
@@ -1345,6 +1353,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
       ...(check && { check }), ...(deadline !== undefined && { deadline: new Date(until).toISOString() }),
+      ...(maxStaleMin !== undefined && { maxStaleMin: parsedMaxStale }),
+      ...(backstopHours !== undefined && { backstopHours: parsedBackstop }),
     });
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);

@@ -31,7 +31,7 @@ rf comment --mine [--json]
   Commits your instance's whole folder as it is now, in your name, to its history: the folder is a repository, which only the
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and an approval and closing, in the name of whoever approved or closed.`,
-  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO]] [TEXT] | rf wake --cancel ID
+  wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO] [--max-stale MIN] [--backstop-hours H]] [TEXT] | rf wake --cancel ID
   Requests a later run, with who woke it and TEXT. Execution requires the target owner's autonomous consent and a valid
   authority snapshot; otherwise it waits as a request for that owner. TARGET is a folder as you see
   it, by the names your run started with: an open instance, such as . for your own, ../<label> or ../../<series>/<label>, which
@@ -43,9 +43,10 @@ rf comment --mine [--json]
   its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
   with --label <its label>-r2.
   With the owner's wake-check capability, --check working/FILE.py or working/FILE.ts checks a wake of your own series in the
-  read-only sandbox, with rf show and the selected indexes. Print just {"decision":"stop","message":"No new files"} or
-  {"decision":"continue","message":"New file found"}. Errors fall through to Pi. --deadline TIME (ISO with offset) makes Pi
-  run by that time even if the check would stop.`,
+  read-only sandbox, with rf show, live skills at $RF_SKILLS and the selected indexes. Print just {"decision":"stop","message":"No new files"} or
+  {"decision":"continue","message":"New file found"}. Errors or stale index caches (older than 150m by default, or --max-stale MIN)
+  fall through to Pi. --deadline TIME (ISO with offset) makes Pi run by that time even if the check would stop; recurring
+  --days checks also fall through to Pi after 24h of skipped checks by default (or --backstop-hours H).`,
   correct: `rf correct PATH [--on ITEM[@REF]] --wrong|--superseded [--in THREAD] TEXT|-
   Says that a closed instance of your workspace, such as ../<label>, or an item of it, at a place in its file if given, is wrong
   or superseded, and why, as a later entry it keeps; it is never changed. It links your instance, and THREAD of yours, where the
@@ -144,7 +145,7 @@ async function comment() {
 const wake = async () => {
   const o: Record<string, string> = {}, rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    const flag = /^--(label|days|cancel|check|deadline)$/.exec(args[i])?.[1];
+    const flag = /^--(label|days|cancel|check|deadline|max-stale|backstop-hours)$/.exec(args[i])?.[1];
     if (flag) o[flag] = args[++i];
     else rest.push(args[i]);
   }
@@ -153,10 +154,14 @@ const wake = async () => {
   if (!target || !at) return usage('wake');
   const found = await send('GET', `api/resolve?path=${encodeURIComponent(target)}`);
   if (!found.ok) return found;
-  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({ at, label: o.label, days: o.days, check: o.check, deadline: o.deadline, text: words.join(' ') || undefined }));
+  const num = (v?: string) => (v === undefined ? undefined : /^\d+$/.test(v) ? Number(v) : v);
+  const { id, kind } = JSON.parse(found.text), set = await send('PUT', `api/wakes/${id}`, JSON.stringify({
+    at, label: o.label, days: o.days, check: o.check, deadline: o.deadline,
+    maxStaleMin: num(o['max-stale']), backstopHours: num(o['backstop-hours']), text: words.join(' ') || undefined,
+  }));
   if (!set.ok) return set;
   const k = JSON.parse(set.text);
-  return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}` };
+  return { ok: true, text: `set: ${target} ${kind === 'series' ? `starts ${k.label}` : 'wakes'} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''} (wake ${k.id})${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}` };
 };
 
 // rf correct PATH …: the folder becomes an id, then the correction goes to that instance.

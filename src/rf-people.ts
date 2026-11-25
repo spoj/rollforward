@@ -104,12 +104,14 @@ rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you 
 rf grant revoke ID                a grant pending or approved, yours or in a workspace you own; its runs' browsers close
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
-rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO]] | rf wake --cancel ID
+rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO] [--max-stale MIN] [--backstop-hours H]] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
                                   message for the run; the owner's now starts under current consent without autonomous opt-in;
                                   later or agent-set wakes need it. Collaborators' wakes are requests. DAYS, such as mon-fri,
                                   repeats weekly at AT's time. With the owner's wake-check capability, --check working/FILE.py (or .ts)
-                                  gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops.
+                                  gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops,
+                                  --max-stale MIN overrides the 150m M365 index staleness cap, and --backstop-hours H overrides the
+                                  24h recurring skip backstop.
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
                                   owners let them; its owners let OTHER's agents read it, one they see, and its owners or
@@ -561,7 +563,7 @@ if (cmd === 'login' && url) {
   else for (const r of rows) {
     console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, owner ${r.owner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
     if (r.wakeCheck) console.log(`  Wake check stopped: ${clip(r.wakeCheck.message.replace(/[\x00-\x1f\x7f-\x9f]/g, ' '), TEXT_COLS)}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
@@ -856,8 +858,12 @@ else if (cmd === 'comment' && args.length < 2) {
 } else if (cmd === 'wake' && [2, 3].includes(args.length)) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline }, 'PUT')).json();
-  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}` : ''}`);
+  const num = (v: string | true | undefined) => (typeof v !== 'string' ? undefined : /^\d+$/.test(v) ? Number(v) : v);
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, {
+    at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline,
+    maxStaleMin: num(flags['max-stale']), backstopHours: num(flags['backstop-hours']),
+  }, 'PUT')).json();
+  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}${w.maxStaleMin ? `, max-stale ${w.maxStaleMin}m` : ''}${w.backstopHours ? `, backstop ${w.backstopHours}h` : ''}` : ''}`);
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);
@@ -1063,7 +1069,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}`);
     for (const q of r.requests) console.log(`  request ${q.id} to ${q.target ? 'wake' : 'start'} ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {

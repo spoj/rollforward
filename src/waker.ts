@@ -121,7 +121,7 @@ const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math
 
 // What a run is told of: people's acts, other instances' agents' notes, and the server's wakes, expired logins, uploads made items,
 // renames and a run cut or failed; not the server's bookkeeping, such as a run's start, its hosts and screenshots, which the log keeps.
-const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
+const told = (e: Entry) => isPerson(e) || !!e.note || ['wake', 'wake-check', 'expired', 'point', 'rename'].includes(e.op) || (e.op === 'done' && (!!e.aborted || !!e.error));
 
 export function seriesConversation(id: string, periods = instances(id), epoch = seriesSettings(seriesDir(id)).epoch) {
   return conversation(messagesAt(seriesDir(id)), periods, epoch);
@@ -183,13 +183,16 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const asks = first ? inst.asking(by).filter(e => currentMessage(inst.log, e, { by, epoch: lease.epoch, workspace: lease.workspace })) : [];
   const series = open.filter(e => !e.anchor), here = open.filter(e => e.anchor);
   const owner = first ? asPerson(by) : null;
+  const skipped = entries.filter(e => e.op === 'wake' && e.skippedChecks && typeof e.skippedChecks === 'object')
+    .map(e => e.skippedChecks as SkippedChecks);
   return `Instance ${inst.label}, run ${n}.`
     + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}` : ''}`).join('; ')}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}${k.skipCount ? ` (${k.skipCount} skipped since ${k.skipSince})` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')
     + (series.length ? ` Open notes on the series: ${series.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
     + (here.length ? ` Open notes on this instance: ${here.map(e => `${e.id}, on ${e.anchor!.label}${e.anchor!.item ? ` ${e.anchor!.item}` : ''}${e.anchor!.ref ? `@${e.anchor!.ref}` : ''}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${files(e).map(f => `, ${typeof f === 'string' ? f : f.inst === inst.id ? f.path : `${paths.get(f.inst)}/${f.path}`}`).join('')}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
+    + (skipped.length ? ` Skipped wake checks before this run: ${skipped.map(s => `${s.count} (${s.since} to ${s.until}${s.lastMessage ? `, last: ${JSON.stringify(s.lastMessage)}` : ''})`).join('; ')}.` : '')
     + ' New log entries:\n'
     + entries.filter(told).map(e => JSON.stringify({ ...e, ...(standing(inst, e)?.word === 'note' && { note: true }),
       ...(e.files && { files: files(e) }) })).join('\n');
@@ -328,6 +331,7 @@ async function begin(inst: Instance, tried: Set<Instance>) {
     const agents = Object.fromEntries(a.view.ro.filter(([p, at]) => at.endsWith('/AGENTS.md') && existsSync(p)).map(([p, at]) => [at, createHash('sha256').update(readFileSync(p)).digest('hex')]));
     inst.append('server', 'run', { run: n, runner: lease.owner, initiator, authority: lease, provenance: { cause: cause.seq, ...(cause.op === 'wake' && { from: cause.from, schedule: cause.schedule, inst: cause.inst, run: cause.sourceRun, recovery: cause.recovery }) }, agents, pylib: pylib(a.view.pylib, inst.dir), upto: a.sent, skills: Object.fromEntries(live.map(s => [s.id, pushed(s).version])), key });
     loggedRun = true;
+    clearSkipStreak(inst);
     // Copies of the indexes of what its runner ticked, on the indexes' own disk, read-only at $RF_INDEX.
     const index = join(rfDir(), 'runs', a.token);
     mkdirSync(index, { recursive: true });
@@ -491,6 +495,7 @@ function finish(a: Active, aborted: boolean, error?: string, oom = false, allowO
     run: a.n, aborted, seen: retryOom ? priorSeen : a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated,
     ...(error && { error }), ...(oom && { oom: true }), ...(added && { rules: added, thread: a.thread }),
   });
+  clearSkipStreak(a.inst);
   if (retryOom) {
     const runEntry = a.inst.log.findLast(e => e.op === 'run' && e.run === a.n);
     a.inst.append('server', 'wake', {
@@ -690,7 +695,21 @@ export function correct(inst: Instance, by: string, c: { kind: string; item?: st
 
 // Schedules retain target authority and independent setter/source-run provenance.
 // Unconsented or revoked schedules become requests, never execution as their clicker.
-export type Wake = { target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number; days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string; deadlineTarget?: string };
+const WAKE_BACKSTOP_HOURS = 24;
+function wakeBackstopHours(override?: number): number {
+  if (override !== undefined) return override;
+  const raw = process.env.RF_WAKE_BACKSTOP_HOURS;
+  if (raw === undefined || !raw.trim()) return WAKE_BACKSTOP_HOURS;
+  const hours = Number(raw);
+  return Number.isFinite(hours) && hours > 0 ? hours : WAKE_BACKSTOP_HOURS;
+}
+export type SkippedChecks = { count: number; since: string; until: string; lastMessage?: string };
+export type Wake = {
+  target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number;
+  days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string;
+  deadlineTarget?: string; maxStaleMin?: number; backstopHours?: number;
+  skipCount?: number; skipSince?: string; lastSkipAt?: string; lastSkipMessage?: string;
+};
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; message?: number };
 type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
 
@@ -865,7 +884,7 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
-type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number } };
+type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number }; skippedChecks?: SkippedChecks };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
@@ -877,8 +896,34 @@ export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   return inst;
 }
 
+function wakeConfig(k?: Wake) {
+  if (!k) return undefined;
+  const { skipCount: _c, skipSince: _s, lastSkipAt: _a, lastSkipMessage: _m, ...rest } = k;
+  return rest;
+}
+
+function skippedOf(wake: Wake, fallbackUntil: string): SkippedChecks | undefined {
+  if (!wake.skipCount || !wake.skipSince) return undefined;
+  return { count: wake.skipCount, since: wake.skipSince, until: wake.lastSkipAt ?? fallbackUntil, ...(wake.lastSkipMessage !== undefined && { lastMessage: wake.lastSkipMessage }) };
+}
+
+function clearSkipStreak(inst: Instance) {
+  const w = wakes();
+  let changed = false;
+  for (const k of Object.values(w.pending)) {
+    if ((k.target === inst.id || k.target === inst.seriesId || k.deadlineTarget === inst.id) && (k.skipCount || k.skipSince || k.lastSkipAt || k.lastSkipMessage)) {
+      delete k.skipCount;
+      delete k.skipSince;
+      delete k.lastSkipAt;
+      delete k.lastSkipMessage;
+      changed = true;
+    }
+  }
+  if (changed) saveWakes(w);
+}
+
 function advanceWake(w: Wakes, id: string, wake: Wake) {
-  const { deadlineTarget, ...k } = wake;
+  const { deadlineTarget, skipCount: _c, skipSince: _s, lastSkipAt: _a, lastSkipMessage: _m, ...k } = wake;
   // A backstop never edits the weekly schedule's time or label, including if an older server reads it.
   if (deadlineTarget) { w.pending[id] = k; return; }
   delete w.pending[id];
@@ -901,7 +946,7 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
   const { inst, authority: lease } = c, owner = asPerson(lease.owner);
   if (stopping || c.cancel.signal.aborted || inst.doc.status !== 'open' || inst.closing || !owner || !can(owner, 'wake-check')
     || !sameAuthority(inst, lease) || !ownerOf(inst).consent?.autonomous || archived(t, inst.seriesId)
-    || JSON.stringify(w.pending[c.id]) !== JSON.stringify(c.wake) || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
+    || JSON.stringify(wakeConfig(w.pending[c.id])) !== JSON.stringify(wakeConfig(c.wake)) || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
   const reachable = [inst.seriesId, ...reach(t, inst.seriesId)];
   return !c.view || Object.values(c.view.series).every(id => reachable.includes(id));
 }
@@ -946,7 +991,7 @@ async function checkWake(c: Check, from: string) {
         }
         if (!script) { failure = 'script not found in working/'; return; }
         mkdirSync(index, { recursive: true });
-        const indexes = await prepare(inst, index, lease, signal);
+        const indexes = await prepare(inst, index, lease, signal, wake.maxStaleMin);
         checkpoint();
         if (indexes) {
           c.indexes = indexes;
@@ -956,8 +1001,8 @@ async function checkWake(c: Check, from: string) {
         }
         return script;
       })(), aborted.promise]);
-    } catch {
-      failure = 'could not prepare the read-only check';
+    } catch (e) {
+      failure = e instanceof Error && /stale/i.test(e.message) ? 'index cache is stale' : 'could not prepare the read-only check';
     } finally {
       listen[Symbol.dispose]();
     }
@@ -975,17 +1020,29 @@ async function checkWake(c: Check, from: string) {
     advanceWake(w, id, wake);
     w.fired[wake.target] = now;
     if (!forced && result?.decision === 'stop') {
+      const skipState = {
+        skipCount: (wake.skipCount ?? 0) + 1,
+        skipSince: wake.skipSince ?? now,
+        lastSkipAt: now,
+        lastSkipMessage: result.message,
+      };
       if (wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
         message: result.message, seconds: Math.round((Date.now() - started) / 1000), runner: lease.owner, from, schedule: id, check: wake.check,
       });
       const next = w.pending[id];
       if (wake.deadline) {
-        if (!next) w.pending[id] = { ...wake, at: wake.deadline };
-        else if (next.at > wake.deadline) next.deadlineTarget = inst.id;
+        if (!next) w.pending[id] = { ...wake, at: wake.deadline, ...skipState };
+        else {
+          Object.assign(next, skipState);
+          if (next.at > wake.deadline) next.deadlineTarget = inst.id;
+        }
+      } else if (next) {
+        Object.assign(next, skipState);
       }
     } else {
       const text = forced ? wake.text : failure ? `wake check failed: ${failure}` : result?.message;
-      wakeWith(inst, [{ ...scheduled(wake, id, from, text), ...(!forced && { check: wake.check, note: true }) }]);
+      const skippedChecks = skippedOf(wake, now);
+      wakeWith(inst, [{ ...scheduled(wake, id, from, text), ...(!forced && { check: wake.check, note: true }), ...(skippedChecks && { skippedChecks }) }]);
     }
     saveWakes(w);
   } finally {
@@ -1009,7 +1066,10 @@ export function fire() {
   for (const { id, wake } of ready) {
     const { days } = wake, target = wake.deadlineTarget ?? wake.target, label = wake.deadlineTarget ? undefined : wake.label;
     const deadline = !!wake.deadline && wake.deadline <= now, backstop = deadline && (wake.deadlineTarget || wake.at <= wake.deadline!);
-    if (!wake.immediate && !backstop && Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
+    const backstopHrs = wakeBackstopHours(wake.backstopHours);
+    const recurringDue = !!days && !deadline && !!wake.skipCount && !!wake.skipSince
+      && (Date.parse(now) - Date.parse(wake.skipSince) >= backstopHrs * 3_600_000);
+    if (!wake.immediate && !backstop && !recurringDue && Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
     // One a person set goes only while they may see its workspace, and a run's while its instance lives in the same workspace.
     const targetSeries = t.series[target] ? target : instance(target).seriesId, wsId = t.series[targetSeries].workspace, ws = t.workspaces[wsId];
     if (checking.get(targetSeries)?.id === id) continue;
@@ -1043,8 +1103,17 @@ export function fire() {
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
     const known = t.series[target] ? labels(target).find(l => l.label === label)?.id : target, inst = known ? instance(known) : undefined;
+    if (inst && wake.skipSince && inst.log.some(e => e.op === 'run' && Date.parse(e.at) > Date.parse(wake.skipSince!))) {
+      delete wake.skipCount;
+      delete wake.skipSince;
+      delete wake.lastSkipAt;
+      delete wake.lastSkipMessage;
+      changed = true;
+    }
+    const recurringBackstop = !!days && !deadline && !!wake.skipCount && !!wake.skipSince
+      && (Date.parse(now) - Date.parse(wake.skipSince) >= backstopHrs * 3_600_000);
     const canStart = inst ? inst.doc.status === 'open' : instances(target).filter(i => i.doc.status === 'open').length < MAX_OPEN;
-    if (canStart && wake.check && !deadline && !wake.immediate && can(owner, 'wake-check') && (!inst || active.get(targetSeries)?.inst !== inst && !due(inst))) {
+    if (canStart && wake.check && !deadline && !recurringBackstop && !wake.immediate && can(owner, 'wake-check') && (!inst || active.get(targetSeries)?.inst !== inst && !due(inst))) {
       if (busy(targetSeries) || full() || [...retiring].some(a => a.inst.seriesId === targetSeries) || inst?.closing) continue;
       const to = inst ?? createInstance(target, label!, wake.inst ? 'agent' : wake.from);
       const c: Check = { id, wake, inst: to, authority: lease, token: randomUUID(), cancel: new AbortController() };
@@ -1058,8 +1127,15 @@ export function fire() {
     if (!canStart) {
       if (inst) console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
       else w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
-    } else if (inst) wakeWith(inst, [scheduled(wake, id, from)]);
-    else startWith(target, label!, wake.inst ? 'agent' : wake.from, [scheduled(wake, id, from)]);
+    } else {
+      const skippedChecks = skippedOf(wake, now);
+      const wakeText = recurringBackstop
+        ? `recurring wake-check backstop reached after ${backstopHrs}h / ${wake.skipCount} skipped ${wake.skipCount === 1 ? 'check' : 'checks'}${wake.text ? `: ${wake.text}` : ''}`
+        : wake.text;
+      const entry = { ...scheduled(wake, id, from, wakeText), ...(skippedChecks && { skippedChecks }) };
+      if (inst) wakeWith(inst, [entry]);
+      else startWith(target, label!, wake.inst ? 'agent' : wake.from, [entry]);
+    }
   }
   if (changed) saveWakes(w);
 }
