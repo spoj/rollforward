@@ -668,3 +668,19 @@ test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file over
     delete process.env.RF_WAKE_COPY_MB;
   }
 });
+
+test('R1 #10: path-only parentReference survives sparse updates across compaction', async () => {
+  put('b!d', file('b!d', 'pathOnly', 'pathOnly.xlsx', 'top'), '', { id: 'pathOnly', name: 'pathOnly.xlsx', file: {}, parentReference: { path: '/drive/root:/Finance' } });
+  put('b!d', file('b!d', 'pathDrop', 'drop.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+
+  const genBefore = cache(ALICE, FOLDER).gen;
+  put('b!d', file('b!d', 'pathOnly', 'pathOnly-renamed.xlsx', 'top'), '', { id: 'pathOnly', name: 'pathOnly-renamed.xlsx', file: {} });
+  put('b!d', { id: 'pathDrop', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, genBefore + 1, 'compaction ran on deletion');
+  const row = lines(feedOf(ALICE, FOLDER)).find(l => l.id === 'pathOnly');
+  assert.ok(row, 'path-only item survived compaction');
+  assert.deepEqual(row.parentReference, { path: '/drive/root:/Finance' }, 'path-only parentReference preserved after sparse update + compaction');
+});

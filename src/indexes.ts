@@ -358,8 +358,8 @@ async function tidy(c: Cache) {
         ...(curPath !== undefined && { path: curPath }),
       };
       const p = merged.id ?? merged.driveId;
-      if (p !== undefined) {
-        parent.set(it.id, p);
+      if (p !== undefined) parent.set(it.id, p);
+      if (p !== undefined || merged.path !== undefined) {
         parentFields.set(it.id, { parentReference: merged });
         const missing = (merged.id !== undefined && curId === undefined)
           || (merged.driveId !== undefined && curDrive === undefined)
