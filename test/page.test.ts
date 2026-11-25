@@ -1314,6 +1314,30 @@ test('a legacy grant check stays readable without inventing a profile or usage, 
   rmSync(join(his, 'websites.json'));
 });
 
+test('Waiting on you stays scrolled where its reader left it as live updates redraw it, and opens again at its top', async t => {
+  const workspace = '1b3031035ff6', rows = Array.from({ length: 30 }, (_, i) => ({ id: `w${i}`, workspace, workspaceName: 'larkfield', person: 'bob@demo.test', personName: 'Bob', site: `ledger${i}`,
+    url: `https://ledger${i}.example.test/`, at: new Date().toISOString(), state: 'pending', reason: 'For the weekly pull', description: '', check: undefined,
+    profile: { what: 'A vendor ledger.', category: 'vendor', risk: 'low', flags: [] }, flags: [], adminOnly: false, adminWhy: '', use: null }));
+  await page.route('**/api', async r => {
+    const res = await r.fetch(), all = await res.json();
+    all.find((w: any) => w.id === workspace).grants = rows;
+    await r.fulfill({ response: res, json: all });
+  });
+  t.after(async () => { await page.unroute('**/api'); await page.reload(); });
+  await page.reload();
+  await page.click('[data-act=waiting]');
+  await page.locator('#pv [data-grant=w29]').waitFor();
+  const top = () => page.$eval('#pv .pvb', b => b.scrollTop);
+  const down = await page.$eval('#pv .pvb', b => (b.scrollTop = Math.floor((b.scrollHeight - b.clientHeight) / 2)));
+  assert.ok(down > 0, 'its list is longer than the dialog');
+  await page.evaluate(() => render());
+  assert.equal(await top(), down, 'a live update leaves it where it was');
+  await page.click('#pv [data-act=unpv]');
+  await page.click('[data-act=waiting]');
+  assert.equal(await top(), 0, 'opened again, it starts at its top');
+  await page.click('#pv [data-act=unpv]');
+});
+
 test('grant decisions say who can do what, why an admin is needed, owner concerns and approved usage, without making hosts part of approval', async t => {
   const workspace = '1b3031035ff6', person = 'bob@demo.test';
   const base = { workspace, workspaceName: 'larkfield', person, personName: 'Bob', site: 'ledger', url: 'https://ledger.example.test/', at: new Date().toISOString(),
