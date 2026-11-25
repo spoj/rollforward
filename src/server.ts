@@ -30,7 +30,7 @@ import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './serie
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -186,7 +186,8 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) {
     const check = wakeCheckView(token);
     if (!check) throw new HttpError(401, 'no run for this token');
-    if (check.inst && req.method === 'GET' && url.pathname === `/api/instances/${check.inst.id}/screen`) return send(res, 200, check.inst.doc);
+    if (req.method === 'GET' && ((check.inst && url.pathname === `/api/instances/${check.inst.id}/screen`) || (!check.inst && url.pathname === '/api/check/screen')))
+      return send(res, 200, check.inst ? check.inst.doc : { rev: 0, status: 'open', items: [], ...(check.label && { label: check.label }) });
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
@@ -437,8 +438,18 @@ function runsOf(i: Instance, since = ''): (RunRow | WakeCheckRow)[] {
 // Every run in what `me` sees, started since `since`, by where it ran.
 function runs(me: Me, since: string) {
   const t = tree();
-  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => runsOf(i, since).map(r => ({ path: `${named(t, sid)}/${i.label}`, ...r }))))
-    .sort((x, y) => x.at.localeCompare(y.at));
+  const visible = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
+  const visibleIds = new Set(visible.map(([sid]) => sid));
+  const instRuns = visible.flatMap(([sid]) => instances(sid).flatMap(i => runsOf(i, since).map(r => ({ path: `${named(t, sid)}/${i.label}`, ...r }))));
+  const seriesChecks = seriesWakeChecks()
+    .filter(c => visibleIds.has(c.series) && c.at >= since)
+    .map(c => ({
+      path: `${named(t, c.series)}/${c.label}`,
+      run: null, outcome: 'wake-check-stop' as const, at: c.at, seconds: c.seconds, cost: 0,
+      runner: c.runner, started: { op: 'wake', by: c.from }, failure: null, error: null,
+      message: c.message, provenance: { schedule: c.schedule },
+    }));
+  return [...instRuns, ...seriesChecks].sort((x, y) => x.at.localeCompare(y.at));
 }
 
 // What people and the agent said, what people uploaded, closed and deleted, and each run's failure, per instance `me` sees, since
@@ -1212,7 +1223,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && its.flatMap(instances).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, closing.seriesId)}/${closing.label} is closing: archive ${w.name} once it finishes`);
     if (change.archived !== undefined) w.archived = !!change.archived;
-    if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
+    if (change.archived) {
+      cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
+      cancelPendingOom(its.flatMap(instances), by);
+    }
     if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
     pruneGrants();
@@ -1412,7 +1426,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && instances(id).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, id)}/${closing.label} is closing: archive ${s.name} once it finishes`);
     if (change.archived !== undefined) s.archived = !!change.archived;
-    if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
+    if (change.archived) {
+      cancelWakes([id, ...labels(id).map(l => l.id)]);
+      cancelPendingOom(instances(id), by);
+    }
     saveTree(t);
     if (change.archived === false) for (const i of instances(id)) kick(i);
     return send(res, 200, 'ok');
@@ -1463,7 +1480,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, 'backstopHours: an integer from 1 to 168 hours, and only with a check');
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
-    if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
+    if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to record a correction on a closed instance, use rf correct --superseded (or Correct… on its page)`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     const created = setWake(to, {

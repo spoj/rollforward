@@ -67,6 +67,8 @@ function seenBefore(inst: Instance): number {
   return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
+const isOomRecovery = (e: Entry) => e.op === 'wake' && (e.recovery as { reason?: string } | undefined)?.reason === 'oom';
+
 // Human acts carry the owner/epoch at append time; autonomous entries carry an immutable lease.
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
@@ -100,7 +102,20 @@ export function pending(inst: Instance, seen: number, upto = inst.log.length): E
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt or a failed or cut run, which
 // waits for the next act; nothing while its series or its workspace is archived, which does no work until it's restored.
-const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
+// A quiet archive interrupt cancels only the pending OOM wake before it, preserving any later owner comment across restore.
+function stopped(inst: Instance): number {
+  let cut = 0;
+  for (let i = 0; i < inst.log.length; i++) {
+    const e = inst.log[i];
+    if (e.op === 'interrupt' && e.why === 'archived') {
+      const w = inst.log.slice(0, i).findLast(isOomRecovery);
+      if (w) cut = Math.max(cut, w.seq);
+    } else if (e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error))) {
+      cut = Math.max(cut, e.seq);
+    }
+  }
+  return cut;
+}
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), stopped(inst))).length > 0
   && !archived(tree(), inst.seriesId);
 
@@ -203,7 +218,7 @@ export function view(inst: Instance, lease = authority(inst)): View {
   return seriesView(inst.seriesId, lease, inst);
 }
 
-function seriesView(seriesId: string, lease: Authority, cwdInst?: Instance): View {
+function seriesView(seriesId: string, lease: Authority, cwdInst?: Instance, targetLabel?: string, emptyWorking?: string): View {
   const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [seriesId, ...reach(t, seriesId)];
   const names = Object.fromEntries(series.flatMap(id => instances(id).filter(i => !['abandoned', 'deleted'].includes(i.doc.status)).map(i => {
     i.syncLog();
@@ -215,11 +230,14 @@ function seriesView(seriesId: string, lease: Authority, cwdInst?: Instance): Vie
     syncNotes(dir);
     return [join(dir, 'notes'), `${at(id)}/.notes`] as [string, string];
   });
+  const target = cwdInst ? `${at(seriesId)}/${cwdInst.label}` : `${at(seriesId)}/${targetLabel ?? 'next'}`;
+  const ro: [string, string][] = [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])];
+  if (!cwdInst && emptyWorking) ro.push([emptyWorking, `${target}/working`]);
   return {
-    instance: cwdInst ? `${at(seriesId)}/${cwdInst.label}` : at(seriesId),
+    instance: target,
     dir: cwdInst ? cwdInst.dir : seriesDir(seriesId),
     pylib: join(seriesDir(seriesId), '.pylib'),
-    ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
+    ro,
     names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...connections().filter(c => lease.logins.some(o => o === loginOf(c).id || o.startsWith(`${loginOf(c).id}:`))).map(c => types[c.type].env?.(c, lease.logins))),
   };
 }
@@ -433,7 +451,7 @@ function finish(a: Active, aborted: boolean, error?: string, oom = false, allowO
   });
   clearSkipStreak(a.inst);
   // On a confirmed kernel OOM kill, wake at most 1 consecutive fresh run under current autonomous consent.
-  if (allowOomRetry && a.run && a.inst.doc.status === 'open' && !a.inst.closing && !archived(tree(), series) && sees(a.inst)
+  if (allowOomRetry && !a.interrupted && !a.cut && a.run && a.inst.doc.status === 'open' && !a.inst.closing && !archived(tree(), series) && sees(a.inst)
     && a.authority.autonomous && ownerOf(a.inst).consent?.autonomous && sameAuthority(a.inst, a.authority) && !prevDone?.oom) {
     a.inst.append('server', 'wake', {
       reason: `Run ${a.n} hit the memory limit and was killed by the kernel; check working/ and logs to see what already ran before continuing, and stream or chunk large files instead of loading them into memory.`,
@@ -633,7 +651,12 @@ export type Wake = {
   skipCount?: number; skipSince?: string; lastSkipAt?: string; lastSkipMessage?: string;
 };
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; message?: number };
-type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request> };
+export type SeriesWakeCheck = {
+  at: string; series: string; label: string; schedule: string; check: string;
+  runner: string; from: string; seconds: number; message: string;
+};
+const MAX_SERIES_CHECKS = 200;
+type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request>; checks?: SeriesWakeCheck[] };
 
 // Keep the request scope in its pointer too: a tombstone can explain a missing row even after the canonical body has been purged.
 export function wakes(): Wakes {
@@ -792,6 +815,26 @@ export function cancelWakes(targets: string[]) {
   if (changed) saveWakes(w);
 }
 
+// Archiving cancels any pending logged OOM retry wake with a targeted quiet interrupt so restore never revives it
+// while preserving any later queued owner comment.
+export function cancelPendingOom(insts: Instance[], by: string) {
+  for (const inst of insts) {
+    if (inst.hole || inst.doc.status !== 'open') continue;
+    const p = pending(inst, Math.max(seenBefore(inst), stopped(inst)));
+    if (p.some(isOomRecovery)) {
+      clearTimeout(debounce.get(inst.id));
+      debounce.delete(inst.id);
+      waiting.delete(inst);
+      inst.append(by, 'interrupt', { quiet: true, why: 'archived' });
+    }
+  }
+}
+
+export function seriesWakeChecks(): SeriesWakeCheck[] {
+  const list = wakes().checks;
+  return Array.isArray(list) ? list : [];
+}
+
 export function dropRequest(id: string, by: string, how: 'started' | 'dismissed'): Request {
   const w = wakes(), r = w.requests[id];
   if (!r) throw new HttpError(404, `no request ${id}`);
@@ -886,11 +929,12 @@ function currentCheck(c: Check, w = wakes(), t = tree()) {
 // Unlike a run's token, this opens only the two read-only routes in server.ts, never the proxy or a browser.
 export function wakeCheckView(token: string) {
   const c = [...checking.values()].find(c => c.token === token);
-  if (c?.view && !c.signal?.aborted && currentCheck(c) && (!c.indexes || c.indexes.valid())) return { inst: c.inst, view: c.view };
+  if (c?.view && !c.signal?.aborted && currentCheck(c) && (!c.indexes || c.indexes.valid())) return { inst: c.inst, label: c.label, view: c.view };
 }
 
 async function checkWake(c: Check, from: string) {
-  const { seriesId, inst, wake, id, token, authority: lease } = c, started = Date.now(), index = join(rfDir(), 'runs', token);
+  const { seriesId, inst, wake, id, token, authority: lease } = c, started = Date.now(), runDir = join(rfDir(), 'runs', token);
+  const index = join(runDir, 'index'), emptyWorking = join(runDir, 'working');
   const deadline = wake.deadline ? Date.parse(wake.deadline) : Infinity, expires = Math.min(deadline, started + 60_000);
   const indexCut = c.indexCut = new AbortController();
   const budget = AbortSignal.timeout(Math.max(1, expires - started)), signal = c.signal = AbortSignal.any([budget, c.cancel.signal, indexCut.signal]);
@@ -917,7 +961,7 @@ async function checkWake(c: Check, from: string) {
                 .filter(i => i.doc.status === 'closed' && (!c.label || i.label.localeCompare(c.label, 'en', { numeric: true }) < 0))
                 .sort((a, b) => b.label.localeCompare(a.label, 'en', { numeric: true })),
               ...instances(seriesId)
-                .filter(i => i.doc.status === 'open')
+                .filter(i => i.doc.status === 'open' && (!c.label || i.label.localeCompare(c.label, 'en', { numeric: true }) < 0))
                 .sort((a, b) => b.label.localeCompare(a.label, 'en', { numeric: true })),
             ];
         let host: Instance | undefined;
@@ -929,7 +973,8 @@ async function checkWake(c: Check, from: string) {
           host = i;
           break;
         }
-        const v = c.view = inst ? view(inst, lease) : seriesView(seriesId, lease, host);
+        if (!inst) mkdirSync(emptyWorking, { recursive: true });
+        const v = c.view = inst ? view(inst, lease) : seriesView(seriesId, lease, undefined, c.label, emptyWorking);
         const hostPath = host && Object.keys(v.names).find(p => v.names[p] === host.id);
         const script = hostPath ? `${hostPath}/${wake.check}` : undefined;
         if (!script) { failure = 'script not found in working/'; return; }
@@ -970,9 +1015,16 @@ async function checkWake(c: Check, from: string) {
         lastSkipAt: now,
         lastSkipMessage: result.message,
       };
-      if (inst && wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
-        message: result.message, seconds: Math.round((Date.now() - started) / 1000), runner: lease.owner, from, schedule: id, check: liveWake.check,
-      });
+      const seconds = Math.round((Date.now() - started) / 1000);
+      if (inst) {
+        if (wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
+          message: result.message, seconds, runner: lease.owner, from, schedule: id, check: liveWake.check,
+        });
+      } else {
+        const list = Array.isArray(w.checks) ? w.checks : [];
+        list.push({ at: now, series: seriesId, label: c.label ?? '', schedule: id, check: liveWake.check!, runner: lease.owner, from, seconds, message: result.message });
+        w.checks = list.length > MAX_SERIES_CHECKS ? list.slice(-MAX_SERIES_CHECKS) : list;
+      }
       const next = w.pending[id];
       if (liveWake.deadline) {
         if (!next) w.pending[id] = { ...liveWake, at: liveWake.deadline, ...skipState };
@@ -1005,7 +1057,7 @@ async function checkWake(c: Check, from: string) {
     saveWakes(w);
   } finally {
     checking.delete(seriesId);
-    rmSync(index, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
     if (!stopping) {
       if (inst) bail(inst, new Set());
       else {
@@ -1065,6 +1117,8 @@ export function fire() {
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
     const known = t.series[target] ? labels(target).find(l => l.label === label)?.id : target, inst = known ? instance(known) : undefined;
+    // Defer without consuming or advancing the wake while a close/abandon is still committing or packing.
+    if (inst?.closing) continue;
     if (inst && wake.skipSince && inst.log.some(e => e.op === 'run' && Date.parse(e.at) > Date.parse(wake.skipSince!))) {
       delete wake.skipCount;
       delete wake.skipSince;

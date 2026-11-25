@@ -41,8 +41,8 @@ rf comment --mine [--json]
   2026-09-14T07:00+08:00. --days, such as mon-fri or mon,wed,fri, repeats it each week on those days at AT's time; a series'
   LABEL then holds the date AT falls on, or that of the day before it that it fires on, and moves on with it. A target has as many wakes as are set, firing at least 15 minutes
   apart; setting a series' wake for a LABEL already pending moves it. Each run's first message lists the wakes pending for
-  its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to correct one, wake its series
-  with --label <its label>-r2.
+  its instance and series, by ID, which --cancel cancels. A closed instance can't be woken: to record a correction on one,
+  use rf correct PATH --wrong|--superseded TEXT (after opening a new period if needed).
   With the owner's wake-check capability, --check working/FILE.py or working/FILE.ts checks a wake of your own series in the
   read-only sandbox, with rf show, live skills at $RF_SKILLS and the selected indexes. Print just {"decision":"stop","message":"No new files"} or
   {"decision":"continue","message":"New file found"}. Errors or stale index caches (older than 150m by default, or --max-stale MIN)
@@ -202,7 +202,7 @@ async function settle() {
 let res;
 const replacement = REPLACEMENTS.get(cmd);
 if (replacement) res = { ok: false, text: replacement };
-else if (cmd === 'show') res = await send('GET', `${own}/screen`);
+else if (cmd === 'show') res = await send('GET', instance ? `${own}/screen` : 'api/check/screen');
 else if (cmd === 'put' && args[0]) res = await send('PUT', `${own}/screen`, readFileSync(args[0] === '-' ? 0 : args[0]));
 else if (cmd === 'comment') res = await comment();
 else if (cmd === 'settle') res = await settle();
