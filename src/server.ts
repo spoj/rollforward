@@ -1,12 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
+import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -14,7 +14,7 @@ import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { checkAuthorityFormat } from './authority-format.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
+import { authority, checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
@@ -26,7 +26,7 @@ import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
-import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
+import { saveSeriesSettings, seriesSettings, type Authority, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
@@ -710,6 +710,70 @@ function pullable(me: Me, path: string) {
 let previewing = 0;
 const turns: (() => void)[] = [];
 
+function previewQuery(name: string, params: URLSearchParams): string {
+  const ext = extname(name).toLowerCase();
+  const out = new URLSearchParams();
+  if (ext === '.xlsx' || ext === '.xlsm') {
+    const s = params.get('sheet');
+    if (s !== null) out.set('sheet', s);
+  } else if (ext === '.pdf') {
+    const p = params.get('page');
+    if (p !== null && /^\d+$/.test(p)) out.set('page', p);
+  } else if (ext === '.docx') {
+    if (params.has('layout')) out.set('layout', '1');
+  } else if (ext === '.eml' || ext === '.msg') {
+    const entries = [...params.entries()];
+    let i = 0;
+    while (i < entries.length && entries[i][0] === 'attachment' && /^\d+$/.test(entries[i][1])) {
+      out.append('attachment', entries[i][1]);
+      i++;
+    }
+    if (i > 0) {
+      const rest = new URLSearchParams(entries.slice(i));
+      const sheet = rest.get('sheet'), page = rest.get('page');
+      if (sheet !== null) out.set('sheet', sheet);
+      if (page !== null && /^\d+$/.test(page)) out.set('page', page);
+      if (rest.has('layout')) out.set('layout', '1');
+    }
+  }
+  return out.toString();
+}
+
+function previewCacheBytes(): number {
+  const rawBytes = process.env.RF_PREVIEW_CACHE_BYTES;
+  if (rawBytes !== undefined && rawBytes.trim()) {
+    const n = Number(rawBytes);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  const rawMb = process.env.RF_PREVIEW_CACHE_MB;
+  if (rawMb !== undefined && rawMb.trim()) {
+    const mb = Number(rawMb);
+    if (Number.isFinite(mb) && mb >= 0) return Math.floor(mb * 2 ** 20);
+  }
+  return 256 * 2 ** 20;
+}
+
+function prunePreviews(dir: string, keepPath?: string) {
+  const budget = previewCacheBytes();
+  let entries: { path: string; size: number; mtimeMs: number }[];
+  try {
+    entries = readdirSync(dir).flatMap(name => {
+      const p = join(dir, name);
+      try { const st = statSync(p); return st.isFile() ? [{ path: p, size: st.size, mtimeMs: st.mtimeMs }] : []; }
+      catch { return []; }
+    });
+  } catch { return; }
+  let total = entries.reduce((sum, e) => sum + e.size, 0);
+  if (total <= budget) return;
+  // Evict oldest previews first; keep the freshly written entry unless it alone exceeds the budget.
+  entries.sort((a, b) => (a.path === keepPath ? 1 : b.path === keepPath ? -1 : a.mtimeMs - b.mtimeMs));
+  for (const e of entries) {
+    if (total <= budget) break;
+    rmSync(e.path, { force: true });
+    total -= e.size;
+  }
+}
+
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
@@ -749,8 +813,8 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
       closeSync(fd);
       throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
     }
-    // A part of the file, as its query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
-    const part = url.search.slice(1), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
+    // A part of the file, as its validated renderer query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
+    const part = previewQuery(basename(rel), url.searchParams), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
     for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
     const kept = join(previews, `${inst.id}-${sum.digest('hex')}`);
     if (inst.doc.status === 'deleted') {
@@ -759,6 +823,8 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     }
     if (existsSync(kept)) {
       closeSync(fd);
+      const now = new Date();
+      try { utimesSync(kept, now, now); } catch {}
       res.writeHead(200, { 'content-type': 'application/json' });
       return sendStream(createReadStream(kept), res);
     }
@@ -779,9 +845,10 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
         for await (const c of chunks) { content.update(c); yield c; }
       }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${basename(rel)}: download it`); });
       if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
-      const tmp = join(tmpDir, randomUUID());
+      const tmp = join(tmpDir, randomUUID()), dest = join(previews, `${inst.id}-${content.digest('hex')}`);
       writeFileSync(tmp, stdout);
-      renameSync(tmp, join(previews, `${inst.id}-${content.digest('hex')}`));
+      renameSync(tmp, dest);
+      prunePreviews(previews, dest);
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {
@@ -1654,9 +1721,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (action === 'close' || action === 'abandon') {
         if (mine) throw new HttpError(409, 'wait for the run to end');
         if (ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
-        await (action === 'close' ? inst.close(who, quiet) : inst.abandon(by));
+        let captured: Authority | undefined;
+        if (action === 'close') try { captured = authority(inst); } catch {}
+        const followup = await (action === 'close' ? inst.close(who, { quiet, authority: captured }) : inst.abandon(by));
         cancelWakes([inst.id]);
-        if (action === 'close') closed(inst, by, quiet);
+        if (action === 'close') closed(inst, by, quiet, followup);
+        ackTerminalFollowup(followup.key);
         return 'ok';
       }
       throw new HttpError(404, `no action ${action}`);

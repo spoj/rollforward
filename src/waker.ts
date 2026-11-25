@@ -3,7 +3,7 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, takeReconciledTerminals, type Entry, type Instance } from './store.ts';
+import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, pendingTerminalFollowups, seriesDir, type Entry, type Instance, type TerminalFollowup } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
@@ -666,16 +666,34 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 }
 
 // The owner's close continues later drafts. A <label>-r2 closing supersedes <label>, and <label>-r3 supersedes <label>-r2.
-export function closed(inst: Instance, by: string, quiet?: boolean) {
-  const close = inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
+export function closed(inst: Instance, by: string, quiet?: boolean, followup?: TerminalFollowup) {
+  const close = followup ? inst.log.find(e => e.seq === followup.seq && e.op === 'close')
+    : inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
   const closedRef = close ? { inst: inst.id, seq: close.seq } : undefined;
-  for (const later of instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0)) {
+  const targets = followup
+    ? (followup.recipients ?? []).flatMap(id => {
+        try { const i = instance(id); return !i.hole && i.seriesId === inst.seriesId && i.doc.status === 'open' ? [i] : []; }
+        catch { return []; }
+      })
+    : instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0);
+  for (const later of targets) {
     if (closedRef && later.log.some(e => e.op === 'wake' && e.from === by && !!e.quiet === !!quiet
       && (e.closed as { inst?: string; seq?: number } | undefined)?.inst === closedRef.inst
       && (e.closed as { inst?: string; seq?: number } | undefined)?.seq === closedRef.seq)) continue;
-    wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, ...(closedRef && { closed: closedRef }) }]);
+    if (followup) {
+      // Revalidate close-time captured lease; fail closed (skip) if missing or revoked rather than minting a replacement lease.
+      if (!followup.authority || !sameAuthority(later, followup.authority)) continue;
+      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, authority: followup.authority, ...(closedRef && { closed: closedRef }) }]);
+    } else {
+      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, ...(closedRef && { closed: closedRef }) }]);
+    }
   }
-  const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [], was = base && instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed');
+  const was = followup
+    ? (followup.supersedes ? (() => { try { const w = instance(followup.supersedes!); return !w.hole && w.seriesId === inst.seriesId && w.doc.status === 'closed' ? w : undefined; } catch { return undefined; } })() : undefined)
+    : (() => {
+        const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [];
+        return base ? instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed') : undefined;
+      })();
   if (was && !was.log.some(e => e.op === 'correction' && e.kind === 'superseded' && (e.see as { inst?: string } | undefined)?.inst === inst.id))
     correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
 }
@@ -707,7 +725,7 @@ export type SkippedChecks = { count: number; since: string; until: string; lastM
 export type Wake = {
   target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number;
   days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string;
-  deadlineTarget?: string; maxStaleMin?: number; backstopHours?: number;
+  deadlineTarget?: string; maxStaleMin?: number; backstopHours?: number; rev?: number;
   skipCount?: number; skipSince?: string; lastSkipAt?: string; lastSkipMessage?: string;
 };
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; message?: number };
@@ -834,9 +852,18 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id
     && !!p.immediate === !!k.immediate && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === k.authority.autonomous : p.from === k.from && p.inst === k.inst)
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
   if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
-  if (!(labelled && was?.days)) w.pending[id] = k;
+  if (!(labelled && was?.days)) {
+    const preserveSkip = !!(was?.days && k.days && was.check && k.check && was.skipCount && was.skipSince);
+    const rev = (k.check || was?.check || was?.rev !== undefined) ? (was?.rev ?? 0) + 1 : undefined;
+    w.pending[id] = {
+      ...k,
+      ...(rev !== undefined && { rev }),
+      ...(preserveSkip && { skipCount: was!.skipCount, skipSince: was!.skipSince, lastSkipAt: was!.lastSkipAt, lastSkipMessage: was!.lastSkipMessage }),
+    };
+  }
   saveWakes(w);
-  return { id, ...w.pending[id] };
+  const { rev: _r, ...shown } = w.pending[id];
+  return { id, ...shown };
 }
 
 export function cancelWake(id: string) {
@@ -1013,36 +1040,37 @@ async function checkWake(c: Check, from: string) {
       catch (e) { failure = (e as Error).message; }
     }
     const w = wakes(), at = Date.now(), now = new Date(at).toISOString();
-    if (!currentCheck(c, w)) return;
+    const liveWake = w.pending[id];
+    if (!liveWake || !currentCheck(c, w)) return;
     const forced = at >= deadline || (budget.aborted && expires === deadline);
     if (budget.aborted || at >= expires) { result = undefined; failure = 'timed out'; }
     else if (indexCut.signal.aborted || (c.indexes && !c.indexes.valid())) { result = undefined; failure = 'index snapshot changed'; }
-    advanceWake(w, id, wake);
-    w.fired[wake.target] = now;
+    advanceWake(w, id, liveWake);
+    w.fired[liveWake.target] = now;
     if (!forced && result?.decision === 'stop') {
       const skipState = {
-        skipCount: (wake.skipCount ?? 0) + 1,
-        skipSince: wake.skipSince ?? now,
+        skipCount: (liveWake.skipCount ?? 0) + 1,
+        skipSince: liveWake.skipSince ?? now,
         lastSkipAt: now,
         lastSkipMessage: result.message,
       };
       if (wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
-        message: result.message, seconds: Math.round((Date.now() - started) / 1000), runner: lease.owner, from, schedule: id, check: wake.check,
+        message: result.message, seconds: Math.round((Date.now() - started) / 1000), runner: lease.owner, from, schedule: id, check: liveWake.check,
       });
       const next = w.pending[id];
-      if (wake.deadline) {
-        if (!next) w.pending[id] = { ...wake, at: wake.deadline, ...skipState };
+      if (liveWake.deadline) {
+        if (!next) w.pending[id] = { ...liveWake, at: liveWake.deadline, ...skipState };
         else {
           Object.assign(next, skipState);
-          if (next.at > wake.deadline) next.deadlineTarget = inst.id;
+          if (next.at > liveWake.deadline) next.deadlineTarget = inst.id;
         }
       } else if (next) {
         Object.assign(next, skipState);
       }
     } else {
-      const text = forced ? wake.text : failure ? `wake check failed: ${failure}` : result?.message;
-      const skippedChecks = skippedOf(wake, now);
-      wakeWith(inst, [{ ...scheduled(wake, id, from, text), ...(!forced && { check: wake.check, note: true }), ...(skippedChecks && { skippedChecks }) }]);
+      const text = forced ? liveWake.text : failure ? `wake check failed: ${failure}` : result?.message;
+      const skippedChecks = skippedOf(liveWake, now);
+      wakeWith(inst, [{ ...scheduled(liveWake, id, from, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) }]);
     }
     saveWakes(w);
   } finally {
@@ -1148,17 +1176,18 @@ export const CUT = { restart: 'a restart cut the run', authority: 'its series au
 // No git runs at startup, so interrupted commit locks can be removed.
 export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
-  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
-  const reconciled = takeReconciledTerminals();
-  if (reconciled.length) {
-    cancelWakes(reconciled);
-    const t = tree();
-    for (const id of reconciled) {
-      const inst = instance(id);
-      if (inst.doc.status !== 'closed' || !t.series[inst.seriesId]) continue;
-      const close = inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
-      if (close) closed(inst, close.by, !!close.quiet);
+  const t = tree();
+  for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
+  for (const followup of pendingTerminalFollowups()) {
+    let inst: Instance;
+    try { inst = instance(followup.inst); } catch { ackTerminalFollowup(followup.key); continue; }
+    if (inst.hole || !t.series[inst.seriesId] || inst.log.find(e => e.seq === followup.seq)?.op !== followup.op) {
+      ackTerminalFollowup(followup.key);
+      continue;
     }
+    cancelWakes([inst.id]);
+    if (followup.op === 'close' && inst.doc.status === 'closed') closed(inst, followup.by, !!followup.quiet, followup);
+    ackTerminalFollowup(followup.key);
   }
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });

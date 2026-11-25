@@ -355,7 +355,9 @@ test('screen put distinguishes a missing rev from a stale rev without leaking th
 test('close and abandon persist their terminal audit event before screen.json, reconcile on startup, and replay post-close wakes idempotently', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-'));
   const { saveTree, writeJson } = await import('../src/system.ts');
+  const { authority } = await import('../src/logins.ts');
   const { ownSeries } = await import('./owner-fixture.ts');
+  const { ackTerminalFollowup, pendingTerminalFollowups } = await import('../src/store.ts');
   const { closed, recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
   const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
   try {
@@ -365,19 +367,21 @@ test('close and abandon persist their terminal audit event before screen.json, r
     writeJson('users.json', { [owner]: { name: 'Alex', role: 'user' } });
     ownSeries('monthly', owner, [], false);
 
-    // 1) Close fails if append fails: never leaves terminal screen.json without audit event, and retries cleanly.
+    // 1) Close fails if append fails: never leaves terminal screen.json or stale pending follow-up, and retries cleanly.
     const failClose = createInstance('monthly', '2026-01', owner);
     const origAppend = failClose.append.bind(failClose);
     failClose.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
       if (op === 'close') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
       return origAppend(by, op, fields);
     }) as typeof failClose.append;
-    await assert.rejects(failClose.close(who), /ENOSPC/);
+    await assert.rejects(failClose.close(who, { authority: authority(failClose) }), /ENOSPC/);
     assert.equal(failClose.doc.status, 'open');
     assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'open');
     assert.equal(failClose.log.some(e => e.op === 'close'), false);
+    assert.deepEqual(pendingTerminalFollowups(), [], 'failed append cleans up pending follow-up');
     failClose.append = origAppend;
-    await failClose.close(who);
+    const f1 = await failClose.close(who, { authority: authority(failClose) });
+    ackTerminalFollowup(f1.key);
     assert.equal(failClose.doc.status, 'closed');
     assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'closed');
 
@@ -393,21 +397,25 @@ test('close and abandon persist their terminal audit event before screen.json, r
     assert.equal(JSON.parse(readFileSync(join(failAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
     assert.equal(failAbandon.log.some(e => e.op === 'abandon'), false);
 
-    // 3) Simulated crash between durable close/abandon event append and screen.json replacement.
+    // 3) Simulated crash between durable close/abandon event append and screen.json replacement,
+    // PLUS a new draft opened AFTER close (must NOT receive recovered close wake).
     const cutClose = createInstance('monthly', '2026-03', owner);
     const cutAbandon = createInstance('monthly', '2026-04', owner);
     const later = createInstance('monthly', '2026-05', owner);
     setWake(cutClose.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
     setWake(cutAbandon.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending' });
 
+    const closeAuth = authority(cutClose);
     cutClose.save = () => {
-      // At the moment save() is reached, the close audit event is already persisted in events.jsonl while screen.json is still open.
       assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
       assert.equal(cutClose.log.at(-1)!.op, 'close');
       throw new Error('simulated crash before screen save');
     };
-    await assert.rejects(cutClose.close(who, true), /simulated crash before screen save/);
+    await assert.rejects(cutClose.close(who, { quiet: true, authority: closeAuth }), /simulated crash before screen save/);
     assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
+
+    // Open a brand-new draft AFTER cutClose closed: must NOT receive cutClose's recovered close notification.
+    const openedAfterClose = createInstance('monthly', '2026-06', owner);
 
     cutAbandon.save = () => {
       assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
@@ -417,28 +425,66 @@ test('close and abandon persist their terminal audit event before screen.json, r
     await assert.rejects(cutAbandon.abandon(owner), /simulated crash before screen save/);
     assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
 
-    // Restart: openStore reconciles screen.json from the durable close/abandon events; recover() replays wake cancellation & post-close wake.
+    // Simulate a second crash AFTER openStore repairs screen.json, BEFORE recover() runs!
     openStore(tmp);
     assert.equal(instance(cutClose.id).doc.status, 'closed');
     assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'closed');
-    assert.equal(instance(cutClose.id).log.at(-1)!.op, 'close');
     assert.equal(instance(cutAbandon.id).doc.status, 'abandoned');
     assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'abandoned');
-    assert.equal(instance(cutAbandon.id).log.at(-1)!.op, 'abandon');
+    // Restart AGAIN with screen.json ALREADY terminal: durable pending follow-ups must STILL survive and run!
+    openStore(tmp);
+    assert.equal(pendingTerminalFollowups().length, 2, 'pending follow-ups survive restart even after screen.json is already terminal');
 
     recover();
+    assert.deepEqual(pendingTerminalFollowups(), [], 'pending follow-ups acknowledged only after recover() completes');
     assert.deepEqual(wakesOf(cutClose.id), [], 'reconciled close cancels pending wakes');
     assert.deepEqual(wakesOf(cutAbandon.id), [], 'reconciled abandon cancels pending wakes');
     const wakesAfterRecover = instance(later.id).log.filter(e => e.op === 'wake');
-    assert.equal(wakesAfterRecover.length, 1, 'reconciled close notifies later open instance');
+    assert.equal(wakesAfterRecover.length, 1, 'reconciled close notifies close-time later open instance');
     assert.equal(wakesAfterRecover[0].quiet, true, 'reconciled close preserves quiet flag');
+    assert.deepEqual(wakesAfterRecover[0].authority, closeAuth, 'reconciled close uses captured close-time authority');
     assert.match(String(wakesAfterRecover[0].text), /2026-03 closed/);
+    assert.equal(instance(openedAfterClose.id).log.filter(e => e.op === 'wake').length, 0, 'draft opened after close is NOT woken on replay');
 
     // Replaying closed() again for the same close event is idempotent.
     closed(instance(cutClose.id), owner, true);
     assert.equal(instance(later.id).log.filter(e => e.op === 'wake').length, 1, 'closed() replay is idempotent by close-event identity');
+
+    // 4) Crash AFTER screen.json is closed + consent change before replay -> MUST fail closed (no new lease minted!).
+    const afterScreen = createInstance('monthly', '2026-07', owner);
+    const recipient = createInstance('monthly', '2026-08', owner);
+    setWake(afterScreen.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'still pending' });
+    const oldAuth = authority(afterScreen);
+    // Complete close() (both append AND screen.json save succeed), but crash BEFORE cancelWakes/closed/ack!
+    await afterScreen.close(who, { quiet: true, authority: oldAuth });
+    assert.equal(JSON.parse(readFileSync(join(afterScreen.dir, 'screen.json'), 'utf8')).status, 'closed');
+    assert.equal(pendingTerminalFollowups().length, 1, 'follow-up remains pending after screen save until acknowledged');
+
+    // Owner's consent changes (new epoch / new login) before recovery runs.
+    ownSeries('monthly', owner, ['m365:onedrive'], true);
+    openStore(tmp);
+    recover();
+    assert.deepEqual(wakesOf(afterScreen.id), [], 'pending wakes still cancelled on recovery');
+    assert.equal(instance(recipient.id).log.filter(e => e.op === 'wake').length, 0, 'recovered close fails closed and does NOT mint a new lease under changed consent');
+    assert.deepEqual(pendingTerminalFollowups(), []);
   } finally {
     stopWaker();
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Instance.append rejects unsafe integers and non-finite numbers before writing canonical events so startup never bricks', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-safe-num-'));
+  try {
+    openStore(tmp);
+    const inst = createInstance('monthly', 'safe', 'alex');
+    for (const bad of [1e25, Number.MAX_SAFE_INTEGER + 10, Infinity, -Infinity, NaN]) {
+      assert.throws(() => inst.append('agent', 'call', { run: 1, bad }), /unrepresentable number/);
+    }
+    assert.equal(inst.log.length, 1, 'rejected entries never enter memory or disk');
+    openStore(tmp);
+    assert.equal(instance(inst.id).log.length, 1);
+  } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
 });

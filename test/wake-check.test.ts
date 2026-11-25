@@ -372,3 +372,61 @@ test('recurring wake tracks skip streak across restarts, enforces backstopHours 
   assert.ok(piPrompt.includes('recurring wake-check backstop reached after 2h / 2 skipped checks'), 'prompt shows backstop reason');
   assert.ok(piPrompt.includes('backstop 2h'), 'Pending wakes prompt line shows backstop 2h');
 });
+
+test('re-registering an equivalent recurring wake preserves skipSince/skipCount and rev-fences in-flight checks', { timeout: 20_000 }, async () => {
+  const { iid, check } = await fixture('RePutRecurring', `print('{"decision":"stop","message":"Still quiet"}')\n`);
+  const at = new Date(iso(1200));
+  const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][at.getDay()];
+  const created = await json(`/api/wakes/${iid}`, 'PUT', { at: at.toISOString(), days, check, backstopHours: 4, text: 'Initial' });
+
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  await until('first skip recorded', async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === 1);
+  const afterStop = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+
+  // Re-PUT equivalent recurring schedule (same target, next occurrence at, same days) -> must preserve skipCount/skipSince and bump rev.
+  const updated = await json(`/api/wakes/${iid}`, 'PUT', { at: afterStop.at, days, check, backstopHours: 4, text: 'Re-registered' });
+  assert.equal(updated.id, created.id);
+  const afterRePut = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+  assert.equal(afterRePut.skipCount, 1, 'skipCount preserved across equivalent re-PUT');
+  assert.equal(afterRePut.skipSince, afterStop.skipSince, 'skipSince preserved across equivalent re-PUT');
+  assert.ok((afterRePut.rev ?? 0) > (afterStop.rev ?? 0), 'schedule rev incremented on re-PUT');
+
+  // Re-PUT while a check is in-flight -> in-flight check must NOT clobber the updated schedule.
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  nextConfirmation = () => { started.resolve(); return release.promise; };
+  try {
+    const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    const nextAt = new Date(Date.now() - 1000).toISOString();
+    w.pending[created.id].at = nextAt;
+    delete w.fired[iid];
+    writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+    await started.promise;
+
+    // Simulate a concurrent schedule update (rev bump + backstopHours=6) while confirmation is held;
+    // the superseded in-flight check must NOT clobber the updated schedule or mutate skipCount.
+    const wMid = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    const midRev = (wMid.pending[created.id].rev ?? 0) + 1;
+    wMid.pending[created.id] = { ...wMid.pending[created.id], rev: midRev, backstopHours: 6, text: 'Updated mid-flight' };
+    writeFileSync(wakesFile, JSON.stringify(wMid, null, 1));
+    // Hold the next confirmation so only the superseded in-flight check settles first.
+    const nextStarted = Promise.withResolvers<void>(), nextRelease = Promise.withResolvers<void>();
+    nextConfirmation = () => { nextStarted.resolve(); return nextRelease.promise; };
+    release.resolve();
+    await nextStarted.promise;
+
+    const afterFlight = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+    assert.equal(afterFlight.rev, midRev, 'in-flight check did not overwrite concurrent schedule update');
+    assert.equal(afterFlight.backstopHours, 6);
+    assert.equal(afterFlight.text, 'Updated mid-flight');
+    assert.equal(afterFlight.skipCount, 1, 'superseded in-flight check did not mutate skipCount');
+    assert.equal(afterFlight.skipSince, afterStop.skipSince);
+    nextRelease.resolve();
+    await until('replacement check completes with updated schedule', async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === 2);
+    const afterReplacement = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+    assert.equal(afterReplacement.backstopHours, 6);
+    assert.equal(afterReplacement.skipSince, afterStop.skipSince);
+  } finally {
+    nextConfirmation = undefined;
+    release.resolve();
+  }
+});
