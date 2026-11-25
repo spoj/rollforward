@@ -718,19 +718,24 @@ function leafPreviewQuery(name: string, params: URLSearchParams): string {
     if (s !== null) out.set('sheet', s);
   } else if (ext === '.pdf') {
     const p = params.get('page');
-    if (p !== null && /^\d+$/.test(p)) out.set('page', p);
+    if (p !== null && /^\d+$/.test(p)) {
+      const n = Number(p);
+      if (Number.isSafeInteger(n)) out.set('page', String(n));
+    }
   } else if (ext === '.docx') {
     if (params.has('layout')) out.set('layout', '1');
   }
   return out.toString();
 }
 
-function mailAttachmentChain(params: URLSearchParams): { attachments: string[]; rest: URLSearchParams } {
+function mailAttachmentChain(params: URLSearchParams): { attachments: number[]; rest: URLSearchParams } {
   const entries = [...params.entries()];
-  const attachments: string[] = [];
+  const attachments: number[] = [];
   let i = 0;
   while (i < entries.length && entries[i][0] === 'attachment' && /^\d+$/.test(entries[i][1])) {
-    attachments.push(entries[i][1]);
+    const idx = Number(entries[i][1]);
+    if (!Number.isSafeInteger(idx)) break;
+    attachments.push(idx);
     i++;
   }
   return { attachments, rest: new URLSearchParams(entries.slice(i)) };
@@ -785,7 +790,7 @@ async function resolveMailPreviewPart(inst: Instance, fd: number, name: string, 
   const { attachments, rest } = mailAttachmentChain(params);
   if (!attachments.length) return '';
   const baseParams = new URLSearchParams();
-  for (const a of attachments) baseParams.append('attachment', a);
+  for (const a of attachments) baseParams.append('attachment', String(a));
   if (rest.get('sheet') === null && rest.get('page') === null && !rest.has('layout')) return baseParams.toString();
   // Resolve the target attachment's filename via the sandboxed parent email preview so text/image attachments ignore sheet/page/layout.
   let targetName: string | undefined;
@@ -801,10 +806,10 @@ async function resolveMailPreviewPart(inst: Instance, fd: number, name: string, 
     }
     let parsed: { email?: { attachments?: { name?: string; k?: number }[] } };
     try { parsed = JSON.parse(raw); } catch { break; }
-    const found = parsed.email?.attachments?.find(a => String(a.k) === idx);
+    const found = parsed.email?.attachments?.find(a => a.k === idx);
     targetName = found?.name;
     if (!targetName) break;
-    prefix.append('attachment', idx);
+    prefix.append('attachment', String(idx));
   }
   if (targetName) {
     const leaf = leafPreviewQuery(targetName, rest);

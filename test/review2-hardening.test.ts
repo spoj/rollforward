@@ -77,8 +77,25 @@ test('R2 #6: text & mail-attachment previews canonicalize query params for cache
   assert.ok(totalBytes <= 900, `preview cache total ${totalBytes} bytes exceeded 900-byte budget`);
   assert.equal(remaining.length, 1, 'oldest previews were evicted to stay within budget');
 
-  // Mail text attachment ignores sheet/page/layout and shares ONE cache entry (after parent email summary).
+  // Mail text attachment ignores sheet/page/layout and shares ONE cache entry (after parent email summary),
+  // and zero-padded attachment indices (e.g. attachment=01&page=2 on a PDF attachment) normalize to integer indices and preserve page=.
   for (const f of readdirSync(previews)) rmSync(join(previews, f), { force: true });
+  const makeTwoPagePdf = () => {
+    const objs = [
+      '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+      '2 0 obj\n<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>\nendobj\n',
+      '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>\nendobj\n',
+      '4 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] >>\nendobj\n',
+    ];
+    let pdf = '%PDF-1.4\n';
+    const offsets = [0];
+    for (const o of objs) { offsets.push(Buffer.byteLength(pdf)); pdf += o; }
+    const xrefPos = Buffer.byteLength(pdf);
+    pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+    for (let i = 1; i < offsets.length; i++) pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+    pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`;
+    return Buffer.from(pdf, 'latin1').toString('base64');
+  };
   const eml = [
     'From: a@demo.test',
     'To: b@demo.test',
@@ -95,17 +112,31 @@ test('R2 #6: text & mail-attachment previews canonicalize query params for cache
     'Content-Disposition: attachment; filename="notes.txt"',
     '',
     'hello attachment',
+    '--bnd',
+    'Content-Type: application/pdf; name="two.pdf"',
+    'Content-Disposition: attachment; filename="two.pdf"',
+    'Content-Transfer-Encoding: base64',
+    '',
+    makeTwoPagePdf(),
     '--bnd--',
     '',
   ].join('\r\n');
   writeFileSync(join(dir, 'mail.eml'), eml);
-  for (const q of ['?attachment=0', '?attachment=0&sheet=S1', '?attachment=0&page=2', '?attachment=0&layout=1']) {
+  for (const q of ['?attachment=0', '?attachment=00', '?attachment=0&sheet=S1', '?attachment=0&page=2', '?attachment=0&layout=1']) {
     const r = await fetch(`${base}/preview/${iid}/working/mail.eml${q}`, { headers: { cookie } });
     assert.equal(r.status, 200);
     assert.equal((await r.json()).text, 'hello attachment');
   }
-  // Cache holds only parent mail.eml summary + ONE canonical entry for attachment=0 (not 4 distinct entries).
-  assert.equal(readdirSync(previews).length, 2, `text mail attachment must share one cache file across sheet/page/layout, got ${readdirSync(previews).length}`);
+  // Cache holds only parent mail.eml summary + ONE canonical entry for attachment=0 (not 5 distinct entries).
+  assert.equal(readdirSync(previews).length, 2, `text mail attachment must share one cache file across padded index & sheet/page/layout, got ${readdirSync(previews).length}`);
+
+  // Padded attachment=01&page=2 resolves attachment index 1 (two.pdf) and preserves page=2, returning the page image (matching attachment=1&page=2).
+  const pdfOverview = await (await fetch(`${base}/preview/${iid}/working/mail.eml?attachment=1`, { headers: { cookie } })).json();
+  assert.equal(pdfOverview.pdf?.pages, 2, 'attachment 1 is a 2-page PDF');
+  const paddedPage2 = await (await fetch(`${base}/preview/${iid}/working/mail.eml?attachment=01&page=2`, { headers: { cookie } })).json();
+  const canonPage2 = await (await fetch(`${base}/preview/${iid}/working/mail.eml?attachment=1&page=2`, { headers: { cookie } })).json();
+  assert.match(paddedPage2.image ?? '', /^data:image\/png;base64,/, 'attachment=01&page=2 preserved page=2 and returned page image');
+  assert.equal(paddedPage2.image, canonPage2.image, 'attachment=01&page=2 matches attachment=1&page=2');
 });
 
 test('R2 #7: rf pull writes via temp sibling and preserves the previous local file when replacement write fails', async () => {
