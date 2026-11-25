@@ -501,13 +501,13 @@ export function forget(email: string, offer?: string) {
 }
 
 // What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
-export function sources(inst: Instance, run?: number | Authority): { o: Offer; c: Cache }[] {
+export function sources(inst: Instance | string, run?: number | Authority): { o: Offer; c: Cache }[] {
   let by: string, ticked: string[];
   try {
     if (typeof run === 'object') {
       if (!sameAuthority(inst, run) || m365(run.owner)?.expired) return [];
       ({ owner: by, logins: ticked } = run);
-    } else ({ by, logins: ticked } = lender(inst, run));
+    } else ({ by, logins: ticked } = lender(inst as Instance, run));
   } catch {
     return [];
   }
@@ -546,8 +546,8 @@ A ticked source with neither file has no cache yet.
 // snapshot without touching the feeds, so its deadline can still fire during a slow copy.
 export type Snapshot = { offers: string[]; valid(): boolean };
 export function prepare(inst: Instance, to: string, run?: number): boolean;
-export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal, maxStaleMin?: number): Promise<Snapshot | undefined>;
-export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal, maxStaleMin?: number): boolean | Promise<Snapshot | undefined> {
+export function prepare(inst: Instance | string, to: string, run: Authority, signal: AbortSignal, maxStaleMin?: number): Promise<Snapshot | undefined>;
+export function prepare(inst: Instance | string, to: string, run?: number | Authority, signal?: AbortSignal, maxStaleMin?: number): boolean | Promise<Snapshot | undefined> {
   signal?.throwIfAborted();
   const names = new Set<string>(), included = sources(inst, run);
   const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
