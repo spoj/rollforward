@@ -1269,9 +1269,11 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
   const dest = join(tmp, 'pull-file-link'), file = join(dest, 'working', 'nested', 'victim.txt');
   mkdirSync(dirname(file), { recursive: true });
   symlinkSync(join(outside, 'victim.txt'), file);
+  await assert.rejects(rf('pull', path, dest), fails(1, /is a symlink: remove it or pull into another directory\n$/));
+  assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
+  rmSync(file);
   await rf('pull', path, dest);
   assert.equal(readFileSync(file, 'utf8'), 'from the server');
-  assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
   symlinkSync(dest, join(tmp, 'pull-linked'));
   assert.match(await rf('pull', path, join(tmp, 'pull-linked')), /fetched 0, \d+ up to date/);
 });

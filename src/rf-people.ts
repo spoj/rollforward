@@ -410,13 +410,33 @@ const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
 function write(path: string, data: string | Uint8Array, mtime: string) {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
+  const existing = lstatSync(path, { throwIfNoEntry: false });
+  if (existing?.isSymbolicLink()) throw new Error(`${path} is a symlink: remove it or pull into another directory`);
   const tmp = join(dir, `.rf-pull-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
   try {
     writeFileSync(tmp, data, { flag: 'wx', mode: 0o600 });
     utimesSync(tmp, new Date(mtime), new Date(mtime));
     chmodSync(tmp, 0o444);
-    if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
-    renameSync(tmp, path);
+    try {
+      renameSync(tmp, path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        const cur = lstatSync(path, { throwIfNoEntry: false });
+        if (cur && !cur.isSymbolicLink() && cur.isFile()) {
+          const oldMode = cur.mode;
+          chmodSync(path, 0o644);
+          try {
+            renameSync(tmp, path);
+          } catch (retryErr) {
+            try { chmodSync(path, oldMode); } catch {}
+            throw retryErr;
+          }
+          return;
+        }
+      }
+      throw e;
+    }
   } catch (e) {
     rmSync(tmp, { force: true });
     throw e;
@@ -426,14 +446,14 @@ function write(path: string, data: string | Uint8Array, mtime: string) {
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
 // would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
 // in a dot or a space, which Windows drops. Nor may a name be what git takes for a .git, such as .GIT on a disk that ignores case,
-// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, would take the file
-// elsewhere too, and is refused.
+// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, or at the file itself,
+// would take the file elsewhere too, and is refused.
 const under = (base: string, rel: string) => {
   const names = rel.split('/');
   if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n || /^(\.git|git~1)[. ]*([:\\]|$)/i.test(n)
     || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
   let folder = base;
-  for (const name of ['', ...names.slice(0, -1)]) {
+  for (const name of ['', ...names]) {
     folder = join(folder, name);
     let st: Stats | undefined;
     try { st = lstatSync(folder, { throwIfNoEntry: false }); }
