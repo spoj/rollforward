@@ -532,9 +532,59 @@ test('P2: mail folder removal combined with HTTP 410 in the same Graph batch res
     assert.equal(existsSync(oldFeed), false, `old feed removed (reverse=${rev})`);
     assert.equal(after.parts[fid], undefined, `removed folder dropped from parts (reverse=${rev})`);
     assert.ok(after.parts['']?.delta && after.parts.inbox?.delta, `surviving parts rebuilt and recrawled (reverse=${rev})`);
-    assert.equal(after.wakeGrant, grant);
+  assert.equal(after.wakeGrant, grant);
     const ids = lines(feedOf(ALICE, MAIL)).map(l => l.id).sort();
     assert.deepEqual(ids, ['inbox', 'm1'], `surviving rows intact without removed folder/messages (reverse=${rev})`);
+  }
+});
+
+test('wake-check prepare rejects stale or null as_of past 150m default, honors RF_WAKE_MAX_STALE_MIN and per-wake maxStaleMin override', async () => {
+  await due(ALICE, FOLDER);
+  const c = cache(ALICE, FOLDER);
+  const origAsOf = c.parts[''].as_of;
+  const inst = instance(ALICE, [FOLDER]), lease = logins.authority(inst);
+  try {
+    // 1) Older than 150m default -> rejected as stale.
+    c.parts[''].as_of = new Date(Date.now() - 151 * 60_000).toISOString();
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-default'), lease, new AbortController().signal), /stale/);
+
+    // 2) Per-wake maxStaleMin=200 allows 151m-old cache, while maxStaleMin=120 rejects it.
+    const allowed = await ix.prepare(inst, join(tmp, 'runs', 'stale-override-ok'), lease, new AbortController().signal, 200);
+    assert.equal(allowed?.valid(), true);
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-override-reject'), lease, new AbortController().signal, 120), /stale/);
+
+    // 3) RF_WAKE_MAX_STALE_MIN overrides default when per-wake override is omitted.
+    process.env.RF_WAKE_MAX_STALE_MIN = '180';
+    const envOk = await ix.prepare(inst, join(tmp, 'runs', 'stale-env-ok'), lease, new AbortController().signal);
+    assert.equal(envOk?.valid(), true);
+    process.env.RF_WAKE_MAX_STALE_MIN = '60';
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-env-reject'), lease, new AbortController().signal), /stale/);
+    delete process.env.RF_WAKE_MAX_STALE_MIN;
+
+    // 4) Null as_of is always rejected as stale.
+    c.parts[''].as_of = null;
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-null'), lease, new AbortController().signal, 10_080), /stale/);
+
+    // 5) Multi-part cache uses conservative (oldest) part as_of.
+    const mc = cache(ALICE, MAIL), origInboxAsOf = mc.parts.inbox.as_of;
+    const mailInst = instance(ALICE, [MAIL]), mailLease = logins.authority(mailInst);
+    try {
+      mc.parts[''].as_of = new Date().toISOString();
+      mc.parts.inbox.as_of = new Date(Date.now() - 160 * 60_000).toISOString();
+      writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(mc));
+      await assert.rejects(async () => ix.prepare(mailInst, join(tmp, 'runs', 'stale-multipart'), mailLease, new AbortController().signal), /stale/);
+      const mpOk = await ix.prepare(mailInst, join(tmp, 'runs', 'stale-multipart-ok'), mailLease, new AbortController().signal, 200);
+      assert.equal(mpOk?.valid(), true);
+    } finally {
+      mc.parts.inbox.as_of = origInboxAsOf;
+      writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(mc));
+    }
+  } finally {
+    delete process.env.RF_WAKE_MAX_STALE_MIN;
+    c.parts[''].as_of = origAsOf;
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
   }
 });
 
@@ -550,7 +600,7 @@ test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file over
     writeFileSync(`${k}.0.ndjson.zst`, Buffer.alloc(actualBytes, 0x61));
     writeFileSync(`${k}.json`, JSON.stringify({
       person: BOB, source: offerId, name, gen: 0, length: claimedLength, lines: 1, base: claimedLength,
-      wakeGrant: grant, parts: { '': { link: `${base}/x`, delta: 'ok', as_of: '2026-11-24T00:00:00Z', pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
+      wakeGrant: grant, parts: { '': { link: `${base}/x`, delta: 'ok', as_of: new Date().toISOString(), pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
     }));
   };
 

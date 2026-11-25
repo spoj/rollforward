@@ -24,6 +24,7 @@ import { scratch } from './runner.ts';
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 const WAKE_COPY_BYTES = 64 * 2 ** 20;
+const WAKE_MAX_STALE_MIN = 150;
 const TRANSIENT_ERROR = /^(?:Microsoft Graph answered (?:500|502|504):|The operation was aborted due to timeout\b)/;
 const wakeRebuildAfter = new Map<string, number>();
 
@@ -37,6 +38,13 @@ function wakeCopyBytes(): number {
   if (raw === undefined || !raw.trim()) return WAKE_COPY_BYTES;
   const mb = Number(raw);
   return Number.isFinite(mb) && mb >= 0 ? Math.floor(mb * 2 ** 20) : WAKE_COPY_BYTES;
+}
+function wakeMaxStaleMin(override?: number): number {
+  if (override !== undefined) return override;
+  const raw = process.env.RF_WAKE_MAX_STALE_MIN;
+  if (raw === undefined || !raw.trim()) return WAKE_MAX_STALE_MIN;
+  const min = Number(raw);
+  return Number.isFinite(min) && min > 0 ? min : WAKE_MAX_STALE_MIN;
 }
 
 // A feed line, U+2028 and U+2029 escaped: JSON.stringify leaves them raw, and line readers such as node's readline and Python's
@@ -514,8 +522,8 @@ A ticked source with neither file has no cache yet.
 // snapshot without touching the feeds, so its deadline can still fire during a slow copy.
 export type Snapshot = { offers: string[]; valid(): boolean };
 export function prepare(inst: Instance, to: string, run?: number): boolean;
-export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal): Promise<Snapshot | undefined>;
-export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal): boolean | Promise<Snapshot | undefined> {
+export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal, maxStaleMin?: number): Promise<Snapshot | undefined>;
+export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal, maxStaleMin?: number): boolean | Promise<Snapshot | undefined> {
   signal?.throwIfAborted();
   const names = new Set<string>(), included = sources(inst, run);
   const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
@@ -523,6 +531,16 @@ export function prepare(inst: Instance, to: string, run?: number | Authority, si
   if (selected?.length && (!grant || selected.length !== included.length ||
       included.some(({ c }) => c.wakeGrant !== grant || c.compact || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta || p.due === null))))
     throw new Error('Microsoft 365 indexes are not ready for a wake check');
+  if (selected?.length) {
+    const cutoff = Date.now() - wakeMaxStaleMin(maxStaleMin) * 60_000;
+    for (const { c } of included) {
+      const ps = Object.values(c.parts);
+      const asOf = ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null;
+      const ts = asOf ? Date.parse(asOf) : NaN;
+      if (!Number.isFinite(ts) || ts < cutoff)
+        throw new Error('Microsoft 365 indexes are stale for a wake check');
+    }
+  }
   const planned: { o: Offer; c: Cache; name: string; ps: Part[] }[] = [];
   for (const { o, c } of included) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
