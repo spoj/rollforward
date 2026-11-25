@@ -178,15 +178,80 @@ test('pidfd signaling refuses a mismatched start time without harming the live p
   const child = spawn('sleep', ['60'], { stdio: 'ignore' });
   try {
     const start = statOf(child.pid!)!.start;
-    signal('/proc', child.pid!, start + 1, 'SIGTERM');
+    assert.equal(await signal('/proc', child.pid!, start + 1, 'SIGTERM'), false);
     await new Promise(ok => setTimeout(ok, 50));
     assert.ok(!gone(child.pid!), 'mismatched start time must not signal a live process');
 
     const exited = once(child, 'exit');
-    signal('/proc', child.pid!, start, 'SIGTERM');
+    assert.equal(await signal('/proc', child.pid!, start, 'SIGTERM'), true);
     await exited;
     assert.ok(gone(child.pid!), 'matching start time terminates the process via pidfd');
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
+});
+
+test('killTree excludes vanished PIDs, refuses cross-cgroup / unplaced / older-start children, and sends SIGCONT on mid-traversal failure', async () => {
+  // Fake /proc with:
+  // - box bwrap 200 (start 4000) -> pid1 201 (4001) -> pi 202 (4002) -> target 205 (4501, cgroup A)
+  // - valid child 206 (ppid 205, start 4502, cgroup A)
+  // - vanished child 207 (ppid 205, start 4503, cgroup A) whose SIGSTOP returns empty (vanished)
+  // - bogus child 208 (ppid 205, start 4504, DIFFERENT cgroup B)
+  // - bogus older child 209 (ppid 205, start 4000 < parentStart 4501, cgroup A)
+  // - child of vanished 207: 210 (ppid 207, start 4505, cgroup A) -> MUST NOT be selected because 207 never entered `held`!
+  const fake = fakeProc([
+    { pid: 200, ppid: 100, comm: 'bwrap', argv: ['bwrap'], start: 4000 },
+    { pid: 201, ppid: 200, comm: 'bwrap', argv: ['bwrap'], start: 4001 },
+    { pid: 202, ppid: 201, comm: 'node', argv: ['node', 'pi'], start: 4002 },
+    { pid: 205, ppid: 202, comm: 'python3', argv: ['python3', 'job.py'], start: 4501 },
+    { pid: 206, ppid: 205, comm: 'sleep', argv: ['sleep', '60'], start: 4502 },
+    { pid: 207, ppid: 205, comm: 'sleep', argv: ['sleep', '60'], start: 4503 },
+    { pid: 208, ppid: 205, comm: 'sleep', argv: ['sleep', '60'], start: 4504 },
+    { pid: 209, ppid: 205, comm: 'sleep', argv: ['sleep', '60'], start: 4000 },
+    { pid: 210, ppid: 207, comm: 'sleep', argv: ['sleep', '60'], start: 4505 },
+  ]);
+  for (const pid of [205, 206, 207, 209, 210]) writeFileSync(join(fake, String(pid), 'cgroup'), '0::/rf-run-a\n');
+  writeFileSync(join(fake, '208', 'cgroup'), '0::/unrelated-b\n');
+
+  const log: { sig: string; pids: number[] }[] = [];
+  const res = await killTree(205, 4501, {
+    proc: fake,
+    graceMs: 10,
+    box: A,
+    signal: async (_p, targets, sig) => {
+      const pids = targets.map(([p]) => p);
+      log.push({ sig, pids });
+      if (sig === 'SIGTERM') {
+        for (const p of pids) rmSync(join(fake, String(p)), { recursive: true, force: true });
+      }
+      // Simulate PID 207 vanishing before SIGSTOP lands.
+      return new Set(pids.filter(p => p !== 207));
+    },
+  });
+  assert.deepEqual(res.pids.toSorted(byNumber), [205, 206], 'only live target and valid in-cgroup descendant entered held');
+  assert.ok(!log.some(l => l.pids.includes(208)), 'cross-cgroup process never signaled');
+  assert.ok(!log.some(l => l.pids.includes(209)), 'child with start < parentStart never signaled');
+  assert.ok(!log.some(l => l.pids.includes(210)), 'descendant of vanished non-held PID never selected');
+
+  // Mid-traversal error must SIGCONT already-held processes!
+  const fake2 = fakeProc([
+    { pid: 200, ppid: 100, comm: 'bwrap', argv: ['bwrap'], start: 4000 },
+    { pid: 201, ppid: 200, comm: 'bwrap', argv: ['bwrap'], start: 4001 },
+    { pid: 202, ppid: 201, comm: 'node', argv: ['node', 'pi'], start: 4002 },
+    { pid: 205, ppid: 202, comm: 'python3', argv: ['python3', 'job.py'], start: 4501 },
+    { pid: 206, ppid: 205, comm: 'sleep', argv: ['sleep', '60'], start: 4502 },
+  ]);
+  const log2: { sig: string; pids: number[] }[] = [];
+  let stops = 0;
+  await assert.rejects(killTree(205, 4501, {
+    proc: fake2,
+    box: A,
+    signal: async (_p, targets, sig) => {
+      const pids = targets.map(([p]) => p);
+      log2.push({ sig, pids });
+      if (sig === 'SIGSTOP' && ++stops === 2) throw new Error('helper crashed mid-traversal');
+      return new Set(pids);
+    },
+  }), /helper crashed mid-traversal/);
+  assert.deepEqual(log2.at(-1), { sig: 'SIGCONT', pids: [205] }, 'held processes resumed with SIGCONT on abort');
 });
