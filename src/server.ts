@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
+import { serveWindows, startWindows } from './windows.ts';
 import { agentRoot, id as agentId } from './agent.ts';
 import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { checkAuthorityFormat } from './authority-format.ts';
-import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
+import { asPerson, authenticate, CAPS, can, capabilities, configured, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
 import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
@@ -51,7 +52,7 @@ openStore(root, verifyOnly ? undefined : () => {
   // Back up .rf/ after canonical validation but before repairs, keeping the newest five without disposable caches.
   const backups = join(root, '.rf-backups');
   mkdirSync(backups, { recursive: true, mode: 0o700 });
-  cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs'].includes(basename(p)) });
+  cpSync(join(root, '.rf'), join(backups, new Date().toISOString().replace(/[:.]/g, '-')), { recursive: true, filter: p => !['index', 'runs', 'windows'].includes(basename(p)) });
   for (const old of readdirSync(backups).sort().slice(0, -5)) rmSync(join(backups, old), { recursive: true });
 });
 const authorityKey = (epoch: number, workspace: string) => `${epoch}:${workspace}`;
@@ -1904,6 +1905,11 @@ if (!verifyOnly) serveSandboxes({
       const a = running(token);
       return a ? call(a, host, req, res) : void res.writeHead(409).end('its run has ended');
     },
+    windows: async (rest, req, res) => {
+      const a = running(token);
+      if (!a) return void res.writeHead(409).end('its run has ended');
+      return serveWindows({ inst: a.inst, n: a.n, runner: a.runner, authority: a.authority, working: join(a.view.dir, 'working'), live: () => running(token) === a }, rest, req, res);
+    },
   } : undefined,
 });
 
@@ -1961,7 +1967,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       if (me.role !== 'admin') throw new HttpError(403, 'admins grant capabilities');
       if (req.method === 'PUT') {
         const payload = await json(req), { cap } = payload;
-        if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => c !== 'vpn' || can(me, c)).join(', ')}`);
+        if (!CAPS.includes(cap)) throw new HttpError(400, `a capability is one of ${CAPS.filter(c => (c !== 'vpn' || can(me, c)) && configured(c)).join(', ')}`);
         const edits = ['people', 'add', 'remove'].filter(key => Object.hasOwn(payload, key)), [key] = edits, people = payload[key];
         if (edits.length !== 1 || !isPeople(people) || key !== 'people' && !people.length) throw new HttpError(400, `${cap}: give one non-empty list of emails and Entra group ids for add or remove, or a list in people`);
         const selected = people.map(p => p.toLowerCase()), all = capabilities(), before = all[cap] ?? [];
@@ -1973,7 +1979,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
           await closeUnlent();
         }
       }
-      send(res, 200, Object.fromEntries(CAPS.filter(c => c !== 'vpn' || can(me, c)).map(c => [c, capabilities()[c] ?? []])));
+      send(res, 200, Object.fromEntries(CAPS.filter(c => (c !== 'vpn' || can(me, c)) && configured(c)).map(c => [c, capabilities()[c] ?? []])));
     } else if (url.pathname === '/profiles') {
       if (me.role !== 'admin') throw new HttpError(403, 'admins keep website profiles');
       if (req.method === 'GET') return send(res, 200, profiles());
@@ -2248,6 +2254,11 @@ server.listen(port, host, () => {
   if (verifyOnly) return console.log(`rollforward on http://${host}:${port}, data in ${root} (verification only)`);
   startIndexing();
   startWaking();
+  // Windows workers, when configured (windows.ts): a configuration it can't use stops the server rather than leave it half open.
+  startWindows({ wake: (inst, w) => void wakeWith(inst, [w]) }).catch(e => {
+    console.error(`Windows workers: ${(e as Error).message}`);
+    process.exit(1);
+  });
   if (process.env.RF_BROWSER_URL) setInterval(() => {
     lapse();
     keepAlive().catch(e => console.error('keeping logins alive:', e));

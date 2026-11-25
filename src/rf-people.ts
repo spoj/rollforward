@@ -1179,7 +1179,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
   const key = flags.add !== undefined ? 'add' : flags.remove !== undefined ? 'remove' : 'people';
   const all: Record<string, string[]> = await (await (edits.length ? post('/capabilities', { cap, [key]: people }, 'PUT') : api('/capabilities'))).json();
   if (flags.json) console.log(JSON.stringify(all, null, 1));
-  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (c === 'vpn' || c === 'wake-check' ? 'no one' : 'admins only')}`);
+  else for (const [c, who] of Object.entries(all)) if (!cap || c === cap) console.log(`${c}: ${who.join(', ') || (['vpn', 'wake-check', 'windows'].includes(c) ? 'no one' : 'admins only')}`);
 } else if (cmd === 'user' && args.length >= 2) {
   const [what, email, role] = args, at = `/users/${encodeURIComponent(email)}`;
   if (what === 'add') await post('/users', { roles: { [email]: role ?? 'user' } }, 'PUT');

@@ -19,10 +19,15 @@ export type User = { name?: string; role: Role; disabled?: boolean; sub?: string
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
-// every few minutes. VPN and wake checks require explicit grants, even for admins.
-export const CAPS = ['publish', 'create', 'keepalive', 'vpn', 'wake-check'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
-export const can = (me: Me, cap: string) => (cap !== 'vpn' || !!process.env.RF_TUNNEL_URL)
-  && ((cap !== 'vpn' && cap !== 'wake-check' && me.role === 'admin') || isIn(me, capabilities()[cap] ?? []));
+// every few minutes. VPN, wake checks and Windows workers require explicit grants, even for admins, and VPN and Windows workers
+// their configuration (RF_TUNNEL_URL; RF_WINDOWS_*, windows.ts).
+export const CAPS = ['publish', 'create', 'keepalive', 'vpn', 'wake-check', 'windows'], capabilities = () => readJson<Record<string, string[]>>('capabilities.json', {});
+export const EXPLICIT = ['vpn', 'wake-check', 'windows'];
+export const windowsConfigured = () => !!(process.env.RF_WINDOWS_LISTEN && process.env.RF_WINDOWS_KEYS && process.env.RF_WINDOWS_TLS_CERT && process.env.RF_WINDOWS_TLS_KEY);
+// What a deployment has configured: the others always are.
+export const configured = (cap: string) => (cap !== 'vpn' || !!process.env.RF_TUNNEL_URL) && (cap !== 'windows' || windowsConfigured());
+export const can = (me: Me, cap: string) => configured(cap)
+  && ((!EXPLICIT.includes(cap) && me.role === 'admin') || isIn(me, capabilities()[cap] ?? []));
 
 const env = process.env;
 const oidc = {

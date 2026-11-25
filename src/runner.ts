@@ -109,7 +109,7 @@ export function pi(o: { token: string; id: string; n: number; view: View; skills
       PLAYWRIGHT_MCP_OUTPUT_DIR: '/tmp/playwright-cli',
       // git reads the instance's repository from working/, across the mount between them.
       GIT_DISCOVERY_ACROSS_FILESYSTEM: '1',
-      RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
+      RF_URL: local, RF_TOKEN: o.token, RF_BROWSERS: `${local}/browsers/${o.token}`, RF_WINDOWS: `${local}/windows/${o.token}`, RF_INSTANCE: o.id, RF_WORKING: `${instance}/working`, RF_SKILLS: '/skills', ...(process.env.RF_TODAY && { RF_TODAY: process.env.RF_TODAY }),
       HTTPS_PROXY: proxy, HTTP_PROXY: proxy, https_proxy: proxy, http_proxy: proxy, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost', NODE_USE_ENV_PROXY: '1',
       // Stand-ins for the keys of the server's own connections, which its proxy puts in: Pi's own calls to OpenRouter take this one.
       OPENROUTER_API_KEY: 'rf', ...(process.env.EXA_API_KEY && { EXA_API_KEY: 'rf' }),

@@ -12,6 +12,7 @@ import { contextFor } from './ca.ts';
 // out is a socket of its own served here, which socat inside offers at 127.0.0.1:PORT:
 // - /agent/…: the agent API, as the run (rf);
 // - /browsers/<token>/<NAME>: the run's browser on the website NAME, $RF_BROWSERS/NAME (see browsers.ts);
+// - /windows/<token>/…: the run's jobs on Windows workers, $RF_WINDOWS (see windows.ts);
 // - CONNECT: an HTTPS proxy that lets through only the hosts allowed below or in .rf/egress.json, never to a private address,
 //   and logs each host a run asks for; but a connection's host, or a link one's answer gave the run, it ends here, as that host,
 //   for the run to forward each request (connections.ts): OpenRouter's among them, which Pi's own calls to its model reach, so no
@@ -33,7 +34,7 @@ export const allowed = (host: string) => matchesHost([...ALLOWED, ...readJson<st
 
 // What the server knows of a run, by its token.
 export type InterceptDecision = boolean | 'intercept' | 'deny' | 'passthrough';
-export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): InterceptDecision; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
+export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): InterceptDecision; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void>; windows?(rest: string[], req: IncomingMessage, res: ServerResponse): Promise<void> };
 
 // A run's own socket, which only its sandbox holds: what comes in on it is that run's alone, so its token, which the agent sees and
 // may print where another run reads it, opens nothing from elsewhere. The sockets `cli.ts try` and the tests listen on are shared.
@@ -62,6 +63,7 @@ export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerRespo
     }
     const [, root, token, ...rest] = url.pathname.split('/'), run = runOf(req.socket, token);
     if (root === 'browsers' && run) return serveBrowsers(run.browsers(), `/browsers/${token}`, rest, req, res).catch(e => res.headersSent ? res.destroy() : res.writeHead(e.status ?? 500).end(e.message));
+    if (root === 'windows' && run?.windows) return run.windows(rest, req, res);
     res.writeHead(404).end();
   });
   server.on('upgrade', (req, socket, head) => {

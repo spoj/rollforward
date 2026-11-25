@@ -84,7 +84,7 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const word = e.seq < line || e.note || e.informs || stale ? 'note'
     : e.op !== 'wake' ? binds(inst, e, owner, r)
     : lease && (e.recovery || e.initiator === lease.owner) && sameSeries ? 'runner' : 'note';
-  const valid = e.op === 'wake' ? !stale && sameSeries && (!(e.recovery || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
+  const valid = e.op === 'wake' ? !stale && sameSeries && (!(e.recovery || e.job || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
     : epoch === r.epoch && owner === r.by;
   return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule && !!e.check)) };
 }
@@ -186,7 +186,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const skipped = entries.filter(e => e.op === 'wake' && e.skippedChecks && typeof e.skippedChecks === 'object')
     .map(e => e.skippedChecks as SkippedChecks);
   return `Instance ${inst.label}, run ${n}.`
-    + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
+    + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}${owner && can(owner, 'windows') ? ' Your series owner has the windows capability: curl $RF_WINDOWS.' : ''}` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}${k.skipCount ? ` (${k.skipCount} skipped since ${k.skipSince})` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')
@@ -860,7 +860,7 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 }
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
-type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number }; skippedChecks?: SkippedChecks };
+type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number }; skippedChecks?: SkippedChecks; job?: string };
 export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
