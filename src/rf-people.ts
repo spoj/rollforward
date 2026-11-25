@@ -1,6 +1,7 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -407,11 +408,19 @@ const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
   .filter(r => !path || r.path === path.replace(/\/+$/, '') || r.path.startsWith(path.replace(/\/+$/, '') + '/'));
 
 function write(path: string, data: string | Uint8Array, mtime: string) {
-  mkdirSync(dirname(path), { recursive: true });
-  rmSync(path, { force: true });
-  writeFileSync(path, data);
-  utimesSync(path, new Date(mtime), new Date(mtime));
-  chmodSync(path, 0o444);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmp = join(dir, `.rf-pull-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    writeFileSync(tmp, data, { flag: 'wx', mode: 0o600 });
+    utimesSync(tmp, new Date(mtime), new Date(mtime));
+    chmodSync(tmp, 0o444);
+    if (process.platform === 'win32' && existsSync(path)) chmodSync(path, 0o644);
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
