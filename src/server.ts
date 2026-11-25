@@ -6,7 +6,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, committed, refused } from './git.ts';
 import { serveSandboxes, userland } from './sandbox.ts';
 import { agentRoot, id as agentId } from './agent.ts';
@@ -14,7 +14,7 @@ import { checkTheme, stylesheet, themeLogo } from './theme.ts';
 import { checkAuthorityFormat } from './authority-format.ts';
 import { asPerson, authenticate, CAPS, can, capabilities, checkConfig, cli, connect, myTokens, newToken, recheckRequest, redirectPath, removeUser, revokeToken, ROLES, session, signOutEverywhere, ungranted, upsertUser, users, type Me, type Role, type User } from './auth.ts';
 import { act, canManage, canSee, changes, everyone, initSystem, isPeople, readJson, replaceFile, saveTree, see, seen, tree, writeJson, type Tree, type Workspace } from './system.ts';
-import { authority, checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
+import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } from './logins.ts';
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
@@ -26,11 +26,11 @@ import { offer } from './connections/graph.ts';
 import { addWarehouse } from './connections/databricks.ts';
 import { forget, indexes, prune, startIndexing, track } from './indexes.ts';
 import { find, killTree, sample, startOf, type Monitor, type Sandbox } from './monitor.ts';
-import { saveSeriesSettings, seriesSettings, type Authority, type SeriesSettings } from './series.ts';
+import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './series.ts';
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -186,7 +186,7 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) {
     const check = wakeCheckView(token);
     if (!check) throw new HttpError(401, 'no run for this token');
-    if (req.method === 'GET' && url.pathname === `/api/instances/${check.inst.id}/screen`) return send(res, 200, check.inst.doc);
+    if (check.inst && req.method === 'GET' && url.pathname === `/api/instances/${check.inst.id}/screen`) return send(res, 200, check.inst.doc);
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
@@ -1212,10 +1212,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && its.flatMap(instances).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, closing.seriesId)}/${closing.label} is closing: archive ${w.name} once it finishes`);
     if (change.archived !== undefined) w.archived = !!change.archived;
-    if (change.archived) {
-      cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
-      cancelPendingOom(its.flatMap(instances), by);
-    }
+    if (change.archived) cancelWakes(its.flatMap(sid => [sid, ...labels(sid).map(l => l.id)]));
     if (change.agents !== undefined) replaceFile(agentsFile(id), String(change.agents));
     saveTree(t);
     pruneGrants();
@@ -1415,10 +1412,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const closing = change.archived && instances(id).find(i => i.closing);
     if (closing) throw new HttpError(409, `${named(t, id)}/${closing.label} is closing: archive ${s.name} once it finishes`);
     if (change.archived !== undefined) s.archived = !!change.archived;
-    if (change.archived) {
-      cancelWakes([id, ...labels(id).map(l => l.id)]);
-      cancelPendingOom(instances(id), by);
-    }
+    if (change.archived) cancelWakes([id, ...labels(id).map(l => l.id)]);
     saveTree(t);
     if (change.archived === false) for (const i of instances(id)) kick(i);
     return send(res, 200, 'ok');
@@ -1434,6 +1428,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const canRead = reads(t, t.series[run.inst.seriesId].workspace).includes(t.series[sid].workspace);
       if (req.method === 'DELETE' && !canRead) throw new HttpError(404, 'no such wake pending');
       throw new HttpError(403, canRead ? `${named(t, sid)} is in another workspace: you can read it, not wake it` : 'that is in another workspace: you can read it if it lets you, not wake it');
+    } else if (sid !== run.inst.seriesId) {
+      if (req.method === 'DELETE') throw new HttpError(403, 'runs can only cancel wakes in their own series');
+      throw new HttpError(403, `${named(t, sid)} is another series: runs can only wake their own series`);
     }
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') {
@@ -1774,12 +1771,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (action === 'close' || action === 'abandon') {
         if (mine) throw new HttpError(409, 'wait for the run to end');
         if (ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
-        let captured: Authority | undefined;
-        if (action === 'close') try { captured = authority(inst); } catch {}
-        const followup = await (action === 'close' ? inst.close(who, { quiet, authority: captured }) : inst.abandon(by));
-        cancelWakes([inst.id], true);
-        if (action === 'close') await closed(inst, by, quiet, followup);
-        ackTerminalFollowup(followup.key);
+        await (action === 'close' ? inst.close(who, quiet) : inst.abandon(by));
+        cancelWakes([inst.id]);
         return 'ok';
       }
       throw new HttpError(404, `no action ${action}`);

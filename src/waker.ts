@@ -3,24 +3,23 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, hasTerminalEvent, HttpError, instance, instanceDir, instances, labels, newId, openFile, pendingTerminalFollowups, seriesDir, type Entry, type Instance, type TerminalFollowup } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
 import { act, canSee, changes, readJson, rfDir, tree, type Tree, writeJson } from './system.ts';
 import { asPerson, can, users } from './auth.ts';
-import { PRINT, websitesOf, type Browsers } from './browsers.ts';
-import { builtInAllowed } from './sandbox.ts';
+import { websitesOf, type Browsers } from './browsers.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from './series.ts';
 import { pushed, skills } from './skills.ts';
-import { AGENT, commit, commitLogIfChanged, committed, forget } from './git.ts';
+import { AGENT, commit, committed, forget } from './git.ts';
 import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
 import { pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 import { runWakeCheck } from './wake-check.ts';
 import { binds, conversation, currentMessage, isPerson, openNotes, type Note } from './messages.ts';
-import { appendMessage, messagesAt, noteEntries, syncNotes, visibleInstanceFiles } from './message-store.ts';
+import { appendMessage, messagesAt, syncNotes, visibleInstanceFiles } from './message-store.ts';
 
 // What runs when: one run at a time per series, at most RF_MAX_RUNS at once, started by people's acts and by wakes.
 const LIMIT_MS = Number(process.env.RF_LIMIT_MIN ?? 120) * 60_000;
@@ -50,7 +49,7 @@ const debounce = new Map<string, NodeJS.Timeout>();
 const waiting = new Set<Instance>();
 const retiring = new Set<Active>();
 
-type Check = { id: string; wake: Wake; inst: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexes?: Snapshot; indexCut?: AbortController; ended?: Promise<void> };
+type Check = { id: string; wake: Wake; seriesId: string; label?: string; inst?: Instance; authority: Authority; token: string; cancel: AbortController; signal?: AbortSignal; view?: View; indexes?: Snapshot; indexCut?: AbortController; ended?: Promise<void> };
 const checking = new Map<string, Check>();
 const busy = (series: string) => active.has(series) || checking.has(series);
 
@@ -68,8 +67,6 @@ function seenBefore(inst: Instance): number {
   return Math.max((inst.log.findLast(e => e.op === 'done')?.seen as number | undefined) ?? 0, inst.copied);
 }
 
-const isOomRecovery = (e: Entry) => e.op === 'wake' && (e.recovery as { reason?: string } | undefined)?.reason === 'oom';
-
 // Human acts carry the owner/epoch at append time; autonomous entries carry an immutable lease.
 export type Standing = { word: 'runner' | 'answer' | 'note'; starts: boolean };
 export function standing(inst: Instance, e: Entry, upto = inst.log.length): Standing | undefined {
@@ -81,12 +78,13 @@ export function standing(inst: Instance, e: Entry, upto = inst.log.length): Stan
   const lease = e.authority as Authority | undefined;
   const stale = e.op === 'wake' ? !lease || !sameAuthority(inst, lease) : epoch !== r.epoch;
   if ((e.seq < line && e.seq <= readAt(inst, line)) || (stale && e.seq <= seenBefore(inst))) return undefined;
+  const sameSeries = !e.inst || (() => { try { return instance(e.inst as string).seriesId === inst.seriesId; } catch { return false; } })();
   const word = e.seq < line || e.note || e.informs || stale ? 'note'
     : e.op !== 'wake' ? binds(inst, e, owner, r)
-    : lease && (e.recovery || e.initiator === lease.owner) && (!e.inst || instance(e.inst as string).seriesId === inst.seriesId) ? 'runner' : 'note';
-  const valid = e.op === 'wake' ? !stale && (!(e.recovery || (e.schedule && !e.immediate)) || isOomRecovery(e) || (!!lease?.autonomous && !!r.consent?.autonomous))
+    : lease && (e.recovery || e.initiator === lease.owner) && sameSeries ? 'runner' : 'note';
+  const valid = e.op === 'wake' ? !stale && sameSeries && (!(e.recovery || (e.schedule && !e.immediate)) || (!!lease?.autonomous && !!r.consent?.autonomous))
     : epoch === r.epoch && owner === r.by;
-  return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule)) };
+  return { word, starts: !!r.by && !!r.consent && valid && !e.quiet && e.seq > Math.max(line, inst.copied) && (word !== 'note' || (e.op === 'wake' && !!e.schedule && !!e.check)) };
 }
 // Read history stays history across an authority boundary; unread instructions become notes.
 function readAt(inst: Instance, line: number): number {
@@ -102,20 +100,7 @@ export function pending(inst: Instance, seen: number, upto = inst.log.length): E
 
 // Whether an instance has something for a run: what came since its last run, or since an Interrupt or a failed or cut run, which
 // waits for the next act; nothing while its series or its workspace is archived, which does no work until it's restored.
-// A quiet archive interrupt cancels only the pending OOM wake before it, preserving any later owner comment across restore.
-function stopped(inst: Instance): number {
-  let cut = 0;
-  for (let i = 0; i < inst.log.length; i++) {
-    const e = inst.log[i];
-    if (e.op === 'interrupt' && e.why === 'archived') {
-      const w = inst.log.slice(0, i).findLast(isOomRecovery);
-      if (w) cut = Math.max(cut, w.seq);
-    } else if (e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error))) {
-      cut = Math.max(cut, e.seq);
-    }
-  }
-  return cut;
-}
+const stopped = (inst: Instance) => inst.log.findLast(e => e.op === 'interrupt' || (e.op === 'expired' && !e.run) || (e.op === 'done' && (e.aborted || e.error)))?.seq ?? 0;
 const due = (inst: Instance) => inst.doc.status === 'open' && pending(inst, Math.max(seenBefore(inst), stopped(inst))).length > 0
   && !archived(tree(), inst.seriesId);
 
@@ -215,7 +200,11 @@ export const archived = (t: Tree, seriesId: string) => !!(t.series[seriesId].arc
 // /work/<workspace>/<series>/.notes/; the company's AGENTS.md at /work/AGENTS.md and each workspace's at
 // /work/<workspace>/AGENTS.md; and the environment its runner's connections set.
 export function view(inst: Instance, lease = authority(inst)): View {
-  const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [inst.seriesId, ...reach(t, inst.seriesId)];
+  return seriesView(inst.seriesId, lease, inst);
+}
+
+function seriesView(seriesId: string, lease: Authority, cwdInst?: Instance): View {
+  const t = tree(), at = (id: string) => `/work/${named(t, id)}`, series = [seriesId, ...reach(t, seriesId)];
   const names = Object.fromEntries(series.flatMap(id => instances(id).filter(i => !['abandoned', 'deleted'].includes(i.doc.status)).map(i => {
     i.syncLog();
     return [`${at(id)}/${i.label}`, i.id];
@@ -227,7 +216,9 @@ export function view(inst: Instance, lease = authority(inst)): View {
     return [join(dir, 'notes'), `${at(id)}/.notes`] as [string, string];
   });
   return {
-    instance: `${at(inst.seriesId)}/${inst.label}`, dir: inst.dir, pylib: join(inst.series(), '.pylib'),
+    instance: cwdInst ? `${at(seriesId)}/${cwdInst.label}` : at(seriesId),
+    dir: cwdInst ? cwdInst.dir : seriesDir(seriesId),
+    pylib: join(seriesDir(seriesId), '.pylib'),
     ro: [[agentsFile(), '/work/AGENTS.md'], ...agents, ...noting, ...Object.entries(names).map(([path, id]) => [instanceDir(id), path] as [string, string])],
     names, series: Object.fromEntries(series.map(id => [at(id), id])), env: Object.assign({}, ...connections().filter(c => lease.logins.some(o => o === loginOf(c).id || o.startsWith(`${loginOf(c).id}:`))).map(c => types[c.type].env?.(c, lease.logins))),
   };
@@ -402,60 +393,6 @@ function revokeRun(a: Active) {
   abortCalls(a);
 }
 
-function canRetryOom(a: Active, priorSeen: number): boolean {
-  if (!a.run || a.interrupted || a.cut || a.inst.doc.status !== 'open' || a.inst.closing) return false;
-  const t = tree();
-  if (archived(t, a.inst.seriesId) || !sees(a.inst, t) || !sameAuthority(a.inst, a.authority)) return false;
-  if (a.browsers?.websites()) return false;
-  const log = a.inst.log, runIdx = log.findLastIndex(e => e.op === 'run' && e.run === a.n);
-  if (runIdx < 0) return false;
-  if (log.slice(runIdx + 1).some(e => e.op === 'interrupt' || e.op === 'authority')) return false;
-  if (held(a.inst, 'entra', a.runner) || log.some(e => e.op === 'expired' && typeof e.login === 'string' && held(a.inst, e.login, a.runner, e.login !== 'openrouter'))) return false;
-  const authSeq = log.slice(0, runIdx).findLast(e => e.op === 'authority')?.seq ?? 0;
-  const startFloor = Math.max(a.inst.copied, authSeq);
-  const runInfo: { run: number; seq: number; idx: number; upto: number; done?: Entry; doneIdx: number }[] = [];
-  const byRun = new Map<number, (typeof runInfo)[number]>();
-  for (let i = startFloor; i < runIdx; i++) {
-    const e = log[i];
-    if (e.op === 'run') {
-      const info = { run: e.run as number, seq: e.seq, idx: i, upto: typeof e.upto === 'number' ? e.upto : e.seq, done: undefined as Entry | undefined, doneIdx: -1 };
-      runInfo.push(info);
-      byRun.set(info.run, info);
-    } else if (e.op === 'done') {
-      const info = byRun.get(e.run as number);
-      if (info && !info.done) { info.done = e; info.doneIdx = i; }
-    }
-  }
-  let chainStart = startFloor;
-  for (let k = runInfo.length - 1; k >= 0; k--) {
-    const { done: d, doneIdx } = runInfo[k];
-    if (!d) continue;
-    if (!d.aborted && !d.error) { chainStart = d.seq; break; }
-    const nextRunIdx = k + 1 < runInfo.length ? runInfo[k + 1].idx : runIdx;
-    const between = log.slice(doneIdx + 1, nextRunIdx);
-    const interrupted = between.findLast(e => e.op === 'interrupt');
-    if (interrupted) { chainStart = interrupted.seq; break; }
-    if (!between.some(w => w.op === 'wake' && !!w.recovery && !w.quiet)) { chainStart = d.seq; break; }
-  }
-  if (log.slice(chainStart).some(isOomRecovery)) return false;
-  const chainRuns = new Set<number>([a.n]);
-  for (const info of runInfo) {
-    if (info.seq > chainStart) { chainRuns.add(info.run); continue; }
-    if (info.done && !info.done.aborted && !info.done.error) continue;
-    const endIdx = info.doneIdx >= 0 ? info.doneIdx : runIdx;
-    if (info.upto > priorSeen || log.slice(info.idx + 1, endIdx).some(e => e.seq > priorSeen && (e.by !== 'agent' || !!e.note) && told(e))) chainRuns.add(info.run);
-  }
-  // Effects match by run number rather than seq because cross-instance said/corrected carry the target's seq.
-  if (log.some(e => (e.op === 'expired' && e.run === a.n) || (chainRuns.has(e.run as number) && (
-    ['send', 'delivered', 'said', 'corrected', 'browsers'].includes(e.op)
-    || (e.op === 'browser' && e.site !== PRINT)
-    || (e.op === 'egress' && e.allowed === true && !builtInAllowed(e.host as string))
-  )))) return false;
-  if (Object.keys(t.series).some(sid => noteEntries(seriesDir(sid)).some(e =>
-    e.by === 'agent' && (e.see as { inst?: string } | undefined)?.inst === a.inst.id && chainRuns.has(e.run as number)))) return false;
-  return true;
-}
-
 async function finishRun(a: Active, aborted: boolean, error?: string, oom = false) {
   if (a.done || stopping) return;
   const mayRetry = oom && !a.stopped && !a.interrupted && !a.cut;
@@ -486,21 +423,21 @@ function finish(a: Active, aborted: boolean, error?: string, oom = false, allowO
   revokeRun(a);
   const series = a.inst.seriesId;
   active.delete(series);
-  const priorSeen = seenBefore(a.inst);
-  const retryOom = allowOomRetry && canRetryOom(a, priorSeen);
+  const prevDone = a.inst.log.findLast(e => e.seq > a.inst.copied && e.op === 'done');
   const closing = a.browsers?.end().catch(e => a.inst.append('server', 'browsers', { run: a.n, error: e.message }));
   // The rules it added to the process, or reworded, for the thread whose entry started it, where they were likely agreed.
   const added = rules(a.process, processMd(a.inst.dir) ?? a.process);
   const done = a.inst.append('server', 'done', {
-    run: a.n, aborted, seen: retryOom ? priorSeen : a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated,
+    run: a.n, aborted, seen: a.seen, cost: +a.cost.toFixed(6), estimated: a.estimated,
     ...(error && { error }), ...(oom && { oom: true }), ...(added && { rules: added, thread: a.thread }),
   });
   clearSkipStreak(a.inst);
-  if (retryOom) {
-    const runEntry = a.inst.log.findLast(e => e.op === 'run' && e.run === a.n);
+  // On a confirmed kernel OOM kill, wake at most 1 consecutive fresh run under current autonomous consent.
+  if (allowOomRetry && a.run && a.inst.doc.status === 'open' && !a.inst.closing && !archived(tree(), series) && sees(a.inst)
+    && a.authority.autonomous && ownerOf(a.inst).consent?.autonomous && sameAuthority(a.inst, a.authority) && !prevDone?.oom) {
     a.inst.append('server', 'wake', {
-      reason: `Run ${a.n} hit the memory limit and was killed by the kernel; retry with lower peak memory (stream or chunk large files/sheets instead of loading them whole).`,
-      from: 'server', cause: done.seq, initiator: (runEntry?.initiator as string | undefined) ?? a.runner,
+      reason: `Run ${a.n} hit the memory limit and was killed by the kernel; check working/ and logs to see what already ran before continuing, and stream or chunk large files instead of loading them into memory.`,
+      from: 'server', cause: done.seq, initiator: a.runner,
       authority: a.authority, recovery: { run: a.n, reason: 'oom' },
     });
   }
@@ -661,59 +598,8 @@ function startWaiting() {
 export function queued(inst: Instance): { why: string; since: string } | undefined {
   const a = active.get(inst.seriesId), check = checking.get(inst.seriesId);
   if (a?.inst === inst || inst.doc.status !== 'open' || !(debounce.has(inst.id) || waiting.has(inst) || ((a || check) && due(inst)))) return;
-  const why = check ? `its series is checking a scheduled wake for ${check.inst.label}` : debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : draining ? 'an update waits for the runs going to finish' : active.size + checking.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
+  const why = check ? `its series is checking a scheduled wake for ${check.inst?.label ?? check.label ?? 'the next period'}` : debounce.has(inst.id) ? 'starting' : a ? `its series is running ${a.inst.label}` : draining ? 'an update waits for the runs going to finish' : active.size + checking.size >= MAX_RUNS ? `${MAX_RUNS} runs are going, the most RF_MAX_RUNS allows` : 'too little memory is free (RF_MIN_FREE_GB)';
   return { why, since: pending(inst, seenBefore(inst))[0]?.at ?? new Date().toISOString() };
-}
-
-// The owner's close continues later drafts. A <label>-r2 closing supersedes <label>, and <label>-r3 supersedes <label>-r2.
-export function closed(inst: Instance, by: string, quiet?: boolean, followup?: TerminalFollowup): Promise<void> | undefined {
-  const close = followup ? hasTerminalEvent(inst, 'close', followup.seq)
-    : inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
-  const closedRef = close ? { inst: inst.id, seq: close.seq } : undefined;
-  const durable = !!followup;
-  const targets = followup
-    ? (followup.recipients ?? []).flatMap(id => {
-        try { const i = instance(id); return !i.hole && i.seriesId === inst.seriesId && i.doc.status === 'open' ? [i] : []; }
-        catch { return []; }
-      })
-    : instances(inst.seriesId).filter(i => i.doc.status === 'open' && i.label.localeCompare(inst.label, 'en', { numeric: true }) > 0);
-  for (const later of targets) {
-    if (closedRef && later.log.some(e => e.op === 'wake' && e.from === by && !!e.quiet === !!quiet
-      && (e.closed as { inst?: string; seq?: number } | undefined)?.inst === closedRef.inst
-      && (e.closed as { inst?: string; seq?: number } | undefined)?.seq === closedRef.seq)) continue;
-    if (followup) {
-      // Revalidate close-time captured lease; fail closed (skip) if missing or revoked rather than minting a replacement lease.
-      if (!followup.authority || !sameAuthority(later, followup.authority)) continue;
-      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, authority: followup.authority, ...(closedRef && { closed: closedRef }) }], durable);
-    } else {
-      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, ...(closedRef && { closed: closedRef }) }]);
-    }
-  }
-  const was = followup
-    ? (followup.supersedes ? (() => { try { const w = instance(followup.supersedes!); return !w.hole && w.seriesId === inst.seriesId && w.doc.status === 'closed' ? w : undefined; } catch { return undefined; } })() : undefined)
-    : (() => {
-        const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [];
-        return base ? instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed') : undefined;
-      })();
-  const commits: Promise<unknown>[] = [];
-  if (was) {
-    let corr = was.log.find(e => e.op === 'correction' && e.kind === 'superseded' && e.item == null && (e.see as { inst?: string } | undefined)?.inst === inst.id);
-    if (!corr) {
-      corr = was.append(by, 'correction', { kind: 'superseded', text: `${inst.label} supersedes it`, see: { inst: inst.id, label: inst.label } }, durable);
-    }
-    let echoed = inst.log.find(e => e.op === 'corrected' && e.kind === 'superseded' && e.item == null && e.inst === was.id && e.seq === corr!.seq);
-    if (!echoed) {
-      echoed = inst.append(by, 'corrected', { inst: was.id, label: was.label, seq: corr.seq, kind: 'superseded' }, durable);
-    }
-    const who = by === 'agent' ? AGENT : { name: users()[by]?.name ?? by, email: by };
-    for (const [i, m, x] of [[was, `Correction: ${was.label} is superseded, see ${inst.label}`, corr], [inst, `Corrected: ${was.label} is superseded`, echoed]] as const) {
-      if (i.doc.status === 'closed') {
-        const p = commitLogIfChanged(i.dir, who, m);
-        commits.push(followup ? p : p.catch(err => i.append('server', 'commit', { cause: x.seq, error: err.message })));
-      }
-    }
-  }
-  return commits.length ? Promise.all(commits).then(() => {}) : undefined;
 }
 
 // A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
@@ -743,7 +629,7 @@ export type SkippedChecks = { count: number; since: string; until: string; lastM
 export type Wake = {
   target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number;
   days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string;
-  deadlineTarget?: string; maxStaleMin?: number; backstopHours?: number; rev?: number;
+  deadlineTarget?: string; deadlineLabel?: string; maxStaleMin?: number; backstopHours?: number; rev?: number;
   skipCount?: number; skipSince?: string; lastSkipAt?: string; lastSkipMessage?: string;
 };
 export type Request = { series: string; label: string; from: string; at: string; inst?: string; text?: string; target?: string; message?: number };
@@ -789,7 +675,7 @@ export function wakes(): Wakes {
   return stored;
 }
 
-function saveWakes(w: Wakes, durable = false) {
+function saveWakes(w: Wakes) {
   const requests = Object.create(null);
   for (const [id, r] of Object.entries(w.requests)) {
     const { from, at, text, series, target, label, inst: source } = r;
@@ -805,7 +691,7 @@ function saveWakes(w: Wakes, durable = false) {
     }
     requests[id] = { series, label, ...(source && { inst: source }), ...(target && { target }), message };
   }
-  writeJson('wakes.json', { ...w, requests }, undefined, durable);
+  writeJson('wakes.json', { ...w, requests });
 }
 const publicWake = (id: string, k: Wake): Wake & { id: string } => {
   const { rev: _r, ...shown } = k;
@@ -860,14 +746,18 @@ export function weekly(text: string, at: Date, label?: string): string[] | undef
 // up, unless the same is pending, to 20 a target.
 export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
   const w = wakes(), t = tree(), sid = t.series[target] ? target : instance(target).seriesId, s = seriesSettings(seriesDir(sid));
-  const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(instance(wake.inst).seriesId) : undefined;
+  if (wake.inst) {
+    const srcInst = instance(wake.inst);
+    if (srcInst.seriesId !== sid) throw new HttpError(403, `${named(t, sid)} is another series: runs can only wake their own series`);
+  }
+  const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(sid) : undefined;
   const immediate = !wake.inst && wake.from === s.owner && wake.at <= new Date().toISOString();
   const authorized = s.consent && (immediate || s.consent.autonomous) && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
     && p && canSee(p, t.workspaces[t.series[sid].workspace])
     && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
-  if (wake.check && (!authorized || !s.consent?.autonomous || immediate || !can(p, 'wake-check') || (source && source.inst.seriesId !== sid)))
+  if (wake.check && (!authorized || !s.consent?.autonomous || immediate || !can(p, 'wake-check')))
     throw new HttpError(403, 'a wake check needs a scheduled wake of your own series, autonomous consent, and the wake-check capability');
-  const k: Wake = { ...wake, target, immediate: immediate || undefined, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.inst.seriesId !== sid || source.authority.logins.includes(o)), autonomous: s.consent!.autonomous } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
+  const k: Wake = { ...wake, target, immediate: immediate || undefined, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.authority.logins.includes(o)), autonomous: s.consent!.autonomous } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days && !k.immediate) k.at = new Date(Math.min(k.deadline ? Date.parse(k.deadline) : Infinity, Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS))).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
@@ -894,25 +784,12 @@ export function cancelWake(id: string) {
 }
 
 // Every wake and request for these series and instances, as they close or are archived.
-export function cancelWakes(targets: string[], durable = false) {
+export function cancelWakes(targets: string[]) {
   const w = wakes();
-  for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) delete w.pending[id];
-  for (const [id, r] of Object.entries(w.requests)) if ([r.series, r.target].some(x => targets.includes(x!))) delete w.requests[id];
-  saveWakes(w, durable);
-}
-
-// Cancel pending OOM retries when archiving so restoring does not revive them, while leaving later owner comments intact.
-export function cancelPendingOom(insts: Instance[], by: string) {
-  for (const inst of insts) {
-    if (inst.hole || inst.doc.status !== 'open') continue;
-    const p = pending(inst, Math.max(seenBefore(inst), stopped(inst)));
-    if (p.some(isOomRecovery)) {
-      clearTimeout(debounce.get(inst.id));
-      debounce.delete(inst.id);
-      waiting.delete(inst);
-      inst.append(by, 'interrupt', { quiet: true, why: 'archived' });
-    }
-  }
+  let changed = false;
+  for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) { delete w.pending[id]; changed = true; }
+  for (const [id, r] of Object.entries(w.requests)) if ([r.series, r.target].some(x => targets.includes(x!))) { delete w.requests[id]; changed = true; }
+  if (changed) saveWakes(w);
 }
 
 export function dropRequest(id: string, by: string, how: 'started' | 'dismissed'): Request {
@@ -933,12 +810,12 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
 type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number }; skippedChecks?: SkippedChecks };
-export function wakeWith(inst: Instance, wakes: Woken[], durable = false): Instance {
+export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
     const lease = wake.authority ?? (!wake.inst && wake.from === r.by && r.consent ? authority(inst) : undefined);
     const fields = { ...wake, authority: lease, initiator: lease?.owner };
-    inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) }, durable);
+    inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) });
   }
   if (wakes.some(w => !w.quiet)) kick(inst);
   return inst;
@@ -971,9 +848,9 @@ function clearSkipStreak(inst: Instance) {
 }
 
 function advanceWake(w: Wakes, id: string, wake: Wake) {
-  const { deadlineTarget, skipCount: _c, skipSince: _s, lastSkipAt: _a, lastSkipMessage: _m, ...k } = wake;
+  const { deadlineTarget, deadlineLabel, skipCount: _c, skipSince: _s, lastSkipAt: _a, lastSkipMessage: _m, ...k } = wake;
   // A backstop never edits the weekly schedule's time or label, including if an older server reads it.
-  if (deadlineTarget) { w.pending[id] = k; return; }
+  if (deadlineTarget || deadlineLabel) { w.pending[id] = k; return; }
   delete w.pending[id];
   if (!k.days) return;
   const was = new Date(k.at), next = step(was, k.days, 1), date = dateIn(k.label);
@@ -991,11 +868,18 @@ export function wakeCheckStatus(inst: Instance): { at: string; message: string }
 }
 
 function currentCheck(c: Check, w = wakes(), t = tree()) {
-  const { inst, authority: lease } = c, owner = asPerson(lease.owner);
-  if (stopping || c.cancel.signal.aborted || inst.doc.status !== 'open' || inst.closing || !owner || !can(owner, 'wake-check')
-    || !sameAuthority(inst, lease) || !ownerOf(inst).consent?.autonomous || archived(t, inst.seriesId)
-    || JSON.stringify(wakeConfig(w.pending[c.id])) !== JSON.stringify(wakeConfig(c.wake)) || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
-  const reachable = [inst.seriesId, ...reach(t, inst.seriesId)];
+  const { seriesId, inst, authority: lease } = c, owner = asPerson(lease.owner);
+  const target = inst ?? seriesId;
+  if (stopping || c.cancel.signal.aborted || !owner || !can(owner, 'wake-check')
+    || !sameAuthority(target, lease) || !ownerOf(target).consent?.autonomous || archived(t, seriesId)
+    || JSON.stringify(wakeConfig(w.pending[c.id])) !== JSON.stringify(wakeConfig(c.wake))) return false;
+  if (inst) {
+    if (inst.doc.status !== 'open' || inst.closing || (t.series[c.wake.target] && inst.label !== c.wake.label)) return false;
+  } else {
+    if (instances(seriesId).filter(i => i.doc.status === 'open').length >= MAX_OPEN) return false;
+    if (c.label && labels(seriesId).some(l => l.label === c.label && instance(l.id).hole)) return false;
+  }
+  const reachable = [seriesId, ...reach(t, seriesId)];
   return !c.view || Object.values(c.view.series).every(id => reachable.includes(id));
 }
 
@@ -1006,7 +890,7 @@ export function wakeCheckView(token: string) {
 }
 
 async function checkWake(c: Check, from: string) {
-  const { inst, wake, id, token, authority: lease } = c, started = Date.now(), index = join(rfDir(), 'runs', token);
+  const { seriesId, inst, wake, id, token, authority: lease } = c, started = Date.now(), index = join(rfDir(), 'runs', token);
   const deadline = wake.deadline ? Date.parse(wake.deadline) : Infinity, expires = Math.min(deadline, started + 60_000);
   const indexCut = c.indexCut = new AbortController();
   const budget = AbortSignal.timeout(Math.max(1, expires - started)), signal = c.signal = AbortSignal.any([budget, c.cancel.signal, indexCut.signal]);
@@ -1024,22 +908,33 @@ async function checkWake(c: Check, from: string) {
         checkpoint();
         await confirm(lease.owner, checkpoint, signal);
         checkpoint();
-        const v = c.view = view(inst, lease);
-        const author = wake.inst && instance(wake.inst), before = closedBefore(inst).at(-1);
-        let script: string | undefined;
-        for (const i of [inst, author, before]) {
-          if (!i || i.seriesId !== inst.seriesId) continue;
-          const path = Object.keys(v.names).find(p => v.names[p] === i.id);
-          if (!path) continue;
+        const author = wake.inst ? (() => { try { const a = instance(wake.inst); return !a.hole && a.seriesId === seriesId ? a : undefined; } catch { return undefined; } })() : undefined;
+        const candidates: (Instance | undefined)[] = inst
+          ? [inst, author, closedBefore(inst).at(-1)]
+          : [
+              author,
+              ...instances(seriesId)
+                .filter(i => i.doc.status === 'closed' && (!c.label || i.label.localeCompare(c.label, 'en', { numeric: true }) < 0))
+                .sort((a, b) => b.label.localeCompare(a.label, 'en', { numeric: true })),
+              ...instances(seriesId)
+                .filter(i => i.doc.status === 'open')
+                .sort((a, b) => b.label.localeCompare(a.label, 'en', { numeric: true })),
+            ];
+        let host: Instance | undefined;
+        for (const i of candidates) {
+          if (!i || i.seriesId !== seriesId || ['abandoned', 'deleted'].includes(i.doc.status)) continue;
           const fd = openFile(i.dir, wake.check!);
           if (fd === undefined) continue;
           closeSync(fd);
-          script = `${path}/${wake.check}`;
+          host = i;
           break;
         }
+        const v = c.view = inst ? view(inst, lease) : seriesView(seriesId, lease, host);
+        const hostPath = host && Object.keys(v.names).find(p => v.names[p] === host.id);
+        const script = hostPath ? `${hostPath}/${wake.check}` : undefined;
         if (!script) { failure = 'script not found in working/'; return; }
         mkdirSync(index, { recursive: true });
-        const indexes = await prepare(inst, index, lease, signal, wake.maxStaleMin);
+        const indexes = await prepare(inst ?? seriesId, index, lease, signal, wake.maxStaleMin);
         checkpoint();
         if (indexes) {
           c.indexes = indexes;
@@ -1057,7 +952,7 @@ async function checkWake(c: Check, from: string) {
     if (script) {
       // Wait for the sandbox's exit, not merely for the abort, before allowing a normal run of this series.
       const live = skills().map(s => ({ id: s.id, dir: realpathSync(s.dir) }));
-      try { result = await runWakeCheck({ token, id: inst.id, view: c.view!, skills: live, script, signal, checkpoint }); }
+      try { result = await runWakeCheck({ token, id: inst?.id ?? '', view: c.view!, skills: live, script, signal, checkpoint }); }
       catch (e) { failure = (e as Error).message; }
     }
     const w = wakes(), at = Date.now(), now = new Date(at).toISOString();
@@ -1075,7 +970,7 @@ async function checkWake(c: Check, from: string) {
         lastSkipAt: now,
         lastSkipMessage: result.message,
       };
-      if (wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
+      if (inst && wakeCheckStatus(inst)?.message !== result.message) inst.append('server', 'wake-check', {
         message: result.message, seconds: Math.round((Date.now() - started) / 1000), runner: lease.owner, from, schedule: id, check: liveWake.check,
       });
       const next = w.pending[id];
@@ -1083,7 +978,10 @@ async function checkWake(c: Check, from: string) {
         if (!next) w.pending[id] = { ...liveWake, at: liveWake.deadline, ...skipState };
         else {
           Object.assign(next, skipState);
-          if (next.at > liveWake.deadline) next.deadlineTarget = inst.id;
+          if (next.at > liveWake.deadline) {
+            if (inst) next.deadlineTarget = inst.id;
+            else next.deadlineLabel = c.label;
+          }
         }
       } else if (next) {
         Object.assign(next, skipState);
@@ -1091,14 +989,29 @@ async function checkWake(c: Check, from: string) {
     } else {
       const text = forced ? liveWake.text : failure ? `wake check failed: ${failure}` : result?.message;
       const skippedChecks = skippedOf(liveWake, now);
-      wakeWith(inst, [{ ...scheduled(liveWake, id, from, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) }]);
+      const wakeEntry = { ...scheduled(liveWake, id, from, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) };
+      const targetInst = inst ?? (() => {
+        const knownId = c.label ? labels(seriesId).find(l => l.label === c.label)?.id : undefined;
+        return knownId ? instance(knownId) : undefined;
+      })();
+      if (targetInst) {
+        if (targetInst.doc.status === 'open') wakeWith(targetInst, [wakeEntry]);
+      } else if (instances(seriesId).filter(i => i.doc.status === 'open').length < MAX_OPEN) {
+        startWith(seriesId, c.label!, liveWake.inst ? 'agent' : liveWake.from, [wakeEntry]);
+      } else {
+        w.requests[newId()] = { series: seriesId, label: c.label!, from, at: now, ...(liveWake.inst && { inst: liveWake.inst }), ...(liveWake.text && { text: liveWake.text }) };
+      }
     }
     saveWakes(w);
   } finally {
-    checking.delete(inst.seriesId);
+    checking.delete(seriesId);
     rmSync(index, { recursive: true, force: true });
     if (!stopping) {
-      bail(inst, new Set());
+      if (inst) bail(inst, new Set());
+      else {
+        const next = instances(seriesId).find(runnable);
+        if (next) start(next);
+      }
       startWaiting();
       if (draining) changes.emit('change', 'tree');
     }
@@ -1109,26 +1022,26 @@ export function fire() {
   if (stopping) return;
   startWaiting();
   const w = wakes(), now = new Date().toISOString(), t = tree();
-  const ready = Object.entries(w.pending).map(([id, wake]) => ({ id, wake, at: wake.deadlineTarget ? wake.deadline! : wake.at }))
+  const ready = Object.entries(w.pending).map(([id, wake]) => ({ id, wake, at: wake.deadlineTarget || wake.deadlineLabel ? wake.deadline! : wake.at }))
     .filter(k => k.at <= now).sort((a, b) => a.at.localeCompare(b.at));
   let changed = false;
   for (const { id, wake } of ready) {
-    const { days } = wake, target = wake.deadlineTarget ?? wake.target, label = wake.deadlineTarget ? undefined : wake.label;
-    const deadline = !!wake.deadline && wake.deadline <= now, backstop = deadline && (wake.deadlineTarget || wake.at <= wake.deadline!);
+    const { days } = wake, target = wake.deadlineTarget ?? wake.target, label = wake.deadlineTarget ? undefined : (wake.deadlineLabel ?? wake.label);
+    const deadline = !!wake.deadline && wake.deadline <= now, backstop = deadline && (wake.deadlineTarget || wake.deadlineLabel || wake.at <= wake.deadline!);
     const backstopHrs = wakeBackstopHours(wake.backstopHours);
     const recurringDue = !!days && !deadline && !!wake.skipCount && !!wake.skipSince
       && (Date.parse(now) - Date.parse(wake.skipSince) >= backstopHrs * 3_600_000);
     if (!wake.immediate && !backstop && !recurringDue && Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS > Date.parse(now)) continue;
-    // One a person set goes only while they may see its workspace, and a run's while its instance lives in the same workspace.
+    // One a person set goes only while they may see its workspace, and a run's only for its own series.
     const targetSeries = t.series[target] ? target : instance(target).seriesId, wsId = t.series[targetSeries].workspace, ws = t.workspaces[wsId];
     if (checking.get(targetSeries)?.id === id) continue;
     if (wake.inst) {
       let src: Instance | undefined;
       try { src = instance(wake.inst); } catch {}
-      if (!src || t.series[src.seriesId]?.workspace !== wsId) {
+      if (!src || src.seriesId !== targetSeries || t.series[src.seriesId]?.workspace !== wsId) {
         delete w.pending[id];
         changed = true;
-        console.log(`a wake for ${named(t, targetSeries)} went unfired, as the instance that set it is in another workspace`);
+        console.log(`a wake for ${named(t, targetSeries)} went unfired, as the instance that set it is in another series`);
         continue;
       }
     }
@@ -1164,10 +1077,10 @@ export function fire() {
     const canStart = inst ? inst.doc.status === 'open' : instances(target).filter(i => i.doc.status === 'open').length < MAX_OPEN;
     if (canStart && wake.check && !deadline && !recurringBackstop && !wake.immediate && can(owner, 'wake-check') && (!inst || active.get(targetSeries)?.inst !== inst && !due(inst))) {
       if (busy(targetSeries) || full() || [...retiring].some(a => a.inst.seriesId === targetSeries) || inst?.closing) continue;
-      const to = inst ?? createInstance(target, label!, wake.inst ? 'agent' : wake.from);
-      const c: Check = { id, wake, inst: to, authority: lease, token: randomUUID(), cancel: new AbortController() };
+      // Do not create a new open instance before the check decides `continue`: a `stop` leaves zero empty instances on disk.
+      const c: Check = { id, wake, seriesId: targetSeries, label: inst?.label ?? label, inst, authority: lease, token: randomUUID(), cancel: new AbortController() };
       checking.set(targetSeries, c);
-      c.ended = checkWake(c, from).catch(e => console.error(`a wake check for ${to.id} failed to settle`, e));
+      c.ended = checkWake(c, from).catch(e => console.error(`a wake check for ${inst?.id ?? targetSeries} failed to settle`, e));
       continue;
     }
     advanceWake(w, id, wake);
@@ -1195,35 +1108,15 @@ export const CUT = { restart: 'a restart cut the run', authority: 'its series au
 
 // Recovery accounts for the captured executor and resumes only a still-valid captured authority.
 // No git runs at startup, so interrupted commit locks can be removed.
-export function recover(): Promise<void> {
+export function recover() {
   // A deletion a restart cut is done: what's left of its folder goes.
   const t = tree();
   for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
+  // Prune any pending wakes targeting instances that already closed or abandoned (e.g. if crash occurred before cancelWakes).
+  const terminal = Object.keys(t.series).flatMap(id => instances(id).filter(i => !i.hole && (i.doc.status === 'closed' || i.doc.status === 'abandoned')).map(i => i.id));
+  if (terminal.length) cancelWakes(terminal);
   for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => !i.hole)) {
     for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
-  }
-  const pendingFollowupCommits: Promise<void>[] = [];
-  for (const followup of pendingTerminalFollowups()) {
-    let inst: Instance;
-    try { inst = instance(followup.inst); } catch { ackTerminalFollowup(followup.key); continue; }
-    if (inst.hole || !t.series[inst.seriesId] || !hasTerminalEvent(inst, followup.op, followup.seq)) {
-      ackTerminalFollowup(followup.key);
-      continue;
-    }
-    cancelWakes([inst.id], true);
-    const commits = followup.op === 'close' && inst.doc.status === 'closed'
-      ? closed(inst, followup.by, !!followup.quiet, followup)
-      : undefined;
-    if (commits) {
-      pendingFollowupCommits.push(commits.then(
-        () => ackTerminalFollowup(followup.key),
-        err => console.error(`terminal follow-up ${followup.key} commit failed:`, err),
-      ));
-    } else {
-      ackTerminalFollowup(followup.key);
-    }
-  }
-  for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
     if (inst.doc.status !== 'open') continue;
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
@@ -1238,7 +1131,6 @@ export function recover(): Promise<void> {
     }
     kick(inst);
   }
-  return Promise.all(pendingFollowupCommits).then(() => {});
 }
 
 // Whether a login of `who`'s that expired holds an instance's runs: the instance is open and theirs, a run of theirs met it since

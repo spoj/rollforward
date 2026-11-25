@@ -5,7 +5,7 @@ import { appendLine, changes, replaceFile, tree } from './system.ts';
 import { authorityTree, checkSeriesAuthority } from './authority-format.ts';
 import { appendMessage, deletedEntry, eventsFile, installMessageBooks, instanceAnchor, instanceMessage, instanceProjection, jsonLines, messagesAt, projectInstance, purgeMessages, readBook, readEntries, readMessages, safeEntryJson, startMessageStore, type Book, type Projection, type TornTails } from './message-store.ts';
 import { commit, committed, pack, type Who } from './git.ts';
-import { seriesSettings, type Authority } from './series.ts';
+import { seriesSettings } from './series.ts';
 import { answered } from './messages.ts';
 
 // Paths in the screen are /-separated on every system.
@@ -119,31 +119,6 @@ export type Meta = { label: string; series: string };
 let root = '';
 let index = new Map<string, Meta>();
 const cache = new Map<string, Instance>();
-
-export type TerminalFollowup = {
-  key: string; inst: string; op: 'close' | 'abandon'; seq: number; by: string;
-  quiet?: boolean; authority?: Authority; recipients?: string[]; supersedes?: string;
-};
-
-const terminalPendingPath = () => join(root, '.rf', 'terminal-pending.json');
-function readTerminalPending(): Record<string, TerminalFollowup> {
-  const p = terminalPendingPath();
-  return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : {};
-}
-function writeTerminalPending(all: Record<string, TerminalFollowup>) {
-  const p = terminalPendingPath();
-  mkdirSync(dirname(p), { recursive: true });
-  replaceFile(p, JSON.stringify(all, null, 1), true);
-}
-export function pendingTerminalFollowups(): TerminalFollowup[] {
-  return Object.values(readTerminalPending());
-}
-export function ackTerminalFollowup(key: string) {
-  const all = readTerminalPending();
-  if (!Object.hasOwn(all, key)) return;
-  delete all[key];
-  writeTerminalPending(all);
-}
 
 function readMetadata<T>(path: string): T | undefined {
   const st = lstatSync(path, { throwIfNoEntry: false });
@@ -303,24 +278,7 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
       if (readScreen(inst.dir).status !== inst.doc.status) inst.save();
     }
   }
-  // Drop any pending terminal follow-ups whose durable terminal event never landed before crash.
-  const pending = readTerminalPending();
-  let pruned = false;
-  for (const [k, f] of Object.entries(pending)) {
-    const inst = cache.get(f.inst);
-    if (!inst || inst.hole || !hasTerminalEvent(inst, f.op, f.seq)) {
-      delete pending[k];
-      pruned = true;
-    }
-  }
-  if (pruned) writeTerminalPending(pending);
   for (const b of loaded.values()) b.notes.sync();
-}
-
-export function hasTerminalEvent(inst: Instance, op: 'close' | 'abandon', seq: number): Entry | undefined {
-  const at = inst.log[seq - 1];
-  if (at && at.op === op && at.seq === seq) return at;
-  return inst.log.find(e => e.op === op && e.seq === seq);
 }
 
 export const newId = () => randomBytes(6).toString('hex');
@@ -488,13 +446,13 @@ export class Instance {
     return this.log[0]?.op === 'delete';
   }
 
-  append(by: string, op: string, fields: Record<string, unknown> = {}, durable = false): Entry {
+  append(by: string, op: string, fields: Record<string, unknown> = {}): Entry {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
     if (instanceMessage(e)) return appendMessage(this.series(), instanceAnchor(this.id, e, this.log), e).entry;
-    appendLine(eventsFile(this.series(), this.id), safeEntryJson(e), 0o600, durable || ['close', 'abandon'].includes(op));
+    appendLine(eventsFile(this.series(), this.id), safeEntryJson(e), 0o600, ['close', 'abandon'].includes(op));
     if (e.op === 'duplicate') this.copiedSeq = e.seq;
     this.projection.update(e);
     changes.emit('change', this.id);
@@ -540,9 +498,7 @@ export class Instance {
   // Closing makes the instance the period's record and an example for the next, approving nothing: the asks still waiting are
   // accepted as the agent said it did them. It commits the folder in the series owner's name. The instance is closed meanwhile, so nothing
   // changes it, but saved only once committed and packed: either failing, or a restart, leaves it open.
-  async close(by: Who, opts?: boolean | { quiet?: boolean; authority?: Authority }): Promise<TerminalFollowup> {
-    const quiet = typeof opts === 'boolean' ? opts : !!opts?.quiet;
-    const capturedAuthority = typeof opts === 'object' ? opts.authority : undefined;
+  async close(by: Who, quiet = false) {
     const accepted = this.asking(by.email).map(e => `c${e.seq}`);
     this.doc.status = 'closed';
     this.closing = true;
@@ -563,39 +519,16 @@ export class Instance {
       this.closing = false;
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted during the close`);
-    const seq = this.log.length + 1, key = `${this.id}:${seq}`;
-    const recipients = instances(this.seriesId)
-      .filter(i => i.doc.status === 'open' && i.label.localeCompare(this.label, 'en', { numeric: true }) > 0)
-      .map(i => i.id);
-    const [, base, r] = /^(.+)-r(\d+)$/.exec(this.label) ?? [];
-    const supersedes = base ? instances(this.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed')?.id : undefined;
-    const followup: TerminalFollowup = {
-      key, inst: this.id, op: 'close', seq, by: by.email,
-      ...(quiet && { quiet: true }),
-      ...(capturedAuthority && { authority: capturedAuthority }),
-      recipients,
-      ...(supersedes && { supersedes }),
-    };
-    try {
-      const pending = readTerminalPending();
-      pending[key] = followup;
-      writeTerminalPending(pending);
-    } catch (e) {
-      if (!this.hole) this.doc.status = 'open';
-      throw e;
-    }
     try {
       this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash, ...(quiet && { quiet: true }) });
     } catch (e) {
-      try { ackTerminalFollowup(key); } catch {}
       if (!this.hole) this.doc.status = 'open';
       throw e;
     }
     this.save();
-    return followup;
   }
 
-  async abandon(by: string): Promise<TerminalFollowup> {
+  async abandon(by: string) {
     this.closing = true;
     try {
       await committed(this.dir);
@@ -603,21 +536,14 @@ export class Instance {
       this.closing = false;
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted`);
-    const seq = this.log.length + 1, key = `${this.id}:${seq}`;
-    const followup: TerminalFollowup = { key, inst: this.id, op: 'abandon', seq, by };
-    const pending = readTerminalPending();
-    pending[key] = followup;
-    writeTerminalPending(pending);
     this.doc.status = 'abandoned';
     try {
       this.append(by, 'abandon');
     } catch (e) {
-      try { ackTerminalFollowup(key); } catch {}
       if (!this.hole) this.doc.status = 'open';
       throw e;
     }
     this.save();
-    return followup;
   }
 
   // The tombstone precedes waiting for runs and commits: a restart finishes clearing the folder.
