@@ -131,8 +131,20 @@ export const upstreams: Record<string, string> = {};
 
 const own = (host: string) => [openrouter, exa].find(s => s.host === host && process.env[s.key]);
 
-export const intercepts = (a: CallRun, host: string) =>
-  !!own(host) || connections().some(c => types[c.type].hosts?.(c).some(h => covers(h, host))) || [...a.links.keys()].some(u => new URL(u).host === host);
+export const intercepts = (a: CallRun, host: string) => {
+  if (own(host) || [...a.links.keys()].some(u => new URL(u).host === host)) return true;
+  let ticks: string[] | undefined;
+  const leased = () => {
+    if (ticks !== undefined) return ticks;
+    try { return (ticks = lender(a.inst, a.n).logins); } catch { return (ticks = []); }
+  };
+  return connections().some(c => {
+    const hs = types[c.type].hosts?.(c) ?? [];
+    return hs.some(h => h.startsWith('*.')
+      ? covers(h, host) && leased().some(t => t.startsWith(`${loginOf(c).id}:${host}/`))
+      : h === host);
+  });
+};
 
 const HOP = ['connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
@@ -505,9 +517,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     if (s) {
       // The key goes in both headers SDKs send one in: Authorization, and x-api-key, as Anthropic's, Pi's among them, and Exa's do.
       out = s.check(r);
-      if (mine) {
-        const current = logins(runner).find(l => l.id === 'openrouter');
-        if (!current?.enabled || current.since !== mine.since) throw new HttpError(409, 'the selected personal model key changed before sending; retry under current consent');
+      if (s === openrouter) {
+        const now = logins(runner).find(l => l.id === 'openrouter');
+        const nowEnabled = !!now?.enabled;
+        if (mine ? (!nowEnabled || now!.since !== mine.since || now!.expired) : nowEnabled)
+          throw new HttpError(409, 'the selected model key changed before sending; retry under current consent');
       }
       apiKey = mine ? secret(runner, 'openrouter') : s === openrouter ? serverKey() : process.env[s.key]!;
       auth = { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey };
@@ -542,13 +556,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
-      if (c && types[c.type].links && /json/i.test(answer.type) && answer.text) {
-        let parsed: unknown;
-        try { parsed = JSON.parse(answer.text); }
-        catch { console.error(`${name}: invalid JSON metadata on ${method} ${targetPath} (${answer.status}, ${answer.bytes} bytes)`); }
-        if (parsed !== undefined && current()) {
+      if (c && types[c.type].links && /json/i.test(answer.type)) {
+        if (answer.invalidJson) console.error(`${name}: invalid JSON metadata on ${method} ${targetPath} (${answer.status}, ${answer.bytes} bytes)`);
+        if (answer.parsed !== undefined && current()) {
           try {
-            const links = await types[c.type].links!(parsed, targetPath, as, ticks, checkpoint);
+            const links = await types[c.type].links!(answer.parsed, targetPath, as, ticks, checkpoint);
             checkpoint();
             for (const l of links) a.links.set(new URL(l).href, { name, offer });
           } catch (e) { if (current()) throw e; }
@@ -567,7 +579,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         }
       }
       const failed = answer.failed && [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY, apiKey].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, answer.failed);
-      log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(json?.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
+      log(failed ? 502 : answer.status, failed ? 0 : answer.bytes, s ? { ...(typeof json?.model === 'string' && json.model && { model: json.model }), cost, ...(estimated && { estimated: true }), ...(failed && { failed }) } : answer.incomplete ? { incomplete: true } : undefined);
       if (s === openrouter && !mine && !answer.failed) keyOut(apiKey, answer.status, answer.events.at(-1), method);
       if (mine && answer.status === 402) {
         // A revoked lease, a disabled key, or a replacement key must not receive a late expiry.
@@ -598,15 +610,22 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 // told first, and, where it's kept, JSON as text or an event stream's data events scanned as chunks pass without buffering the
 // stream. A run gone before its answer on a non-service write leaves it read to its end; on an OpenRouter or Exa stream, closing
 // cancels the upstream stream so its partial cost can be looked up.
+function maxKeepBytes(): number {
+  const raw = process.env.RF_PROXY_META_BYTES;
+  if (raw === undefined || !raw.trim()) return 8 * 1024 * 1024;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 8 * 1024 * 1024;
+}
+
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
   service?: boolean; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
-  return new Promise<{ status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
+  return new Promise<{ status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
     // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k) && !/^x[-_]rf[-_]/.test(k)));
     let settled = false, unregister: (() => void) | undefined;
-    const done = (v: { status: number; bytes: number; type: string; text: string; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }) => {
+    const done = (v: { status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }) => {
       if (settled) return;
       settled = true;
       unregister?.();
@@ -680,14 +699,16 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         unzip.once('close', resolve);
         unzip.once('error', () => { cut = true; resolve(); });
       });
+      const maxKeep = maxKeepBytes();
+      let tooBig = false;
       r.on('data', (b: Buffer) => {
         bytes += b.length;
         if (decoder) {
           if (unzip) unzip.write(b);
           else feedText(decoder.write(b));
         } else if (o.keep && isJson) {
-          if (o.service && bytes > 8 * 1024 * 1024) kept.length = 0;
-          else kept.push(b);
+          if (bytes > maxKeep) { kept.length = 0; tooBig = true; }
+          else if (!tooBig) kept.push(b);
         }
       });
       const finishAnswer = () => {
@@ -695,11 +716,11 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           feedText(decoder.end());
           if (carry) { pushLine(carry); carry = ''; }
         }
-        let text = '', failed: string | undefined;
-        if (o.keep && isJson && kept.length) {
+        let text = '', parsed: unknown, invalidJson = false, failed: string | undefined;
+        if (o.keep && isJson && kept.length && !tooBig) {
           const raw = Buffer.concat(kept);
           try {
-            const options = o.service ? { maxOutputLength: 8 * 1024 * 1024 } : undefined;
+            const options = { maxOutputLength: maxKeep };
             text = (isGzip ? gunzipSync(raw, options) : enc === 'deflate' ? inflateSync(raw, options) : enc === 'br' ? brotliDecompressSync(raw, options) : enc === 'zstd' ? zstdDecompressSync(raw, options) : raw).toString();
           } catch (e) {
             if ((e as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') {
@@ -709,10 +730,16 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
               failed = (e as Error).message;
             }
           }
-          const trimmed = text.trimStart();
-          if (trimmed.startsWith('{')) try { events.push(JSON.parse(trimmed)); } catch {}
+          if (text) {
+            try {
+              parsed = JSON.parse(text);
+              if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) events.push(parsed);
+            } catch {
+              invalidJson = true;
+            }
+          }
         }
-        return { status: r.statusCode!, bytes, type, text, events, headers: r.headers, ...(cut && { cut: true }), ...(failed && { failed }) };
+        return { status: r.statusCode!, bytes, type, text, parsed, ...(invalidJson && { invalidJson: true }), events, headers: r.headers, ...(cut && { cut: true }), ...(failed && { failed }) };
       };
       const abortStream = () => {
         if (r.readableEnded || settled) return;

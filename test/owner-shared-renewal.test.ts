@@ -208,7 +208,7 @@ for (const mode of ['stop', 'transfer']) test(`${mode} of the fallback initiator
   await followUp.done;
 
   assert.equal(sent.filter(s => s.path === '/token').length, 3, 'initial short token, primary refusal and one fallback');
-  assert.equal(sent.filter(s => s.path.includes('/items/parent')).length, 1, 'the authorized parent is cached');
+  assert.equal(sent.filter(s => s.path.includes('/items/parent')).length, 2, 'each request verifies current parent ancestry fresh (no cross-request parent cache)');
   assert.equal(sent.some(s => s.path === '/v1.0/me/sendMail'), false);
   assert.equal(sent.find(s => s.path.includes('/items/parent'))!.auth, 'Bearer synthetic-alice-4');
   assert.equal(req1.res.statusCode, mode === 'stop' ? 409 : 403);
@@ -287,7 +287,7 @@ for (const result of ['ok', 'expired'] as const) test(`a later invalid waiter ca
   assert.equal(sent.filter(s => s.path === '/token').length, 1);
 });
 
-for (const status of [403, 404, 503]) test(`a genuine Graph parent ${status} retains its original cache behavior`, { timeout: 5000 }, async () => {
+for (const status of [403, 404, 503]) test(`a genuine Graph parent ${status} is never cached across requests`, { timeout: 5000 }, async () => {
   const drive = `provider${seq}`, ticks = [`m365:item:${drive}/folder`];
   saveLogin(ALICE, { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: `provider-${seq}`, offers: ticks.map(id => ({ id, name: id })) }, 'synthetic-refresh');
   setConsent('s1', ALICE, 1, ticks);
@@ -301,8 +301,8 @@ for (const status of [403, 404, 503]) test(`a genuine Graph parent ${status} ret
   parentStatus = 200;
   const second = sendProxy(run, `/v1.0/drives/${drive}/items/child`);
   await second.done;
-  assert.equal(second.res.statusCode, status === 503 ? 200 : 403);
-  assert.equal(sent.filter(s => s.path.includes('/items/parent')).length, status === 503 ? 2 : 1);
+  assert.equal(second.res.statusCode, 200);
+  assert.equal(sent.filter(s => s.path.includes('/items/parent')).length, 2);
 });
 
 test('an unexpected checkpoint failure is not swallowed by another authorized waiter', { timeout: 5000 }, async () => {

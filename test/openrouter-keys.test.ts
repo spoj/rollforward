@@ -10,7 +10,7 @@ import { keyOut, keyStatus, openrouterCreditError, resetKeyCache, serverCall, se
 import { call as proxyCall, type CallRun } from '../src/connections.ts';
 import { saveTree, writeJson } from '../src/system.ts';
 import { saveSeriesSettings } from '../src/series.ts';
-import { openStore, type Instance } from '../src/store.ts';
+import { createInstance, instance, openStore, type Instance } from '../src/store.ts';
 import { logins, saveLogin } from '../src/logins.ts';
 
 // The server's two OpenRouter keys, a daily one and a monthly one, at a stand-in for OpenRouter: /api/v1/key says what each has left,
@@ -257,5 +257,62 @@ test('a late personal-key 402 does not re-enable a disabled personal OpenRouter 
     chatGate = undefined;
     proxy.close();
     proxy.closeAllConnections();
+  }
+});
+
+test('numeric unsafe-integer model is never persisted to canonical events and openStore restarts cleanly; enabling BYOK during body intake blocks shared key charge', async () => {
+  const isoRoot = mkdtempSync(join(tmpdir(), 'rf-or-r2-'));
+  initSystem(isoRoot);
+  openStore(isoRoot);
+  const runner = 'r2@demo.test';
+  writeJson('users.json', { [runner]: { role: 'user' } });
+  saveTree({ workspaces: { w: { name: 'W', owners: [runner], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+  const serDir = join(isoRoot, 'series', 's');
+  saveSeriesSettings(serDir, { version: 1, owner: runner, epoch: 1, since: '', consent: { by: runner, at: '', workspace: 'w', logins: [], autonomous: false } });
+  const inst = createInstance('s', 'i1', runner);
+  inst.append('server', 'run', { run: 1, runner, initiator: runner, authority: { version: 1, owner: runner, epoch: 1, workspace: 'w', logins: [] } });
+  const run: CallRun = { inst, n: 1, runner, cost: 0, estimated: false, links: new Map() };
+  const proxy = createServer((req, res) => proxyCall(run, 'openrouter.ai', req, res)).listen(0, '127.0.0.1');
+  await once(proxy, 'listening');
+  const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+  try {
+    // 1) Unsafe integer model in provider request must not persist a numeric model and must keep startup clean.
+    answer = 400;
+    answerBody = { error: { code: 400, message: 'Bad model' } };
+    const rBad = await fetch(`${proxyBase}/api/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: '{"model": 90071992547409930000000000, "messages": []}',
+    });
+    assert.equal(rBad.status, 400);
+    const logged = inst.log.findLast(e => e.op === 'call')!;
+    assert.equal(logged.model, undefined, 'non-string model must not be persisted');
+    openStore(isoRoot);
+    assert.equal(instance(inst.id).log.some(e => e.op === 'call'), true, 'openStore restarts cleanly after numeric model request');
+
+    // 2) Switching from shared key to enabled personal key during request body intake returns 409 and never charges shared key.
+    answer = 200;
+    answerBody = undefined;
+    const sentBefore = sent.length;
+    const { request: httpReq } = await import('node:http');
+    const midStream = new Promise<{ status: number; body: string }>((ok, fail) => {
+      const req = httpReq(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+        const chunks: Buffer[] = [];
+        res.on('data', c => chunks.push(c)).on('end', () => ok({ status: res.statusCode!, body: Buffer.concat(chunks).toString() }));
+      });
+      req.on('error', fail);
+      req.write('{"model":"m",');
+      setTimeout(() => {
+        saveLogin(runner, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: new Date().toISOString(), offers: [], enabled: true }, 'sk-or-byok-late');
+        req.end('"messages":[]}');
+      }, 40);
+    });
+    const switched = await midStream;
+    assert.equal(switched.status, 409, `expected 409 when BYOK enabled mid-body, got ${switched.status}: ${switched.body}`);
+    assert.equal(sent.length, sentBefore, 'shared server key was never dispatched after runner enabled BYOK');
+  } finally {
+    proxy.close();
+    proxy.closeAllConnections();
+    initSystem(root);
+    rmSync(isoRoot, { recursive: true, force: true });
   }
 });

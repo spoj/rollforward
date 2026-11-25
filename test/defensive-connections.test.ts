@@ -21,6 +21,7 @@ const calls: { op: string; data: any }[] = [];
 const upstreamPaths: string[] = [];
 
 let tokenCalls = 0;
+let folderBParent = 'folderA';
 let tokenGate: PromiseWithResolvers<void> | undefined;
 let tokenEntered: PromiseWithResolvers<void> | undefined;
 let sendGate: PromiseWithResolvers<void> | undefined;
@@ -141,6 +142,18 @@ before(async () => {
     if (u.pathname === '/v1.0/drives/b!d1/items/folderA') {
       return send({ id: 'folderA', name: 'FolderA', folder: {}, parentReference: { driveId: 'b!d1', id: 'root1' } });
     }
+    if (u.pathname === '/v1.0/drives/b!d1/items/folderB') {
+      return send({ id: 'folderB', name: 'FolderB', folder: {}, parentReference: { driveId: 'b!d1', id: folderBParent } });
+    }
+    if (u.pathname === '/v1.0/drives/b!d1/items/outside') {
+      return send({ id: 'outside', name: 'Outside', folder: {}, parentReference: { driveId: 'b!d1', id: 'root1' } });
+    }
+    if (u.pathname === '/v1.0/drives/b!d1/items/fileInB') {
+      return send({ id: 'fileInB', name: 'secret.txt', file: {}, parentReference: { driveId: 'b!d1', id: 'folderB' } });
+    }
+    if (u.pathname === '/v1.0/drives/b!d1/items/fileInB/content') {
+      return void res.writeHead(200, { 'content-type': 'text/plain' }).end('secret-b-bytes');
+    }
     if (u.pathname === '/v1.0/drives/b!d1/root:/FolderA/report%20%231.xlsx:') {
       return send({ id: 'rep1', name: 'report #1.xlsx', file: {}, parentReference: { driveId: 'b!d1', id: 'folderA' } });
     }
@@ -180,6 +193,23 @@ before(async () => {
     }
     if (u.pathname === '/api/2.0/sql/statements/s-nonjson' && req.method === 'GET') {
       return void res.writeHead(200, { 'content-type': 'application/json' }).end('plain-text-not-json');
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s-big-json' && req.method === 'GET') {
+      const payload = JSON.stringify({
+        statement_id: 's-big-json',
+        pad: 'x'.repeat(20_000),
+        result: { external_links: [{ chunk_index: 0, external_link: 'https://dbstorage1.blob.core.windows.net/blob/big-chunk?sig=1' }] },
+      });
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end(payload);
+    }
+    if (u.pathname === '/api/2.0/sql/statements/s-gzip-bomb' && req.method === 'GET') {
+      const raw = JSON.stringify({
+        statement_id: 's-gzip-bomb',
+        pad: 'z'.repeat(200_000),
+        result: { external_links: [{ chunk_index: 0, external_link: 'https://dbstorage1.blob.core.windows.net/blob/bomb-chunk?sig=1' }] },
+      });
+      const gz = gzipSync(Buffer.from(raw));
+      return void res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' }).end(gz);
     }
     if (u.pathname === '/api/v1/chat/completions' && req.method === 'POST') {
       const chunks: Buffer[] = [];
@@ -572,3 +602,59 @@ for (const mode of ['untick', 'unoffer', 'signout']) {
     assert.equal(calls[1].data.refused, undefined);
   });
 }
+
+test('Graph parent authorization never serves a child after its folder moves out of the ticked scope', async () => {
+  const offer = 'm365:item:b!d1/folderA';
+  loginsMod.saveLogin(USER, {
+    id: 'm365', kind: 'm365', name: 'Microsoft 365', account: USER,
+    since: '2026-11-15T06:00:00Z',
+    offers: [{ id: offer, name: 'FolderA' }],
+  }, 'move-refresh');
+  const inst = makeInst([offer]);
+  runs.set('move1', inst);
+  callRuns.set('move1', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
+  folderBParent = 'folderA';
+
+  const ok = await viaProxy('GET', 'https://graph.microsoft.com/v1.0/drives/b!d1/items/fileInB/content', { token: 'move1' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.text, 'secret-b-bytes');
+
+  // Move folderB outside folderA; the very next request must be denied immediately (no stale parent cache).
+  folderBParent = 'outside';
+  const denied = await viaProxy('GET', 'https://graph.microsoft.com/v1.0/drives/b!d1/items/fileInB/content', { token: 'move1' });
+  assert.equal(denied.status, 403);
+});
+
+test('Oversized JSON and compressed bombs stay streamed without unbounded buffering or granting links', async () => {
+  const prevCap = process.env.RF_PROXY_META_BYTES;
+  process.env.RF_PROXY_META_BYTES = '8192';
+  try {
+    const inst = makeInst(['adb:adb-1.azuredatabricks.net/wh1']);
+    runs.set('cap1', inst);
+    callRuns.set('cap1', { inst, runner: USER, n: 1, links: new Map(), cost: 0 });
+    calls.length = 0;
+
+    // 1. Plain JSON larger than RF_PROXY_META_BYTES streams intact to the caller, but skips metadata parsing/link grants.
+    const big = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-big-json', { token: 'cap1' });
+    assert.equal(big.status, 200);
+    assert.ok(big.text.length > 20_000, 'full response body still streams to caller');
+    await assert.rejects(
+      viaProxy('GET', 'https://dbstorage1.blob.core.windows.net/blob/big-chunk?sig=1', { token: 'cap1' }),
+      /CONNECT 403/,
+      'oversized metadata must not grant extracted links',
+    );
+
+    // 2. Small gzip body whose decompressed size exceeds RF_PROXY_META_BYTES streams intact, does not crash, and grants no links.
+    const bomb = await viaProxy('GET', 'https://adb-1.azuredatabricks.net/api/2.0/sql/statements/s-gzip-bomb', { token: 'cap1' });
+    assert.equal(bomb.status, 200);
+    assert.equal(bomb.headers['content-encoding'], 'gzip');
+    await assert.rejects(
+      viaProxy('GET', 'https://dbstorage1.blob.core.windows.net/blob/bomb-chunk?sig=1', { token: 'cap1' }),
+      /CONNECT 403/,
+      'oversized decompressed metadata must not grant extracted links',
+    );
+  } finally {
+    if (prevCap === undefined) delete process.env.RF_PROXY_META_BYTES;
+    else process.env.RF_PROXY_META_BYTES = prevCap;
+  }
+});

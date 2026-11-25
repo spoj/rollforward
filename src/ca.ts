@@ -69,10 +69,18 @@ function authority() {
 // What a run trusts: the system's authorities, and ours.
 export const bundle = () => [...getCACertificates('system'), authority().pem].join('\n');
 
+const MAX_HOSTS = 256;
 export function contextFor(host: string): SecureContext {
-  if (!hosts.has(host)) {
-    const a = authority(), cert = certificate({ subject: host, key: leaf.publicKey, issuer: 'rollforward runs', signer: a.key, authority: a.id, host, days: 365 });
-    hosts.set(host, createSecureContext({ key: leaf.privateKey.export({ type: 'pkcs8', format: 'pem' }), cert: cert + a.pem }));
+  const hit = hosts.get(host);
+  if (hit) {
+    hosts.delete(host);
+    hosts.set(host, hit);
+    return hit;
   }
-  return hosts.get(host)!;
+  const a = authority(), cert = certificate({ subject: host, key: leaf.publicKey, issuer: 'rollforward runs', signer: a.key, authority: a.id, host, days: 365 });
+  const ctx = createSecureContext({ key: leaf.privateKey.export({ type: 'pkcs8', format: 'pem' }), cert: cert + a.pem });
+  hosts.set(host, ctx);
+  if (hosts.size > MAX_HOSTS) hosts.delete(hosts.keys().next().value!);
+  return ctx;
 }
+export const caCacheSize = () => hosts.size;

@@ -310,9 +310,10 @@ beforeEach(() => {
 const share = (link: string) => `/shares/u!${Buffer.from(link).toString('base64url')}`;
 const calls = () => log.filter(e => e.op === 'call').map(e => e.data);
 
-test("rollforward's certificates are always DER that parses: a thousand hosts' each load", async () => {
-  const { contextFor } = await import('../src/ca.ts');
+test("rollforward's certificates are always DER that parses: a thousand hosts' each load and CA cache stays LRU-bounded", async () => {
+  const { caCacheSize, contextFor } = await import('../src/ca.ts');
   for (let i = 0; i < 1000; i++) contextFor(`host${i}.test`);
+  assert.ok(caCacheSize() <= 256, `CA TLS context cache must stay bounded (got ${caCacheSize()})`);
 });
 
 test("a run reads a ticked SharePoint library at Graph's own address, as Graph answers, with its runner's token put in for the run's own", async () => {
@@ -352,7 +353,7 @@ test('a failed parent or site lookup fails the request, not its ticks, and is re
       const read = () => via('GET', `${G}${share(link)}/driveItem`, { token });
       const denied = failure === 403 || failure === 404, first = await read();
       assert.equal(first.status, denied ? 403 : 502, `${drive}: ${first.text}`);
-      assert.equal((await read()).status, denied && lookup === 'parent' ? 403 : 200, drive);
+      assert.equal((await read()).status, 200, drive);
     }
   } finally {
     globalThis.fetch = fetch;
@@ -946,7 +947,11 @@ test("a run queries Databricks at its own address as the runner: statements on a
     assert.match(x.text, why, path);
   }
   assert.equal(statements.length, before, 'none reached the warehouse');
-  assert.match((await via('GET', `${D}/api/2.1/unity-catalog/catalogs`)).text, /adb:adb-1\.azuredatabricks\.net is outside this run's selected series credentials/, 'a run that ticked no warehouse there');
+  const { caCacheSize } = await import('../src/ca.ts');
+  const caBefore = caCacheSize();
+  await assert.rejects(via('GET', `${D}/api/2.1/unity-catalog/catalogs`), /CONNECT answered 403/, 'a run that ticked no warehouse there is refused at CONNECT before TLS');
+  await assert.rejects(via('GET', 'https://unlisted-churn-host.azuredatabricks.net/api/2.1/unity-catalog/catalogs', { token: 'dbx' }), /CONNECT answered 403/, 'arbitrary wildcard host refused before TLS');
+  assert.equal(caCacheSize(), caBefore, 'refused wildcard hosts never allocate CA TLS contexts');
   const adb = logins.logins(ALICE).find(l => l.id === 'adb')!;
   logins.saveLogin(ALICE, { ...adb, since: new Date().toISOString() }, 'stale');
   const gone = await go('GET', '/api/2.1/unity-catalog/catalogs');

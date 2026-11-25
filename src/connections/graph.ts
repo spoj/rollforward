@@ -137,10 +137,11 @@ async function links(j: any, path: string, email: string, ticks: string[], check
   if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
+  const memo = new Map<string, Promise<string | undefined>>();
   const at = await Promise.all(items.map(async i => {
     const site = (await siteOf(email, i.parentReference.driveId, checkpoint)).split(',')[0];
     return (!site || new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${site}`)
-      && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint);
+      && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint, memo);
   }));
   return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
 }
@@ -175,30 +176,37 @@ function addressed(path: string): string {
 }
 
 // The tick that covers a drive's item: a ticked folder above it, read up through its parents, or the ticked file itself; a ticked
-// site whose library holds it; or the runner's ticked OneDrive.
-async function covering(email: string, ticks: string[], driveId: string, id: string, parent: string | undefined, checkpoint: () => void): Promise<string | undefined> {
-  for (const t of ticks.filter(t => t.startsWith(`m365:item:${driveId}/`))) {
-    const top = t.split('/').pop();
-    if (id === top) return t;
-    for (let at = parent; at; at = await parentOf(email, driveId, at, checkpoint)) if (at === top) return t;
+// site whose library holds it; or the runner's ticked OneDrive. Parent lookups are memoized only within one policy decision.
+async function covering(email: string, ticks: string[], driveId: string, id: string, parent: string | undefined, checkpoint: () => void, memo = new Map<string, Promise<string | undefined>>()): Promise<string | undefined> {
+  const itemTicks = ticks.filter(t => t.startsWith(`m365:item:${driveId}/`));
+  if (itemTicks.length) {
+    const tops = new Set(itemTicks.map(t => t.split('/').pop()!));
+    if (tops.has(id)) return `m365:item:${driveId}/${id}`;
+    const seen = new Set<string>([id]);
+    for (let at = parent; at && !seen.has(at); at = await parentOf(email, driveId, at, checkpoint, memo)) {
+      seen.add(at);
+      if (tops.has(at)) return `m365:item:${driveId}/${at}`;
+    }
   }
   if (ticks.includes(`m365:site:${await siteOf(email, driveId, checkpoint)}`)) return `m365:site:${await siteOf(email, driveId, checkpoint)}`;
   if (ticks.includes('m365:onedrive') && driveId === await ownDrive(email, checkpoint)) return 'm365:onedrive';
 }
 
-// What Graph says doesn't change often: who an item's parent is, for 5 minutes; whose a drive is, and which site's, for good once
-// Graph answers. A parent the person can't read ends the climb, as does a drive whose site they can't see.
-const parents = new Map<string, { parent?: string; at: number }>(), sites = new Map<string, string>(), own = new Map<string, string>();
-async function parentOf(email: string, driveId: string, id: string, checkpoint: () => void): Promise<string | undefined> {
-  const k = `${email}:${driveId}/${id}`, known = parents.get(k);
-  if (known && known.at > Date.now() - 300_000) return known.parent;
-  const parent = await graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`, checkpoint).then(j => j.parentReference?.id, e => {
-    checkpoint();
-    if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
-    throw e;
-  });
-  parents.set(k, { parent, at: Date.now() });
-  return parent;
+// Whose a drive is, and which site's, stays stable once Graph answers; parent edges are never cached across requests so moves out
+// of a ticked folder take effect immediately. A parent the person can't read ends the climb, as does a drive whose site they can't see.
+const sites = new Map<string, string>(), own = new Map<string, string>();
+function parentOf(email: string, driveId: string, id: string, checkpoint: () => void, memo: Map<string, Promise<string | undefined>>): Promise<string | undefined> {
+  const k = `${driveId}/${id}`;
+  let pending = memo.get(k);
+  if (!pending) {
+    pending = graph(email, `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(id)}?$select=parentReference`, checkpoint).then(j => j.parentReference?.id, e => {
+      checkpoint();
+      if (e instanceof HttpError && (e.status === 403 || e.status === 404)) return undefined;
+      throw e;
+    });
+    memo.set(k, pending);
+  }
+  return pending;
 }
 async function siteOf(email: string, driveId: string, checkpoint: () => void): Promise<string> {
   if (!sites.has(driveId)) {
