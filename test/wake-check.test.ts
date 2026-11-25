@@ -386,10 +386,15 @@ test('re-registering an equivalent recurring wake preserves skipSince/skipCount 
   // Re-PUT equivalent recurring schedule (same target, next occurrence at, same days) -> must preserve skipCount/skipSince and bump rev.
   const updated = await json(`/api/wakes/${iid}`, 'PUT', { at: afterStop.at, days, check, backstopHours: 4, text: 'Re-registered' });
   assert.equal(updated.id, created.id);
+  assert.equal('rev' in updated, false, 'PUT /api/wakes response must omit internal rev');
   const afterRePut = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
   assert.equal(afterRePut.skipCount, 1, 'skipCount preserved across equivalent re-PUT');
   assert.equal(afterRePut.skipSince, afterStop.skipSince, 'skipSince preserved across equivalent re-PUT');
   assert.ok((afterRePut.rev ?? 0) > (afterStop.rev ?? 0), 'schedule rev incremented on re-PUT');
+  const listed = await json('/api');
+  const listedWake = listed.flatMap((ws: any) => ws.series).flatMap((s: any) => [...s.wakes, ...s.instances.flatMap((i: any) => i.wakes)]).find((w: any) => w.id === created.id);
+  assert.ok(listedWake, 'wake appears in GET /api listing');
+  assert.equal('rev' in listedWake, false, 'GET /api wake listing must omit internal rev');
 
   // Re-PUT while a check is in-flight -> in-flight check must NOT clobber the updated schedule.
   const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();

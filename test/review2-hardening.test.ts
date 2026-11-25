@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,7 +23,7 @@ before(async () => {
   base = `http://127.0.0.1:${port}`;
   entra = await idp();
   proc = spawn(process.execPath, ['src/server.ts', root, String(port)], {
-    env: { ...process.env, ...entra.env(base), RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_PREVIEW_CACHE_BYTES: '600', RF_SCRATCH: join(tmp, 'scratch') },
+    env: { ...process.env, ...entra.env(base), RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_PREVIEW_CACHE_BYTES: '900', RF_SCRATCH: join(tmp, 'scratch') },
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   await new Promise<void>((resolve, reject) => {
@@ -45,31 +45,67 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test('R2 #6: text previews ignore irrelevant query params for cache keys and enforce RF_PREVIEW_CACHE_BYTES budget', async () => {
+test('R2 #6: text & mail-attachment previews canonicalize query params for cache keys, serve hits FD-safely, and enforce RF_PREVIEW_CACHE_BYTES budget', async () => {
   const dir = join(root, 'instances', iid, 'working'), previews = join(root, '.previews');
-  writeFileSync(join(dir, 'a.txt'), 'A'.repeat(350));
-  writeFileSync(join(dir, 'b.txt'), 'B'.repeat(350));
-  writeFileSync(join(dir, 'c.txt'), 'C'.repeat(350));
+  writeFileSync(join(dir, 'a.txt'), 'A'.repeat(500));
+  writeFileSync(join(dir, 'b.txt'), 'B'.repeat(500));
+  writeFileSync(join(dir, 'c.txt'), 'C'.repeat(500));
 
   // Querying a.txt with distinct irrelevant query parameters must reuse ONE cache file.
   for (const q of ['', '?foo=1', '?bar=2&baz=3', '?sheet=Sheet1&page=2']) {
     const r = await fetch(`${base}/preview/${iid}/working/a.txt${q}`, { headers: { cookie } });
     assert.equal(r.status, 200);
-    assert.equal((await r.json()).text, 'A'.repeat(350));
+    assert.equal((await r.json()).text, 'A'.repeat(500));
   }
   const filesAfterA = readdirSync(previews);
   assert.equal(filesAfterA.length, 1, `irrelevant query params must share one preview cache file, got ${filesAfterA.length}`);
 
-  // Previewing b.txt and c.txt under RF_PREVIEW_CACHE_BYTES=600 evicts older previews so total disk usage stays within budget.
+  // Unlinking the cached preview file (simulating concurrent eviction) falls through to re-render cleanly with HTTP 200.
+  rmSync(join(previews, filesAfterA[0]), { force: true });
+  const rAfterUnlink = await fetch(`${base}/preview/${iid}/working/a.txt`, { headers: { cookie } });
+  assert.equal(rAfterUnlink.status, 200);
+  assert.equal((await rAfterUnlink.json()).text, 'A'.repeat(500));
+
+  // Previewing b.txt and c.txt under RF_PREVIEW_CACHE_BYTES=900 evicts older previews so total disk usage stays within budget.
   for (const name of ['b.txt', 'c.txt']) {
     const r = await fetch(`${base}/preview/${iid}/working/${name}`, { headers: { cookie } });
     assert.equal(r.status, 200);
-    assert.equal((await r.json()).text.length, 350);
+    assert.equal((await r.json()).text.length, 500);
   }
   const remaining = readdirSync(previews).map(f => statSync(join(previews, f)).size);
   const totalBytes = remaining.reduce((s, n) => s + n, 0);
-  assert.ok(totalBytes <= 600, `preview cache total ${totalBytes} bytes exceeded 600-byte budget`);
+  assert.ok(totalBytes <= 900, `preview cache total ${totalBytes} bytes exceeded 900-byte budget`);
   assert.equal(remaining.length, 1, 'oldest previews were evicted to stay within budget');
+
+  // Mail text attachment ignores sheet/page/layout and shares ONE cache entry (after parent email summary).
+  for (const f of readdirSync(previews)) rmSync(join(previews, f), { force: true });
+  const eml = [
+    'From: a@demo.test',
+    'To: b@demo.test',
+    'Subject: Hi',
+    'MIME-Version: 1.0',
+    'Content-Type: multipart/mixed; boundary="bnd"',
+    '',
+    '--bnd',
+    'Content-Type: text/plain; charset="utf-8"',
+    '',
+    'body',
+    '--bnd',
+    'Content-Type: text/plain; charset="utf-8"; name="notes.txt"',
+    'Content-Disposition: attachment; filename="notes.txt"',
+    '',
+    'hello attachment',
+    '--bnd--',
+    '',
+  ].join('\r\n');
+  writeFileSync(join(dir, 'mail.eml'), eml);
+  for (const q of ['?attachment=0', '?attachment=0&sheet=S1', '?attachment=0&page=2', '?attachment=0&layout=1']) {
+    const r = await fetch(`${base}/preview/${iid}/working/mail.eml${q}`, { headers: { cookie } });
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).text, 'hello attachment');
+  }
+  // Cache holds only parent mail.eml summary + ONE canonical entry for attachment=0 (not 4 distinct entries).
+  assert.equal(readdirSync(previews).length, 2, `text mail attachment must share one cache file across sheet/page/layout, got ${readdirSync(previews).length}`);
 });
 
 test('R2 #7: rf pull writes via temp sibling and preserves the previous local file when replacement write fails', async () => {
@@ -103,4 +139,21 @@ test('R2 #7: rf pull writes via temp sibling and preserves the previous local fi
   assert.equal(readFileSync(target, 'utf8'), 'original-good-copy\n', 'previous local copy remained intact after failed replacement');
   assert.ok(!readdirSync(join(outDir, 'working')).some(f => f.startsWith('.rf-pull-')), 'no leftover temp sibling after failure');
   assert.equal(existsSync(target), true);
+
+  // Pulling onto a destination whose final component is a symlink must reject without altering the symlink target's content or mode.
+  const outsideTarget = join(tmp, 'outside-target.txt');
+  writeFileSync(outsideTarget, 'outside-untouched');
+  chmodSync(outsideTarget, 0o444);
+  const symOut = join(tmp, 'pulled-sym');
+  mkdirSync(join(symOut, 'working'), { recursive: true });
+  symlinkSync(outsideTarget, join(symOut, 'working', 'report.txt'));
+  let symErr = '';
+  try {
+    execFileSync(process.execPath, [rfScript, 'pull', 'W/S/2026-11/working', symOut], { env: rfEnv, encoding: 'utf8', stdio: 'pipe' });
+  } catch (e: any) {
+    symErr = String(e.stderr || e.message);
+  }
+  assert.match(symErr, /is a symlink: remove it or pull into another directory/);
+  assert.equal(readFileSync(outsideTarget, 'utf8'), 'outside-untouched');
+  assert.equal(statSync(outsideTarget).mode & 0o777, 0o444, 'symlink target permissions unchanged');
 });

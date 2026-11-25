@@ -489,3 +489,69 @@ test('Instance.append rejects unsafe integers and non-finite numbers before writ
   }
 });
 
+test('terminal recovery matches close by op+seq (not shadowed by corrected), replays half-recorded supersession idempotently, and rolls back status on pending write failure', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { initSystem, saveTree } = await import('../src/system.ts');
+  const { upsertUser } = await import('../src/auth.ts');
+  const { authority } = await import('../src/logins.ts');
+  const { ownSeries } = await import('./owner-fixture.ts');
+  const { pendingTerminalFollowups } = await import('../src/store.ts');
+  const { recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-store-reverify-'));
+  try {
+    initSystem(tmp);
+    openStore(tmp);
+    const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
+    upsertUser(owner, { name: 'Alex', role: 'user' });
+    saveTree({ workspaces: { w: { name: 'W', owners: [owner], members: [] } }, series: { monthly: { name: 'Monthly', workspace: 'w' } } });
+    ownSeries('monthly', owner, [], true);
+
+    // 1) An earlier `corrected` event whose `seq` field equals the subsequent `close` event's seq must NOT shadow `close`.
+    const base = createInstance('monthly', '2026-09', owner);
+    const next = createInstance('monthly', '2026-10', owner);
+    await base.close(who, { quiet: true, authority: authority(base) });
+    await recover();
+
+    const r2 = createInstance('monthly', '2026-09-r2', owner);
+    // Append a `corrected` entry whose `seq` field collides with the upcoming close event's seq (r2.log.length + 2 = 3).
+    r2.append(owner, 'corrected', { inst: base.id, label: base.label, seq: 3, kind: 'wrong' });
+    assert.equal(r2.log.length, 2);
+    setWake(r2.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'cancel on close' });
+    const r2Auth = authority(r2);
+    const followup = await r2.close(who, { quiet: true, authority: r2Auth });
+    assert.equal(followup.seq, 3, 'close event seq collides with earlier corrected.seq');
+    assert.equal(followup.supersedes, base.id);
+
+    // Simulate a crash partway through supersession: `correction` landed on `base`, but `corrected` (superseded) did NOT land on `r2`,
+    // and neither repo was committed for the supersession yet.
+    const corr = base.append(owner, 'correction', { kind: 'superseded', text: `${r2.label} supersedes it`, see: { inst: r2.id, label: r2.label } }, true);
+
+    openStore(tmp);
+    assert.equal(pendingTerminalFollowups().length, 1, 'openStore must NOT prune close follow-up shadowed by earlier corrected.seq');
+    await recover();
+
+    assert.deepEqual(pendingTerminalFollowups(), [], 'pending follow-up cleared after supersession commits complete');
+    assert.deepEqual(wakesOf(r2.id), [], 'close cancelled r2 pending wakes');
+    assert.equal(instance(next.id).log.filter(e => e.op === 'wake' && (e.closed as any)?.inst === r2.id).length, 1, 'r2 close woke close-time recipient');
+    assert.equal(instance(base.id).log.filter(e => e.op === 'correction' && e.kind === 'superseded').length, 1, 'correction not duplicated on replay');
+    const echoed = instance(r2.id).log.filter(e => e.op === 'corrected' && e.kind === 'superseded' && e.inst === base.id && e.seq === corr.seq);
+    assert.equal(echoed.length, 1, 'missing corrected side completed on replay');
+    assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(base.id).dir, encoding: 'utf8' }), /Correction: 2026-09 is superseded/);
+    assert.match(execFileSync('git', ['log', '-n', '1', '--pretty=%s'], { cwd: instance(r2.id).dir, encoding: 'utf8' }), /Corrected: 2026-09 is superseded/);
+
+    // 2) Failure writing `.rf/terminal-pending.json` rolls back in-memory doc.status to `open`.
+    const blocked = createInstance('monthly', '2026-11', owner);
+    const blocker = join(tmp, '.rf', 'terminal-pending.json.tmp');
+    mkdirSync(blocker, { recursive: true });
+    try {
+      await assert.rejects(blocked.close(who, { quiet: true, authority: authority(blocked) }));
+      assert.equal(blocked.doc.status, 'open', 'in-memory status rolled back to open on pending write failure');
+    } finally {
+      rmSync(blocker, { recursive: true, force: true });
+    }
+  } finally {
+    stopWaker();
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+

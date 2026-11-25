@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, futimesSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
@@ -710,7 +710,7 @@ function pullable(me: Me, path: string) {
 let previewing = 0;
 const turns: (() => void)[] = [];
 
-function previewQuery(name: string, params: URLSearchParams): string {
+function leafPreviewQuery(name: string, params: URLSearchParams): string {
   const ext = extname(name).toLowerCase();
   const out = new URLSearchParams();
   if (ext === '.xlsx' || ext === '.xlsm') {
@@ -721,22 +721,96 @@ function previewQuery(name: string, params: URLSearchParams): string {
     if (p !== null && /^\d+$/.test(p)) out.set('page', p);
   } else if (ext === '.docx') {
     if (params.has('layout')) out.set('layout', '1');
-  } else if (ext === '.eml' || ext === '.msg') {
-    const entries = [...params.entries()];
-    let i = 0;
-    while (i < entries.length && entries[i][0] === 'attachment' && /^\d+$/.test(entries[i][1])) {
-      out.append('attachment', entries[i][1]);
-      i++;
-    }
-    if (i > 0) {
-      const rest = new URLSearchParams(entries.slice(i));
-      const sheet = rest.get('sheet'), page = rest.get('page');
-      if (sheet !== null) out.set('sheet', sheet);
-      if (page !== null && /^\d+$/.test(page)) out.set('page', page);
-      if (rest.has('layout')) out.set('layout', '1');
-    }
   }
   return out.toString();
+}
+
+function mailAttachmentChain(params: URLSearchParams): { attachments: string[]; rest: URLSearchParams } {
+  const entries = [...params.entries()];
+  const attachments: string[] = [];
+  let i = 0;
+  while (i < entries.length && entries[i][0] === 'attachment' && /^\d+$/.test(entries[i][1])) {
+    attachments.push(entries[i][1]);
+    i++;
+  }
+  return { attachments, rest: new URLSearchParams(entries.slice(i)) };
+}
+
+async function previewCachePath(instId: string, name: string, part: string, fd: number): Promise<string> {
+  const sum = createHash('sha256').update(`${name}\n${part}\n`);
+  for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
+  return join(previews, `${instId}-${sum.digest('hex')}`);
+}
+
+function openCachedPreview(path: string): number | undefined {
+  try {
+    const fd = openSync(path, constants.O_RDONLY);
+    const now = new Date();
+    try { futimesSync(fd, now, now); } catch {}
+    return fd;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw e;
+  }
+}
+
+async function renderPreview(inst: Instance, fd: number, name: string, part: string): Promise<string> {
+  if (previewing < 2) previewing++;
+  else await new Promise<void>(go => turns.push(go));
+  try {
+    if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+    const run = exec('bwrap', [
+      '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+      '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', name, part,
+    ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
+    const content = createHash('sha256').update(`${name}\n${part}\n`);
+    // A file preview.py can't read, as a broken or password-protected one, is a plain message.
+    const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0, autoClose: false }), async function* (chunks: AsyncIterable<Buffer>) {
+      for await (const c of chunks) { content.update(c); yield c; }
+    }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${name}: download it`); });
+    if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+    const tmp = join(tmpDir, randomUUID()), dest = join(previews, `${inst.id}-${content.digest('hex')}`);
+    writeFileSync(tmp, stdout);
+    renameSync(tmp, dest);
+    prunePreviews(previews, dest);
+    return stdout;
+  } finally {
+    const go = turns.shift();
+    if (go) go();
+    else previewing--;
+  }
+}
+
+async function resolveMailPreviewPart(inst: Instance, fd: number, name: string, params: URLSearchParams): Promise<string> {
+  const { attachments, rest } = mailAttachmentChain(params);
+  if (!attachments.length) return '';
+  const baseParams = new URLSearchParams();
+  for (const a of attachments) baseParams.append('attachment', a);
+  if (rest.get('sheet') === null && rest.get('page') === null && !rest.has('layout')) return baseParams.toString();
+  // Resolve the target attachment's filename via the sandboxed parent email preview so text/image attachments ignore sheet/page/layout.
+  let targetName: string | undefined;
+  const prefix = new URLSearchParams();
+  for (const idx of attachments) {
+    const prefixPart = prefix.toString(), cached = await previewCachePath(inst.id, name, prefixPart, fd);
+    let raw: string;
+    const hitFd = openCachedPreview(cached);
+    if (hitFd !== undefined) {
+      try { raw = readFileSync(hitFd, 'utf8'); } finally { closeSync(hitFd); }
+    } else {
+      raw = await renderPreview(inst, fd, name, prefixPart);
+    }
+    let parsed: { email?: { attachments?: { name?: string; k?: number }[] } };
+    try { parsed = JSON.parse(raw); } catch { break; }
+    const found = parsed.email?.attachments?.find(a => String(a.k) === idx);
+    targetName = found?.name;
+    if (!targetName) break;
+    prefix.append('attachment', idx);
+  }
+  if (targetName) {
+    const leaf = leafPreviewQuery(targetName, rest);
+    if (leaf) for (const [k, v] of new URLSearchParams(leaf)) baseParams.append(k, v);
+  }
+  return baseParams.toString();
 }
 
 function previewCacheBytes(): number {
@@ -809,52 +883,26 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     // bwrap's PID 1 inside would keep: the file, up to 100 MB, streams to its stdin. What it makes is kept, until the server
     // restarts, by the file's name and the content it was given; at most 2 run at once, the rest waiting their turn, so previews
     // never crowd out runs.
-    if (fstatSync(fd).size > 100e6) {
-      closeSync(fd);
-      throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
-    }
-    // A part of the file, as its validated renderer query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
-    const part = previewQuery(basename(rel), url.searchParams), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
-    for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
-    const kept = join(previews, `${inst.id}-${sum.digest('hex')}`);
-    if (inst.doc.status === 'deleted') {
-      closeSync(fd);
-      throw new HttpError(404, 'the instance was deleted');
-    }
-    if (existsSync(kept)) {
-      closeSync(fd);
-      const now = new Date();
-      try { utimesSync(kept, now, now); } catch {}
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return sendStream(createReadStream(kept), res);
-    }
-    if (previewing < 2) previewing++;
-    else await new Promise<void>(go => turns.push(go));
     try {
-      if (inst.doc.status === 'deleted') {
-        closeSync(fd);
-        throw new HttpError(404, 'the instance was deleted');
-      }
-      const run = exec('bwrap', [
-        '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
-        '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
-      ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
-      const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
-      // A file preview.py can't read, as a broken or password-protected one, is a plain message.
-      const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
-        for await (const c of chunks) { content.update(c); yield c; }
-      }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${basename(rel)}: download it`); });
+      if (fstatSync(fd).size > 100e6) throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
+      const name = basename(rel), ext = extname(name).toLowerCase();
       if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
-      const tmp = join(tmpDir, randomUUID()), dest = join(previews, `${inst.id}-${content.digest('hex')}`);
-      writeFileSync(tmp, stdout);
-      renameSync(tmp, dest);
-      prunePreviews(previews, dest);
+      // A part of the file, as its validated renderer query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
+      const part = ext === '.eml' || ext === '.msg'
+        ? await resolveMailPreviewPart(inst, fd, name, url.searchParams)
+        : leafPreviewQuery(name, url.searchParams);
+      const kept = await previewCachePath(inst.id, name, part, fd);
+      if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+      const hitFd = openCachedPreview(kept);
+      if (hitFd !== undefined) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return sendStream(createReadStream('', { fd: hitFd }), res);
+      }
+      const stdout = await renderPreview(inst, fd, name, part);
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {
-      const go = turns.shift();
-      if (go) go();
-      else previewing--;
+      closeSync(fd);
     }
   }
   const image = rel.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
@@ -969,7 +1017,7 @@ async function monitor(me: Me, req: IncomingMessage, res: ServerResponse, url: U
     // Without its start, the process the PID names now: it must still be a run's, and not the sandbox's own.
     const start = given ?? startOf(pid), { box, script } = find(pid, start, sandboxes()), inst = instance(box.instance);
     inst.append(me.email, 'kill', { run: box.run, pid, script });
-    const killed = await killTree(pid, start);
+    const killed = await killTree(pid, start, { box });
     if (active.get(inst.seriesId)?.inst === inst) kick(inst);
     return send(res, 200, { ...killed, path: box.path, run: box.run, script });
   }
@@ -1724,8 +1772,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         let captured: Authority | undefined;
         if (action === 'close') try { captured = authority(inst); } catch {}
         const followup = await (action === 'close' ? inst.close(who, { quiet, authority: captured }) : inst.abandon(by));
-        cancelWakes([inst.id]);
-        if (action === 'close') closed(inst, by, quiet, followup);
+        cancelWakes([inst.id], true);
+        if (action === 'close') await closed(inst, by, quiet, followup);
         ackTerminalFollowup(followup.key);
         return 'ok';
       }

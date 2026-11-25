@@ -47,8 +47,8 @@ export function replaceFile(path: string, data: string | Buffer, durable = false
   }
 }
 
-export function writeJson(name: string, data: unknown, actor?: string) {
-  replaceFile(join(dir, name), JSON.stringify(data, null, 1));
+export function writeJson(name: string, data: unknown, actor?: string, durable = false) {
+  replaceFile(join(dir, name), JSON.stringify(data, null, 1), durable);
   changes.emit('change', 'tree', actor);
 }
 

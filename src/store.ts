@@ -308,13 +308,19 @@ export function openStore(dataRoot: string, beforeRepair?: () => void) {
   let pruned = false;
   for (const [k, f] of Object.entries(pending)) {
     const inst = cache.get(f.inst);
-    if (!inst || inst.hole || inst.log.find(e => e.seq === f.seq)?.op !== f.op) {
+    if (!inst || inst.hole || !hasTerminalEvent(inst, f.op, f.seq)) {
       delete pending[k];
       pruned = true;
     }
   }
   if (pruned) writeTerminalPending(pending);
   for (const b of loaded.values()) b.notes.sync();
+}
+
+export function hasTerminalEvent(inst: Instance, op: 'close' | 'abandon', seq: number): Entry | undefined {
+  const at = inst.log[seq - 1];
+  if (at && at.op === op && at.seq === seq) return at;
+  return inst.log.find(e => e.op === op && e.seq === seq);
 }
 
 export const newId = () => randomBytes(6).toString('hex');
@@ -482,13 +488,13 @@ export class Instance {
     return this.log[0]?.op === 'delete';
   }
 
-  append(by: string, op: string, fields: Record<string, unknown> = {}): Entry {
+  append(by: string, op: string, fields: Record<string, unknown> = {}, durable = false): Entry {
     // Nothing more is said of a deleted instance, such as by a run its deletion cut, as it ends.
     if (this.hole) return { seq: 0, at: new Date().toISOString(), by, op, ...fields };
     const s = ['upload', 'comment', 'signoff', 'reject'].includes(op) && by.includes('@') ? seriesSettings(this.series()) : undefined;
     const e = { seq: this.log.length + 1, at: new Date().toISOString(), by, op, ...fields, ...(s && { authorityOwner: s.owner ?? null, ...(s.consent && s.consent.by === s.owner && s.consent.workspace === tree().series[this.seriesId].workspace && { authorityEpoch: s.epoch }) }) };
     if (instanceMessage(e)) return appendMessage(this.series(), instanceAnchor(this.id, e, this.log), e).entry;
-    appendLine(eventsFile(this.series(), this.id), safeEntryJson(e), 0o600, ['close', 'abandon'].includes(op));
+    appendLine(eventsFile(this.series(), this.id), safeEntryJson(e), 0o600, durable || ['close', 'abandon'].includes(op));
     if (e.op === 'duplicate') this.copiedSeq = e.seq;
     this.projection.update(e);
     changes.emit('change', this.id);
@@ -570,13 +576,18 @@ export class Instance {
       recipients,
       ...(supersedes && { supersedes }),
     };
-    const pending = readTerminalPending();
-    pending[key] = followup;
-    writeTerminalPending(pending);
+    try {
+      const pending = readTerminalPending();
+      pending[key] = followup;
+      writeTerminalPending(pending);
+    } catch (e) {
+      if (!this.hole) this.doc.status = 'open';
+      throw e;
+    }
     try {
       this.append(by.email, 'close', { ...(accepted.length && { accepted }), commit: hash, ...(quiet && { quiet: true }) });
     } catch (e) {
-      ackTerminalFollowup(key);
+      try { ackTerminalFollowup(key); } catch {}
       if (!this.hole) this.doc.status = 'open';
       throw e;
     }
@@ -601,7 +612,7 @@ export class Instance {
     try {
       this.append(by, 'abandon');
     } catch (e) {
-      ackTerminalFollowup(key);
+      try { ackTerminalFollowup(key); } catch {}
       if (!this.hole) this.doc.status = 'open';
       throw e;
     }

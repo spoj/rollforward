@@ -3,7 +3,7 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, pendingTerminalFollowups, seriesDir, type Entry, type Instance, type TerminalFollowup } from './store.ts';
+import { ackTerminalFollowup, agentsFile, closedBefore, createInstance, hasTerminalEvent, HttpError, instance, instanceDir, instances, labels, newId, openFile, pendingTerminalFollowups, seriesDir, type Entry, type Instance, type TerminalFollowup } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
@@ -666,10 +666,11 @@ export function queued(inst: Instance): { why: string; since: string } | undefin
 }
 
 // The owner's close continues later drafts. A <label>-r2 closing supersedes <label>, and <label>-r3 supersedes <label>-r2.
-export function closed(inst: Instance, by: string, quiet?: boolean, followup?: TerminalFollowup) {
-  const close = followup ? inst.log.find(e => e.seq === followup.seq && e.op === 'close')
+export function closed(inst: Instance, by: string, quiet?: boolean, followup?: TerminalFollowup): Promise<void> | undefined {
+  const close = followup ? hasTerminalEvent(inst, 'close', followup.seq)
     : inst.log.findLast(e => e.seq > inst.copied && e.op === 'close');
   const closedRef = close ? { inst: inst.id, seq: close.seq } : undefined;
+  const durable = !!followup;
   const targets = followup
     ? (followup.recipients ?? []).flatMap(id => {
         try { const i = instance(id); return !i.hole && i.seriesId === inst.seriesId && i.doc.status === 'open' ? [i] : []; }
@@ -683,7 +684,7 @@ export function closed(inst: Instance, by: string, quiet?: boolean, followup?: T
     if (followup) {
       // Revalidate close-time captured lease; fail closed (skip) if missing or revoked rather than minting a replacement lease.
       if (!followup.authority || !sameAuthority(later, followup.authority)) continue;
-      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, authority: followup.authority, ...(closedRef && { closed: closedRef }) }]);
+      wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, authority: followup.authority, ...(closedRef && { closed: closedRef }) }], durable);
     } else {
       wakeWith(later, [{ from: by, text: `${inst.label} closed: its final figures may differ from the draft you read`, quiet, ...(closedRef && { closed: closedRef }) }]);
     }
@@ -694,8 +695,25 @@ export function closed(inst: Instance, by: string, quiet?: boolean, followup?: T
         const [, base, r] = /^(.+)-r(\d+)$/.exec(inst.label) ?? [];
         return base ? instances(inst.seriesId).find(i => i.label === (r === '2' ? base : `${base}-r${Number(r) - 1}`) && i.doc.status === 'closed') : undefined;
       })();
-  if (was && !was.log.some(e => e.op === 'correction' && e.kind === 'superseded' && (e.see as { inst?: string } | undefined)?.inst === inst.id))
-    correct(was, by, { kind: 'superseded', text: `${inst.label} supersedes it`, see: inst });
+  const commits: Promise<unknown>[] = [];
+  if (was) {
+    let corr = was.log.find(e => e.op === 'correction' && e.kind === 'superseded' && (e.see as { inst?: string } | undefined)?.inst === inst.id);
+    if (!corr) {
+      corr = was.append(by, 'correction', { kind: 'superseded', text: `${inst.label} supersedes it`, see: { inst: inst.id, label: inst.label } }, durable);
+    }
+    let echoed = inst.log.find(e => e.op === 'corrected' && e.kind === 'superseded' && e.inst === was.id && e.seq === corr!.seq);
+    if (!echoed) {
+      echoed = inst.append(by, 'corrected', { inst: was.id, label: was.label, seq: corr.seq, kind: 'superseded' }, durable);
+    }
+    const who = by === 'agent' ? AGENT : { name: users()[by]?.name ?? by, email: by };
+    for (const [i, m, x] of [[was, `Correction: ${was.label} is superseded, see ${inst.label}`, corr], [inst, `Corrected: ${was.label} is superseded`, echoed]] as const) {
+      if (i.doc.status === 'closed') {
+        const p = commit(i.dir, who, m);
+        commits.push(followup ? p : p.catch(err => i.append('server', 'commit', { cause: x.seq, error: err.message })));
+      }
+    }
+  }
+  return commits.length ? Promise.all(commits).then(() => {}) : undefined;
 }
 
 // A correction: a closed instance is never changed, but takes later entries saying that one of its items, or itself, is wrong or
@@ -771,7 +789,7 @@ export function wakes(): Wakes {
   return stored;
 }
 
-function saveWakes(w: Wakes) {
+function saveWakes(w: Wakes, durable = false) {
   const requests = Object.create(null);
   for (const [id, r] of Object.entries(w.requests)) {
     const { from, at, text, series, target, label, inst: source } = r;
@@ -787,19 +805,23 @@ function saveWakes(w: Wakes) {
     }
     requests[id] = { series, label, ...(source && { inst: source }), ...(target && { target }), message };
   }
-  writeJson('wakes.json', { ...w, requests });
+  writeJson('wakes.json', { ...w, requests }, undefined, durable);
 }
+const publicWake = (id: string, k: Wake): Wake & { id: string } => {
+  const { rev: _r, ...shown } = k;
+  return { id, ...shown };
+};
 const byAt = (a: { at: string }, b: { at: string }) => a.at.localeCompare(b.at);
 export const wakesOf = (target: string, w = wakes()) => Object.entries(w.pending).filter(([, k]) => k.target === target)
-  .map(([id, k]) => ({ id, ...k })).sort(byAt);
+  .map(([id, k]) => publicWake(id, k)).sort(byAt);
 // Each target's pending wakes as wakesOf gives them, from one pass, for what lists many targets at once; a target's are sorted only
 // once it's asked for, as with wakesOf, so a bad one fails only what asks for its target.
 export function wakesByTarget(w = wakes()): (target: string) => (Wake & { id: string })[] {
   const by = new Map<string, (Wake & { id: string })[]>(), sorted = new Set<string>();
   for (const [id, k] of Object.entries(w.pending)) {
-    const ks = by.get(k.target);
-    if (ks) ks.push({ id, ...k });
-    else by.set(k.target, [{ id, ...k }]);
+    const ks = by.get(k.target), pub = publicWake(id, k);
+    if (ks) ks.push(pub);
+    else by.set(k.target, [pub]);
   }
   return target => {
     const ks = by.get(target) ?? [];
@@ -862,8 +884,7 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id
     };
   }
   saveWakes(w);
-  const { rev: _r, ...shown } = w.pending[id];
-  return { id, ...shown };
+  return publicWake(id, w.pending[id]);
 }
 
 export function cancelWake(id: string) {
@@ -873,11 +894,11 @@ export function cancelWake(id: string) {
 }
 
 // Every wake and request for these series and instances, as they close or are archived.
-export function cancelWakes(targets: string[]) {
+export function cancelWakes(targets: string[], durable = false) {
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (targets.includes(k.target)) delete w.pending[id];
   for (const [id, r] of Object.entries(w.requests)) if ([r.series, r.target].some(x => targets.includes(x!))) delete w.requests[id];
-  saveWakes(w);
+  saveWakes(w, durable);
 }
 
 // Cancel pending OOM retries when archiving so restoring does not revive them, while leaving later owner comments intact.
@@ -912,12 +933,12 @@ export function startWith(seriesId: string, label: string, by: string, wakes: Wo
 
 // Wakes an instance, each wake logged with who set it and its text, a note unless it's the owner's word (standing()).
 type Woken = { from: string; immediate?: boolean; text?: string; inst?: string; sourceRun?: number; quiet?: boolean; note?: boolean; authority?: Authority; initiator?: string; schedule?: string; check?: string; closed?: { inst: string; seq: number }; skippedChecks?: SkippedChecks };
-export function wakeWith(inst: Instance, wakes: Woken[]): Instance {
+export function wakeWith(inst: Instance, wakes: Woken[], durable = false): Instance {
   for (const wake of wakes) {
     const r = ownerOf(inst);
     const lease = wake.authority ?? (!wake.inst && wake.from === r.by && r.consent ? authority(inst) : undefined);
     const fields = { ...wake, authority: lease, initiator: lease?.owner };
-    inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) });
+    inst.append('server', 'wake', { ...fields, ...(woken(inst, fields).word === 'note' && { note: true }) }, durable);
   }
   if (wakes.some(w => !w.quiet)) kick(inst);
   return inst;
@@ -1174,23 +1195,35 @@ export const CUT = { restart: 'a restart cut the run', authority: 'its series au
 
 // Recovery accounts for the captured executor and resumes only a still-valid captured authority.
 // No git runs at startup, so interrupted commit locks can be removed.
-export function recover() {
+export function recover(): Promise<void> {
   // A deletion a restart cut is done: what's left of its folder goes.
   const t = tree();
   for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();
+  for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => !i.hole)) {
+    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
+  }
+  const pendingFollowupCommits: Promise<void>[] = [];
   for (const followup of pendingTerminalFollowups()) {
     let inst: Instance;
     try { inst = instance(followup.inst); } catch { ackTerminalFollowup(followup.key); continue; }
-    if (inst.hole || !t.series[inst.seriesId] || inst.log.find(e => e.seq === followup.seq)?.op !== followup.op) {
+    if (inst.hole || !t.series[inst.seriesId] || !hasTerminalEvent(inst, followup.op, followup.seq)) {
       ackTerminalFollowup(followup.key);
       continue;
     }
-    cancelWakes([inst.id]);
-    if (followup.op === 'close' && inst.doc.status === 'closed') closed(inst, followup.by, !!followup.quiet, followup);
-    ackTerminalFollowup(followup.key);
+    cancelWakes([inst.id], true);
+    const commits = followup.op === 'close' && inst.doc.status === 'closed'
+      ? closed(inst, followup.by, !!followup.quiet, followup)
+      : undefined;
+    if (commits) {
+      pendingFollowupCommits.push(commits.then(
+        () => ackTerminalFollowup(followup.key),
+        err => console.error(`terminal follow-up ${followup.key} commit failed:`, err),
+      ));
+    } else {
+      ackTerminalFollowup(followup.key);
+    }
   }
   for (const id of Object.keys(tree().series)) for (const inst of instances(id).filter(i => !i.hole)) {
-    for (const f of ['index.lock', 'HEAD.lock', 'config.lock', 'packed-refs.lock', 'packed-refs.new', 'gc.pid', 'refs/heads/main.lock']) rmSync(join(inst.dir, '.git', f), { force: true });
     if (inst.doc.status !== 'open') continue;
     const run = inst.log.findLast(e => e.op === 'run' || e.op === 'done');
     if (run?.op === 'run') {
@@ -1205,6 +1238,7 @@ export function recover() {
     }
     kick(inst);
   }
+  return Promise.all(pendingFollowupCommits).then(() => {});
 }
 
 // Whether a login of `who`'s that expired holds an instance's runs: the instance is open and theirs, a run of theirs met it since
