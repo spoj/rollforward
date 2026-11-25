@@ -327,7 +327,7 @@ async function tidy(c: Cache) {
     }
   };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
-  const parentFields = new Map<string, { parentFolderId: string } | { parentReference: { driveId?: string; id?: string } }>(), needsParent = new Set<string>();
+  const parentFields = new Map<string, { parentFolderId: string } | { parentReference: { driveId?: string; id?: string; path?: string } }>(), needsParent = new Set<string>();
   for await (const line of read()) {
     let it: any;
     try {
@@ -338,13 +338,37 @@ async function tidy(c: Cache) {
     last.set(it.id, ids.push(it.id) - 1);
     if (it.deleted || it['@removed']) gone.add(it.id);
     else gone.delete(it.id);
-    const p = it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId;
-    if (p !== undefined) {
-      parent.set(it.id, p);
-      parentFields.set(it.id, it.parentFolderId !== undefined
-        ? { parentFolderId: it.parentFolderId }
-        : { parentReference: { ...(it.parentReference.driveId !== undefined && { driveId: it.parentReference.driveId }), ...(it.parentReference.id !== undefined && { id: it.parentReference.id }) } });
+    if (it.parentFolderId !== undefined) {
+      parent.set(it.id, it.parentFolderId);
+      parentFields.set(it.id, { parentFolderId: it.parentFolderId });
       needsParent.delete(it.id);
+    } else if (it.parentReference && typeof it.parentReference === 'object') {
+      const prev = parentFields.get(it.id);
+      const prevRef = prev && 'parentReference' in prev ? prev.parentReference : undefined;
+      const curDrive = it.parentReference.driveId as string | undefined;
+      const curId = it.parentReference.id as string | undefined;
+      const curPath = it.parentReference.path as string | undefined;
+      const sameDrive = !!prevRef && (curDrive === undefined || prevRef.driveId === undefined || curDrive === prevRef.driveId);
+      const merged: { driveId?: string; id?: string; path?: string } = {
+        ...(sameDrive && prevRef.driveId !== undefined && { driveId: prevRef.driveId }),
+        ...(sameDrive && prevRef.id !== undefined && { id: prevRef.id }),
+        ...(sameDrive && (curId === undefined || prevRef.id === curId) && prevRef.path !== undefined && { path: prevRef.path }),
+        ...(curDrive !== undefined && { driveId: curDrive }),
+        ...(curId !== undefined && { id: curId }),
+        ...(curPath !== undefined && { path: curPath }),
+      };
+      const p = merged.id ?? merged.driveId;
+      if (p !== undefined) {
+        parent.set(it.id, p);
+        parentFields.set(it.id, { parentReference: merged });
+        const missing = (merged.id !== undefined && curId === undefined)
+          || (merged.driveId !== undefined && curDrive === undefined)
+          || (merged.path !== undefined && curPath === undefined);
+        if (missing) needsParent.add(it.id);
+        else needsParent.delete(it.id);
+      } else if (prev) {
+        needsParent.add(it.id);
+      }
     } else if (parentFields.has(it.id)) {
       needsParent.add(it.id);
     }

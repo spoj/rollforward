@@ -330,6 +330,30 @@ test('P1: surviving sparse rows preserve parentReference and parentFolderId acro
   assert.equal(cache(ALICE, MAIL).wakeGrant, grant);
   const afterMailIds = lines(feedOf(ALICE, MAIL)).map(l => l.id);
   assert.ok(!afterMailIds.includes('p1MailFolder') && !afterMailIds.includes('p1Msg'), `deleted mail folder and sparse message purged: ${JSON.stringify(afterMailIds)}`);
+
+  // 3) Drive item with partial parentReference { driveId } (omitting folder id) must merge rather than lose folder id across compaction.
+  put('b!d', folder('b!d', 'p1PartialFolder', 'P1Partial', 'top'));
+  put('b!d', file('b!d', 'p1PartialChild', 'partial.xlsx', 'p1PartialFolder', { parentReference: { driveId: 'b!d', id: 'p1PartialFolder', path: '/drives/b!d/root:/P1Partial' } }));
+  put('b!d', file('b!d', 'p1PartialOther', 'other.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+
+  const partialGen1 = cache(ALICE, FOLDER).gen;
+  put('b!d', { ...state['b!d'].get('p1PartialChild')!, name: 'partial-renamed.xlsx' }, '', { id: 'p1PartialChild', name: 'partial-renamed.xlsx', file: {}, parentReference: { driveId: 'b!d' } });
+  put('b!d', { id: 'p1PartialOther', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, partialGen1 + 1, 'compaction #1 completed for partial parentReference test');
+  const survivedPartial = lines(feedOf(ALICE, FOLDER)).find(l => l.id === 'p1PartialChild');
+  assert.ok(survivedPartial, 'partial-parentReference child survives compaction #1');
+  assert.deepEqual(survivedPartial.parentReference, { driveId: 'b!d', id: 'p1PartialFolder', path: '/drives/b!d/root:/P1Partial' }, 'merged folder id and path preserved across compaction #1');
+
+  const partialGen2 = cache(ALICE, FOLDER).gen;
+  put('b!d', { id: 'p1PartialFolder', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, partialGen2 + 1, 'compaction #2 completed on partial folder deletion');
+  const afterPartialIds = lines(feedOf(ALICE, FOLDER)).map(l => l.id);
+  assert.ok(!afterPartialIds.includes('p1PartialFolder') && !afterPartialIds.includes('p1PartialChild'), `partial-parentReference child purged when folder deleted: ${JSON.stringify(afterPartialIds)}`);
 });
 
 test('P2: deleting every item in a wake cache compacts cleanly to an empty zstd feed and stays wake-ready', async () => {
