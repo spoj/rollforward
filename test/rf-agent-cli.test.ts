@@ -201,3 +201,13 @@ test('rf commit accepts an optional -m flag and rejects an empty message', async
     ['POST', `/api/instances/${instance}/commit`, { message: 'From stdin\n' }],
   ]);
 });
+
+test('rf wake rejects missing values for flags including --max-stale and --backstop-hours before calling API', async t => {
+  const { calls, run } = await fake(t, []);
+  for (const flag of ['--max-stale', '--backstop-hours', '--deadline', '--check', '--days', '--label', '--cancel']) {
+    const r = await run(['wake', '.', '+1h', flag]);
+    assert.equal(r.code, 1, `missing value for ${flag} should fail`);
+    assert.match(r.stderr, new RegExp(`${flag} takes a value`));
+  }
+  assert.deepEqual(calls, [], 'no API calls made when a flag value is missing');
+});

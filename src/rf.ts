@@ -146,7 +146,10 @@ const wake = async () => {
   const o: Record<string, string> = {}, rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const flag = /^--(label|days|cancel|check|deadline|max-stale|backstop-hours)$/.exec(args[i])?.[1];
-    if (flag) o[flag] = args[++i];
+    if (flag) {
+      if (args[i + 1] === undefined) return { ok: false, text: `--${flag} takes a value` };
+      o[flag] = args[++i];
+    }
     else rest.push(args[i]);
   }
   if (o.cancel !== undefined && !rest.length) return send('DELETE', `api/wakes/${o.cancel}`);
