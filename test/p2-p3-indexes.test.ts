@@ -33,6 +33,7 @@ const under = (d: string, id: string, top: string) => { for (let x: string | und
 
 const asked: { who: string; url: string }[] = [];
 const locked = new Set<string>();
+let reverseBatch = false;
 
 function delta(who: string, d: string, scope: string | undefined, token: string | null) {
   const link = (t: string) => `${base}/v1.0/drives/${d}/${scope ? `items/${scope}` : 'root'}/delta?token=${t}`;
@@ -55,6 +56,7 @@ function delta(who: string, d: string, scope: string | undefined, token: string 
 }
 
 function mail(fid: string | undefined, token: string | null) {
+  if (token === 'gone') return { status: 410, body: { error: { code: 'resyncRequired' } } };
   if (fid && state.mail.get(fid)?.['@removed']) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
   const where = fid ?? '', link = (t: string) => `${base}/v1.0/users/${encodeURIComponent(BOX)}/mailFolders/${fid ? `${fid}/messages/` : ''}delta?$deltatoken=${t}`;
   if (token?.startsWith('s')) {
@@ -104,7 +106,7 @@ before(async () => {
       if (path === '/v1.0/$batch') {
         const requests = JSON.parse(body).requests as { id: string; url: string }[];
         const responses = requests.map(r => ({ id: r.id, ...answer(who, r.url) }));
-        return send(200, { responses });
+        return send(200, { responses: reverseBatch ? responses.toReversed() : responses });
       }
       const a = answer(who, req.url!);
       send(a.status, a.body);
@@ -501,6 +503,39 @@ test('P2: 410 and 403 on wake-capable caches still force full reset', async () =
   assert.ok(cache(ALICE, MAIL).gen > mailGen);
   assert.equal(existsSync(mailFeed), false, 'unexplained mail folder 404 reset the old feed');
   assert.ok(asked.slice(fromMail404).some(q => q.url === '/users/team%40demo.test/mailFolders/delta'), 'unexplained 404 recrawled from scratch');
+});
+
+test('P2: mail folder removal combined with HTTP 410 in the same Graph batch resets cleanly in either response order', async () => {
+  const grant = JSON.stringify(['gen-1', null]);
+  for (const rev of [false, true]) {
+    const fid = rev ? 'f410rev' : 'f410fwd', mid = rev ? 'm410rev' : 'm410fwd';
+    put('mail', { id: fid, displayName: fid, parentFolderId: 'inbox' }, '');
+    await due(ALICE, MAIL);
+    put('mail', { id: mid, subject: 'WillVanish', parentFolderId: fid, body: { contentType: 'text', content: 'x' } }, fid);
+    await due(ALICE, MAIL);
+    assert.ok(cache(ALICE, MAIL).parts[fid]?.delta, `folder ${fid} crawled`);
+
+    const c = cache(ALICE, MAIL), beforeGen = c.gen, oldFeed = feedOf(ALICE, MAIL);
+    c.parts[fid].link = `${base}/v1.0/users/${encodeURIComponent(BOX)}/mailFolders/${fid}/messages/delta?$deltatoken=gone`;
+    writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(c));
+    put('mail', { id: fid, '@removed': { reason: 'deleted' } }, '');
+
+    reverseBatch = rev;
+    try {
+      await due(ALICE, MAIL);
+    } finally {
+      reverseBatch = false;
+    }
+
+    const after = cache(ALICE, MAIL);
+    assert.ok(after.gen > beforeGen, `batch reset committed (reverse=${rev})`);
+    assert.equal(existsSync(oldFeed), false, `old feed removed (reverse=${rev})`);
+    assert.equal(after.parts[fid], undefined, `removed folder dropped from parts (reverse=${rev})`);
+    assert.ok(after.parts['']?.delta && after.parts.inbox?.delta, `surviving parts rebuilt and recrawled (reverse=${rev})`);
+    assert.equal(after.wakeGrant, grant);
+    const ids = lines(feedOf(ALICE, MAIL)).map(l => l.id).sort();
+    assert.deepEqual(ids, ['inbox', 'm1'], `surviving rows intact without removed folder/messages (reverse=${rev})`);
+  }
 });
 
 test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file overflow upfront with no stray files, and respects override', async t => {

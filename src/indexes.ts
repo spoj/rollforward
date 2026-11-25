@@ -253,7 +253,7 @@ async function slice(person: string, offer: string, until: number): Promise<void
     if (lost) {
       const [part, p, e] = lost, parts = e.status === 410 ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))]))
         : { [part]: { ...fresh(start(offer, part)), tries: p.tries } };
-      failed(parts[part], e, start(offer, part));
+      if (parts[part]) failed(parts[part], e, start(offer, part));
       return reset(c, parts);
     }
     if (lines.length) {
