@@ -1,6 +1,7 @@
 // rf for people: what the page does, from a shell or a desktop agent, as you, with a personal token made on the page (Tokens).
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -48,9 +49,9 @@ rf approve PATH cN [TEXT] [--wake]   records content approval of proposal cN, no
 rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN, with feedback on missing information or changes;
                                   revised work takes a new proposal
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
-rf close PATH [--as-series NAME] [--wake]   the series owner makes it the record and an example,
+rf close PATH [--as-series NAME]  the series owner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
-                                  becomes; --wake starts runs of the series' later open instances, which may have used its draft
+                                  becomes
 rf abandon PATH                   the series owner leaves it as it is, neither an example nor a starting point
 rf delete PATH [--yes]            its workspace's owners and admins delete an instance, in any status, once they confirm, or
                                   with --yes: a run for it is cut, and all the server holds of it goes but its label and place,
@@ -104,12 +105,14 @@ rf grant approve|deny ID [TEXT]   a request to use a website in a workspace you 
 rf grant revoke ID                a grant pending or approved, yours or in a workspace you own; its runs' browsers close
 rf correct PATH TEXT [--item ID] [--ref REF] [--superseded] [--see LABEL]   a closed instance, or its item ID at REF, is
                                   wrong, or superseded, as LABEL, another instance of its series, shows; it can't be withdrawn
-rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO]] | rf wake --cancel ID
+rf wake PATH AT [TEXT] [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO] [--max-stale MIN] [--backstop-hours H]] | rf wake --cancel ID
                                   AT now, +<n>m|h|d or a date; PATH an open instance, or a series with LABEL; TEXT a short
                                   message for the run; the owner's now starts under current consent without autonomous opt-in;
                                   later or agent-set wakes need it. Collaborators' wakes are requests. DAYS, such as mon-fri,
                                   repeats weekly at AT's time. With the owner's wake-check capability, --check working/FILE.py (or .ts)
-                                  gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops.
+                                  gates a scheduled wake; optional --deadline TIME (ISO with offset) runs Pi even if the check stops,
+                                  --max-stale MIN overrides the 150m M365 index staleness cap, and --backstop-hours H overrides the
+                                  24h recurring skip backstop.
 rf agents [WORKSPACE] [--set FILE|-]     the company's AGENTS.md, or a workspace's; setting the company's is for admins
 rf readers WORKSPACE [add|remove OTHER]   the workspaces whose agents read WORKSPACE and those its own read, as each one's
                                   owners let them; its owners let OTHER's agents read it, one they see, and its owners or
@@ -186,7 +189,7 @@ What there is
   credentials. Scheduled and autonomous runs need a separate opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
   Transferring the whole series stops old runs and clears consent; old unread instructions become notes. Each act keeps
   its author, and every run its executor.
-- rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
+- rf is quiet: a comment, upload, approval, rejection, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run. The owner's rf wake PATH now starts one under current consent, without autonomous opt-in.
   A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
@@ -405,24 +408,52 @@ const runsIn = async (path = '') => (await get(`/api/runs?since=${since}`))
   .filter(r => !path || r.path === path.replace(/\/+$/, '') || r.path.startsWith(path.replace(/\/+$/, '') + '/'));
 
 function write(path: string, data: string | Uint8Array, mtime: string) {
-  mkdirSync(dirname(path), { recursive: true });
-  rmSync(path, { force: true });
-  writeFileSync(path, data);
-  utimesSync(path, new Date(mtime), new Date(mtime));
-  chmodSync(path, 0o444);
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const existing = lstatSync(path, { throwIfNoEntry: false });
+  if (existing?.isSymbolicLink()) throw new Error(`${path} is a symlink: remove it or pull into another directory`);
+  const tmp = join(dir, `.rf-pull-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    writeFileSync(tmp, data, { flag: 'wx', mode: 0o600 });
+    utimesSync(tmp, new Date(mtime), new Date(mtime));
+    chmodSync(tmp, 0o444);
+    try {
+      renameSync(tmp, path);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        const cur = lstatSync(path, { throwIfNoEntry: false });
+        if (cur && !cur.isSymbolicLink() && cur.isFile()) {
+          const oldMode = cur.mode;
+          chmodSync(path, 0o644);
+          try {
+            renameSync(tmp, path);
+          } catch (retryErr) {
+            try { chmodSync(path, oldMode); } catch {}
+            throw retryErr;
+          }
+          return;
+        }
+      }
+      throw e;
+    }
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 // A path the server named, under `base`, or undefined where a name in it can't be one here: on Windows a name may hold \ or :, which
 // would put the file elsewhere, even in another workspace's folder, or another file's stream; or name a device, such as CON; or end
 // in a dot or a space, which Windows drops. Nor may a name be what git takes for a .git, such as .GIT on a disk that ignores case,
-// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, would take the file
-// elsewhere too, and is refused.
+// whose config would run a command as git runs there. A link where one of its folders goes, or `base`, or at the file itself,
+// would take the file elsewhere too, and is refused.
 const under = (base: string, rel: string) => {
   const names = rel.split('/');
   if (names.some(n => !n || n === '.' || n === '..' || basename(n) !== n || /^(\.git|git~1)[. ]*([:\\]|$)/i.test(n)
     || (process.platform === 'win32' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(n) || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(n))))) return undefined;
   let folder = base;
-  for (const name of ['', ...names.slice(0, -1)]) {
+  for (const name of ['', ...names]) {
     folder = join(folder, name);
     let st: Stats | undefined;
     try { st = lstatSync(folder, { throwIfNoEntry: false }); }
@@ -561,7 +592,7 @@ if (cmd === 'login' && url) {
   else for (const r of rows) {
     console.log(r.deleted ? `${r.path}  deleted by ${r.deleted.by} ${when(r.deleted.at)}` : r.status ? `${r.path}  ${r.status}${r.running ? ', running' : ''}${r.asks ? `, ${r.asks} asks waiting` : ''}, owner ${r.owner}` : `${r.path}${r.requests ? `  ${r.requests} asking to start` : ''}`);
     if (r.wakeCheck) console.log(`  Wake check stopped: ${clip(r.wakeCheck.message.replace(/[\x00-\x1f\x7f-\x9f]/g, ' '), TEXT_COLS)}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
@@ -856,8 +887,12 @@ else if (cmd === 'comment' && args.length < 2) {
 } else if (cmd === 'wake' && [2, 3].includes(args.length)) {
   const { series, inst } = await find(args[0]);
   const at = args[1] === 'now' ? Date.now() : args[1].startsWith('+') ? Date.now() + Number(args[1].slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[args[1].at(-1)!]! : Date.parse(args[1]);
-  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, { at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline }, 'PUT')).json();
-  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}` : ''}`);
+  const num = (v: string | true | undefined) => (typeof v !== 'string' ? undefined : /^\d+$/.test(v) ? Number(v) : v);
+  const w = await (await post(`/api/wakes/${inst?.id ?? series.id}`, {
+    at: new Date(at).toISOString(), label: flags.label, days: flags.days, text: args[2], check: flags.check, deadline: flags.deadline,
+    maxStaleMin: num(flags['max-stale']), backstopHours: num(flags['backstop-hours']),
+  }, 'PUT')).json();
+  console.log(`wake ${w.id} at ${w.at}${w.days ? `, then each ${w.days.join(', ')}` : ''}${w.check ? `; check ${w.check}${w.deadline ? ` until ${w.deadline}` : ''}${w.maxStaleMin ? `, max-stale ${w.maxStaleMin}m` : ''}${w.backstopHours ? `, backstop ${w.backstopHours}h` : ''}` : ''}`);
 } else if (cmd === 'agents' && args.length <= 1) {
   const ws = args[0] === undefined ? undefined : await workspaceNamed(args[0]);
   if (typeof flags.set !== 'string') console.log(ws ? ws.agents : (await get('/agents')).text);
@@ -1063,7 +1098,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
     console.log(`${r.path}  last woken ${r.fired ? when(r.fired) : 'never'}${r.wakes.length || r.requests.length ? '' : ', none pending'}`);
-    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}` : ''}`);
+    for (const k of r.wakes) console.log(`  wake ${k.id} ${when(k.at)}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}, set by ${k.from}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}`);
     for (const q of r.requests) console.log(`  request ${q.id} to ${q.target ? 'wake' : 'start'} ${q.label}, from ${q.from} since ${when(q.at)}, waits on ${q.who ?? 'anyone'}${q.text ? `: ${q.text}` : ''}`);
   }
 } else if (cmd === 'activity' && args.length <= 1) {

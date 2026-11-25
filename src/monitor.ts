@@ -1,8 +1,12 @@
+import { execFile } from 'node:child_process';
 import { readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { cpus, freemem, loadavg, totalmem } from 'node:os';
 import { posix } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { HttpError } from './store.ts';
+
+const runFile = promisify(execFile);
 
 // The system monitor, admins' alone, which rf top and rf kill show (docs/system.md, Watching over it): the runs going, each with the processes its sandbox holds and what
 // they use, the busiest of all of them by CPU and by memory, and the host's load, as /proc tells, which only Linux has; and an
@@ -208,35 +212,155 @@ const alive = (proc: string, pid: number, start: number) => {
   const s = parseStat(read(`${proc}/${pid}/stat`) ?? '');
   return live(s) && s.start === start;
 };
-// A signal to the process it was, by its start; one that ended meanwhile takes none.
-function signal(proc: string, pid: number, start: number, sig: NodeJS.Signals) {
-  if (!alive(proc, pid, start)) return;
-  try { process.kill(pid, sig); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
+// Pin each kernel process instance via pidfd, re-verify its start time (and cgroup / pid namespace when present) while holding the fd,
+// and deliver the signal via pidfd_send_signal so a recycled PID can never receive a signal meant for an exited process.
+const PIDFD_SIGNAL_BATCH = `
+import json, os, signal, sys
+proc, sig_name, exp_cg, exp_ns, raw_targets = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+sig = getattr(signal, sig_name)
+signaled = []
+held_fds = []
+try:
+    for pid, expected in json.loads(raw_targets):
+        try:
+            fd = os.pidfd_open(pid, 0)
+        except ProcessLookupError:
+            continue
+        keep = False
+        try:
+            with open(f"{proc}/{pid}/stat", "r", encoding="latin-1") as f:
+                s = f.read()
+            i = s.rfind(")")
+            if i < 0:
+                continue
+            rest = s[i + 2:].split(" ")
+            if len(rest) <= 19 or rest[0] in ("Z", "X", "x") or int(rest[19]) != expected:
+                continue
+            if exp_ns:
+                try:
+                    if os.readlink(f"{proc}/{pid}/ns/pid") != exp_ns:
+                        continue
+                except OSError:
+                    continue
+            if exp_cg:
+                try:
+                    with open(f"{proc}/{pid}/cgroup", "r", encoding="latin-1") as cf:
+                        if cf.read() != exp_cg:
+                            continue
+                except OSError:
+                    continue
+            try:
+                signal.pidfd_send_signal(fd, sig)
+                signaled.append(pid)
+                if sig == signal.SIGSTOP:
+                    held_fds.append(fd)
+                    keep = True
+            except ProcessLookupError:
+                pass
+        except FileNotFoundError:
+            pass
+        finally:
+            if not keep:
+                os.close(fd)
+except BaseException:
+    for hfd in held_fds:
+        try:
+            signal.pidfd_send_signal(hfd, signal.SIGCONT)
+        except OSError:
+            pass
+    raise
+finally:
+    for hfd in held_fds:
+        try:
+            os.close(hfd)
+        except OSError:
+            pass
+sys.stdout.write(json.dumps(signaled))
+`;
+export type SignalScope = { cgroup?: string; pidNs?: string };
+export async function signalBatch(proc: string, targets: [number, number][], sig: NodeJS.Signals, scope: SignalScope = {}): Promise<Set<number>> {
+  if (!targets.length) return new Set();
+  if (process.platform === 'linux' && proc === PROC) {
+    const { stdout } = await runFile('python3', ['-c', PIDFD_SIGNAL_BATCH, proc, sig, scope.cgroup ?? '', scope.pidNs ?? '', JSON.stringify(targets)]);
+    return new Set<number>(JSON.parse(stdout || '[]'));
+  }
+  const ok = new Set<number>();
+  try {
+    for (const [pid, start] of targets) {
+      if (!alive(proc, pid, start)) continue;
+      if (scope.pidNs && link(`${proc}/${pid}/ns/pid`) !== scope.pidNs) continue;
+      if (scope.cgroup && read(`${proc}/${pid}/cgroup`) !== scope.cgroup) continue;
+      try { process.kill(pid, sig); ok.add(pid); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
+    }
+  } catch (e) {
+    if (sig === 'SIGSTOP') {
+      for (const pid of ok) try { process.kill(pid, 'SIGCONT'); } catch {}
+    }
+    throw e;
+  }
+  return ok;
+}
+export async function signal(proc: string, pid: number, start: number, sig: NodeJS.Signals, scope?: SignalScope): Promise<boolean> {
+  return (await signalBatch(proc, [[pid, start]], sig, scope)).has(pid);
 }
 
 // A process and all it started end: each held with SIGSTOP as it's found, from the top down, so nothing they start meanwhile gets
 // away; then each is asked to end with SIGTERM, and what's left after the grace gets SIGKILL.
-export async function killTree(pid: number, start: number, o: { proc?: string; graceMs?: number } = {}): Promise<{ pids: number[]; signal: 'SIGTERM' | 'SIGKILL' }> {
-  const proc = o.proc ?? PROC;
+export async function killTree(pid: number, start: number, o: { proc?: string; graceMs?: number; box?: Sandbox; signal?: typeof signalBatch } = {}): Promise<{ pids: number[]; signal: 'SIGTERM' | 'SIGKILL' }> {
+  const proc = o.proc ?? PROC, send = o.signal ?? signalBatch;
   if (!alive(proc, pid, start)) throw new HttpError(409, `process ${pid} has ended, or is another process now: run rf top again`);
-  const held = new Map([[pid, start]]);
-  signal(proc, pid, start, 'SIGSTOP');
-  for (let found = true; found;) {
-    found = false;
-    for (const s of stats(proc).values()) {
-      if (!held.has(s.ppid) || held.has(s.pid) || !live(s)) continue;
-      held.set(s.pid, s.start);
-      signal(proc, s.pid, s.start, 'SIGSTOP');
-      found = true;
+  const scope: SignalScope = {
+    cgroup: read(`${proc}/${pid}/cgroup`),
+    pidNs: link(`${proc}/${pid}/ns/pid`),
+  };
+  const boxStart = o.box ? parseStat(read(`${proc}/${o.box.pid}/stat`) ?? '')?.start : undefined;
+  const stoppedRoot = await send(proc, [[pid, start]], 'SIGSTOP', scope);
+  if (!stoppedRoot.has(pid)) throw new HttpError(409, `process ${pid} has ended, or is another process now: run rf top again`);
+  const held = new Map<number, number>([[pid, start]]);
+  let terminated = false;
+  try {
+    for (let found = true; found;) {
+      found = false;
+      const all = stats(proc);
+      const placement = o.box && boxStart !== undefined && all.get(o.box.pid)?.start === boxStart
+        ? placed(all, [o.box])
+        : undefined;
+      const batch: [number, number][] = [];
+      for (const s of all.values()) {
+        if (!held.has(s.ppid) || held.has(s.pid) || !live(s)) continue;
+        const parentStart = held.get(s.ppid)!;
+        // Verify parent has not been recycled and child did not start before its parent.
+        if (all.get(s.ppid)?.start !== parentStart || s.start < parentStart) continue;
+        if (o.box) {
+          const at = placement?.get(s.pid);
+          if (!at || own(at, argvOf(proc, s))) continue;
+        }
+        if (scope.pidNs && link(`${proc}/${s.pid}/ns/pid`) !== scope.pidNs) continue;
+        if (scope.cgroup && read(`${proc}/${s.pid}/cgroup`) !== scope.cgroup) continue;
+        batch.push([s.pid, s.start]);
+      }
+      if (batch.length) {
+        const ok = await send(proc, batch, 'SIGSTOP', scope);
+        for (const [p, st] of batch) {
+          if (ok.has(p)) {
+            held.set(p, st);
+            found = true;
+          }
+        }
+      }
     }
+    await send(proc, [...held], 'SIGTERM', scope);
+    await send(proc, [...held], 'SIGCONT', scope);
+    terminated = true;
+    const left = () => [...held].filter(([p, st]) => alive(proc, p, st));
+    for (const until = Date.now() + (o.graceMs ?? GRACE_MS); left().length && Date.now() < until;) await sleep(POLL_MS);
+    const rest = left();
+    if (rest.length) await send(proc, rest, 'SIGKILL', scope);
+    // SIGKILL takes a moment to land: it's done once they've gone.
+    for (const until = Date.now() + KILLED_MS; left().length && Date.now() < until;) await sleep(POLL_MS);
+    return { pids: [...held.keys()], signal: rest.length ? 'SIGKILL' : 'SIGTERM' };
+  } finally {
+    if (!terminated && held.size) await send(proc, [...held], 'SIGCONT', scope).catch(() => {});
   }
-  for (const [p, st] of held) signal(proc, p, st, 'SIGTERM');
-  for (const [p, st] of held) signal(proc, p, st, 'SIGCONT');
-  const left = () => [...held].filter(([p, st]) => alive(proc, p, st));
-  for (const until = Date.now() + (o.graceMs ?? GRACE_MS); left().length && Date.now() < until;) await sleep(POLL_MS);
-  const rest = left();
-  for (const [p, st] of rest) signal(proc, p, st, 'SIGKILL');
-  // SIGKILL takes a moment to land: it's done once they've gone.
-  for (const until = Date.now() + KILLED_MS; left().length && Date.now() < until;) await sleep(POLL_MS);
-  return { pids: [...held.keys()], signal: rest.length ? 'SIGKILL' : 'SIGTERM' };
 }

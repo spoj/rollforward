@@ -352,3 +352,140 @@ test('screen put distinguishes a missing rev from a stale rev without leaking th
   }
 });
 
+test('close and abandon persist their terminal audit event before screen.json, repair on startup, prune own pending wakes on recover, and never fan out or auto-supersede', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-terminal-'));
+  const { saveTree, writeJson } = await import('../src/system.ts');
+  const { ownSeries } = await import('./owner-fixture.ts');
+  const { recover, setWake, wakesOf, stop: stopWaker } = await import('../src/waker.ts');
+  const owner = 'alex@demo.test', who = { name: 'Alex', email: owner };
+  try {
+    initSystem(tmp);
+    openStore(tmp);
+    saveTree({ workspaces: { w: { name: 'W', owners: [owner], members: [] } }, series: { monthly: { name: 'Monthly', workspace: 'w' } } });
+    writeJson('users.json', { [owner]: { name: 'Alex', role: 'user' } });
+    ownSeries('monthly', owner, [], true);
+
+    // 1) Close fails if append fails: never leaves terminal screen.json or partial state, and retries cleanly.
+    const failClose = createInstance('monthly', '2026-01', owner);
+    const origAppend = failClose.append.bind(failClose);
+    failClose.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
+      if (op === 'close') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return origAppend(by, op, fields);
+    }) as typeof failClose.append;
+    await assert.rejects(failClose.close(who), /ENOSPC/);
+    assert.equal(failClose.doc.status, 'open');
+    assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'open');
+    assert.equal(failClose.log.some(e => e.op === 'close'), false);
+    failClose.append = origAppend;
+    await failClose.close(who);
+    assert.equal(failClose.doc.status, 'closed');
+    assert.equal(JSON.parse(readFileSync(join(failClose.dir, 'screen.json'), 'utf8')).status, 'closed');
+
+    // 2) Abandon fails if append fails: never leaves terminal screen.json without audit event.
+    const failAbandon = createInstance('monthly', '2026-02', owner);
+    const origAbandonAppend = failAbandon.append.bind(failAbandon);
+    failAbandon.append = ((by: string, op: string, fields?: Record<string, unknown>) => {
+      if (op === 'abandon') throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      return origAbandonAppend(by, op, fields);
+    }) as typeof failAbandon.append;
+    await assert.rejects(failAbandon.abandon(owner), /ENOSPC/);
+    assert.equal(failAbandon.doc.status, 'open');
+    assert.equal(JSON.parse(readFileSync(join(failAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+    assert.equal(failAbandon.log.some(e => e.op === 'abandon'), false);
+
+    // 3) Simulated crash between durable close/abandon append and screen.json save:
+    // openStore() repairs screen.json, and recover() prunes pending wakes on closed/abandoned instances
+    // even across a second restart after screen.json is already terminal.
+    const cutClose = createInstance('monthly', '20261124', owner);
+    const cutAbandon = createInstance('monthly', '2026-04', owner);
+    const later = createInstance('monthly', '20261125', owner);
+    setWake(cutClose.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending close' });
+    setWake(cutAbandon.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'pending abandon' });
+    setWake(later.id, { at: new Date(Date.now() + 3600_000).toISOString(), from: owner, text: 'keep open wake' });
+
+    cutClose.save = () => {
+      assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
+      assert.equal(cutClose.log.at(-1)!.op, 'close');
+      throw new Error('simulated crash before screen save');
+    };
+    await assert.rejects(cutClose.close(who, true), /simulated crash before screen save/);
+    assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'open');
+
+    cutAbandon.save = () => {
+      assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+      assert.equal(cutAbandon.log.at(-1)!.op, 'abandon');
+      throw new Error('simulated crash before screen save');
+    };
+    await assert.rejects(cutAbandon.abandon(owner), /simulated crash before screen save/);
+    assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'open');
+
+    // First restart repairs screen.json; second restart runs with screen.json already terminal.
+    openStore(tmp);
+    assert.equal(instance(cutClose.id).doc.status, 'closed');
+    assert.equal(JSON.parse(readFileSync(join(cutClose.dir, 'screen.json'), 'utf8')).status, 'closed');
+    assert.equal(instance(cutAbandon.id).doc.status, 'abandoned');
+    assert.equal(JSON.parse(readFileSync(join(cutAbandon.dir, 'screen.json'), 'utf8')).status, 'abandoned');
+    openStore(tmp);
+
+    recover();
+    assert.deepEqual(wakesOf(cutClose.id), [], 'recover() prunes pending wakes targeting closed instance');
+    assert.deepEqual(wakesOf(cutAbandon.id), [], 'recover() prunes pending wakes targeting abandoned instance');
+    assert.equal(wakesOf(later.id).length, 1, 'recover() preserves pending wakes targeting open instances');
+    assert.equal(instance(later.id).log.filter(e => e.op === 'wake').length, 0, 'closing 20261124 never wakes open 20261125');
+
+    // 4) Closing an -r2 revision does NOT mutate the base closed period.
+    const base = createInstance('monthly', '202611', owner);
+    await base.close(who);
+    const baseLogBefore = base.log.length;
+    const r2 = createInstance('monthly', '202611-r2', owner);
+    await r2.close(who);
+    assert.equal(base.log.length, baseLogBefore, 'closing 202611-r2 does not append correction to 202611');
+    assert.equal(r2.log.some(e => e.op === 'corrected'), false, 'closing 202611-r2 does not append corrected');
+
+    // 5) Failed/in-flight close must NOT let fire() consume a due one-off wake while inst.closing is true.
+    const { fire } = await import('../src/waker.ts');
+    const raceInst = createInstance('monthly', '202612', owner);
+    const itemFile = join(raceInst.dir, 'working', 'pack.csv');
+    writeFileSync(itemFile, 'data');
+    raceInst.put(JSON.stringify({ ...raceInst.doc, items: [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }] }), 1);
+    const gate = Promise.withResolvers<void>();
+    const hold = commit(raceInst.dir, who, 'Hold commit', gate.promise);
+    const wakeAt = new Date(Date.now() - 1000).toISOString();
+    setWake(raceInst.id, { at: wakeAt, from: owner, text: 'must survive failed close' });
+    const closingPromise = raceInst.close(who);
+    assert.equal(raceInst.closing, true, 'instance is mid-close');
+    assert.equal(raceInst.doc.status, 'closed', 'in-memory status is closed while packing');
+    fire();
+    assert.equal(wakesOf(raceInst.id).length, 1, 'fire() defers and does NOT consume due wake while inst.closing is true');
+    rmSync(itemFile);
+    gate.resolve();
+    await hold;
+    await assert.rejects(closingPromise, { status: 409, message: 'pack: no file working/pack.csv' });
+    assert.equal(raceInst.doc.status, 'open');
+    assert.equal(raceInst.closing, false);
+    assert.equal(wakesOf(raceInst.id).length, 1, 'one-off wake remains pending after failed close');
+    fire();
+    assert.equal(wakesOf(raceInst.id).length, 0, 'one-off wake fires once instance returns to open');
+    assert.equal(raceInst.log.filter(e => e.op === 'wake' && e.text === 'must survive failed close').length, 1);
+  } finally {
+    stopWaker();
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Instance.append rejects unsafe integers and non-finite numbers before writing canonical events so startup never bricks', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'rf-safe-num-'));
+  try {
+    openStore(tmp);
+    const inst = createInstance('monthly', 'safe', 'alex');
+    for (const bad of [1e25, Number.MAX_SAFE_INTEGER + 10, Infinity, -Infinity, NaN]) {
+      assert.throws(() => inst.append('agent', 'call', { run: 1, bad }), /unrepresentable number/);
+    }
+    assert.equal(inst.log.length, 1, 'rejected entries never enter memory or disk');
+    openStore(tmp);
+    assert.equal(instance(inst.id).log.length, 1);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+

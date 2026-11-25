@@ -32,7 +32,8 @@ export const builtInAllowed = (host: string) => matchesHost(ALLOWED, host);
 export const allowed = (host: string) => matchesHost([...ALLOWED, ...readJson<string[]>('egress.json', [])], host);
 
 // What the server knows of a run, by its token.
-export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): boolean; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
+export type InterceptDecision = boolean | 'intercept' | 'deny' | 'passthrough';
+export type SandboxRun = { egress(host: string, allowed: boolean): void; browsers(): Browsers; intercepts(host: string): InterceptDecision; call(host: string, req: IncomingMessage, res: ServerResponse): Promise<void> };
 
 // A run's own socket, which only its sandbox holds: what comes in on it is that run's alone, so its token, which the agent sees and
 // may print where another run reads it, opens nothing from elsewhere. The sockets `cli.ts try` and the tests listen on are shared.
@@ -76,7 +77,9 @@ export function serveSandboxes(o: { agent(req: IncomingMessage, res: ServerRespo
     const run = runOf(client, token ?? ''), [host, port] = req.url!.split(':');
     const refuse = (why: string) => client.end(`HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\n${why}\n`);
     if (!run) return refuse('no run for this token');
-    if (port === '443' && run.intercepts(host)) {
+    const mode = port === '443' ? run.intercepts(host) : 'passthrough';
+    if (mode === 'deny') return refuse(`${host} is outside this run's selected series credentials`);
+    if (mode === true || mode === 'intercept') {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head.length) client.unshift(head);
       const tls = new TLSSocket(client, { isServer: true, secureContext: contextFor(host), ALPNProtocols: ['http/1.1'] });
@@ -109,7 +112,7 @@ export const userland = () => [
 
 // bubblewrap's arguments for a run: the agent's userland, `ro` read-only and `rw` writable, the socket at /run/rf, and `env` as
 // its whole environment. HOME and /tmp are on the run's scratch, or empty read-only mounts for a wake check.
-export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; tmp?: string; ro: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
+export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; tmp?: string; ro: [string, string][]; skills?: [string, string][]; work: { ro: [string, string][]; rw: [string, string][] }; env: Record<string, string> }): string[] {
   return [
     '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
     ...userland(),
@@ -117,8 +120,9 @@ export function sandboxArgs(o: { cwd: string; socketDir: string; home?: string; 
     ...(o.tmp ? ['--bind', o.tmp, '/tmp'] : ['--tmpfs', '/tmp', '--remount-ro', '/tmp']),
     ...(o.home ? ['--bind', o.home, '/home/agent'] : ['--tmpfs', '/home/agent', '--remount-ro', '/home/agent']),
     '--ro-bind', o.socketDir, '/run/rf',
-    // /app holds only what is bound there, read-only, as /work does.
+    // /app holds only what is bound there, read-only, as /work and /skills do.
     '--tmpfs', '/app', ...o.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/app',
+    ...(o.skills ? ['--tmpfs', '/skills', ...o.skills.flatMap(([src, dst]) => ['--ro-bind', src, dst]), '--remount-ro', '/skills'] : []),
     '--tmpfs', '/work', ...o.work.ro.flatMap(([src, dst]) => ['--ro-bind', src, dst]), ...o.work.rw.flatMap(([src, dst]) => ['--bind', src, dst]), '--remount-ro', '/work',
     ...Object.entries({ ...o.env, HOME: '/home/agent', TMPDIR: '/tmp' }).flatMap(([k, v]) => ['--setenv', k, v]),
     '--chdir', o.cwd,

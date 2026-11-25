@@ -10,7 +10,8 @@ import { keyOut, keyStatus, openrouterCreditError, resetKeyCache, serverCall, se
 import { call as proxyCall, type CallRun } from '../src/connections.ts';
 import { saveTree, writeJson } from '../src/system.ts';
 import { saveSeriesSettings } from '../src/series.ts';
-import { openStore, type Instance } from '../src/store.ts';
+import { createInstance, instance, openStore, type Instance } from '../src/store.ts';
+import { logins, saveLogin } from '../src/logins.ts';
 
 // The server's two OpenRouter keys, a daily one and a monthly one, at a stand-in for OpenRouter: /api/v1/key says what each has left,
 // and a chat completion answers with `answer` + `answerBody`, saying which key it was sent with.
@@ -20,11 +21,21 @@ const DAY = 'sk-or-day-key', MONTH = 'sk-or-month-key';
 const left: Record<string, number> = {}, sent: string[] = [];
 let answer = 200;
 let answerBody: Record<string, unknown> | undefined;
-const server = createServer((req, res) => {
+let chatGate: { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
+const server = createServer(async (req, res) => {
   const k = String(req.headers.authorization).replace('Bearer ', '');
-  res.writeHead(req.url === '/api/v1/key' ? 200 : answer, { 'content-type': 'application/json' });
-  if (req.url === '/api/v1/key') return void res.end(JSON.stringify({ data: { usage: 1, usage_daily: 1, limit: k === DAY ? 500 : 1000, limit_remaining: left[k], limit_reset: k === DAY ? 'daily' : 'monthly' } }));
+  if (req.url === '/api/v1/key') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({ data: { usage: 1, usage_daily: 1, limit: k === DAY ? 500 : 1000, limit_remaining: left[k], limit_reset: k === DAY ? 'daily' : 'monthly' } }));
+  }
   sent.push(k);
+  if (chatGate) {
+    const g = chatGate;
+    chatGate = undefined;
+    g.entered.resolve();
+    await g.release.promise;
+  }
+  res.writeHead(answer, { 'content-type': 'application/json' });
   res.end(JSON.stringify(answer === 200 ? { choices: [{ message: { content: 'ok' } }], usage: { cost: 0.001 } } : (answerBody ?? { error: { message: 'Key limit exceeded', code: answer } })));
 }).listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -184,5 +195,124 @@ test('both keys low say so, and one key alone is used whatever it has left', asy
     assert.deepEqual([one.key, one.remaining, one.low_credit, serverKey()], ['primary', 10, true, DAY]);
   } finally {
     process.env.OPENROUTER_FALLBACK_KEY = MONTH;
+  }
+});
+
+test('a late personal-key 402 does not re-enable a disabled personal OpenRouter key, and marks the current record expired when still enabled', async () => {
+  openStore(root);
+  const runner = 'personal@demo.test', PERSONAL = 'sk-or-personal-key', since = '2026-11-01T00:00:00.000Z';
+  writeJson('users.json', { [runner]: { role: 'user' } });
+  saveTree({ workspaces: { w: { name: 'W', owners: [runner], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+  const serDir = join(root, 'series', 's');
+  saveSeriesSettings(serDir, { version: 1, owner: runner, epoch: 1, since: '', consent: { by: runner, at: '', workspace: 'w', logins: [], autonomous: false } });
+  const appended: { by: string; op: string; fields: Record<string, unknown> }[] = [];
+  const inst = {
+    id: 'i-personal', seriesId: 's', series: () => serDir,
+    log: [{ seq: 1, at: '', by: runner, op: 'create' }, { seq: 2, at: '', by: 'server', op: 'run', run: 1, runner, initiator: runner, authority: { version: 1, owner: runner, epoch: 1, workspace: 'w', logins: [] } }],
+    append: (by: string, op: string, fields: Record<string, unknown> = {}) => { appended.push({ by, op, fields }); return { seq: appended.length + 2 }; },
+  } as unknown as Instance;
+  const run: CallRun = { inst, n: 1, runner, cost: 0, estimated: false, links: new Map() };
+  const proxy = createServer((req, res) => proxyCall(run, 'openrouter.ai', req, res)).listen(0, '127.0.0.1');
+  await once(proxy, 'listening');
+  const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+  try {
+    saveLogin(runner, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since, offers: [], enabled: true }, PERSONAL);
+    answer = 402;
+    answerBody = { error: { code: 402, message: 'Personal key out of credits' } };
+    const gate = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    chatGate = gate;
+    const inflight = fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    await gate.entered.promise;
+
+    // Disable the personal key while preserving `since` (matching PUT /logins/openrouter).
+    saveLogin(runner, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since, offers: [], enabled: false });
+    gate.release.resolve();
+    const res402 = await inflight;
+    assert.equal(res402.status, 402);
+
+    const afterDisable = logins(runner).find(l => l.id === 'openrouter')!;
+    assert.equal(afterDisable.enabled, false, 'disabled personal key must stay disabled after late 402');
+    assert.equal(afterDisable.expired, undefined, 'disabled personal key must not be marked expired');
+    assert.equal(appended.some(e => e.op === 'expired'), false, 'late 402 for disabled key must not log expired');
+
+    // Follow-up request now uses the deployment key cleanly.
+    answer = 200;
+    answerBody = undefined;
+    const okRes = await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(okRes.status, 200);
+    assert.equal(sent.at(-1), DAY);
+
+    // When still enabled with matching `since`, a 402 marks the current record expired and logs expired.
+    saveLogin(runner, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since, offers: [], enabled: true });
+    answer = 402;
+    answerBody = { error: { code: 402, message: 'Personal key out of credits' } };
+    const stillEnabled = await fetch(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'm', messages: [] }) });
+    assert.equal(stillEnabled.status, 402);
+    const afterExpire = logins(runner).find(l => l.id === 'openrouter')!;
+    assert.equal(afterExpire.enabled, true);
+    assert.equal(afterExpire.expired, true);
+    assert.equal(appended.filter(e => e.op === 'expired').length, 1);
+  } finally {
+    chatGate?.release.resolve();
+    chatGate = undefined;
+    proxy.close();
+    proxy.closeAllConnections();
+  }
+});
+
+test('numeric unsafe-integer model is never persisted to canonical events and openStore restarts cleanly; enabling BYOK during body intake blocks shared key charge', async () => {
+  const isoRoot = mkdtempSync(join(tmpdir(), 'rf-or-r2-'));
+  initSystem(isoRoot);
+  openStore(isoRoot);
+  const runner = 'r2@demo.test';
+  writeJson('users.json', { [runner]: { role: 'user' } });
+  saveTree({ workspaces: { w: { name: 'W', owners: [runner], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+  const serDir = join(isoRoot, 'series', 's');
+  saveSeriesSettings(serDir, { version: 1, owner: runner, epoch: 1, since: '', consent: { by: runner, at: '', workspace: 'w', logins: [], autonomous: false } });
+  const inst = createInstance('s', 'i1', runner);
+  inst.append('server', 'run', { run: 1, runner, initiator: runner, authority: { version: 1, owner: runner, epoch: 1, workspace: 'w', logins: [] } });
+  const run: CallRun = { inst, n: 1, runner, cost: 0, estimated: false, links: new Map() };
+  const proxy = createServer((req, res) => proxyCall(run, 'openrouter.ai', req, res)).listen(0, '127.0.0.1');
+  await once(proxy, 'listening');
+  const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+  try {
+    // 1) Unsafe integer model in provider request must not persist a numeric model and must keep startup clean.
+    answer = 400;
+    answerBody = { error: { code: 400, message: 'Bad model' } };
+    const rBad = await fetch(`${proxyBase}/api/v1/chat/completions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: '{"model": 90071992547409930000000000, "messages": []}',
+    });
+    assert.equal(rBad.status, 400);
+    const logged = inst.log.findLast(e => e.op === 'call')!;
+    assert.equal(logged.model, undefined, 'non-string model must not be persisted');
+    openStore(isoRoot);
+    assert.equal(instance(inst.id).log.some(e => e.op === 'call'), true, 'openStore restarts cleanly after numeric model request');
+
+    // 2) Switching from shared key to enabled personal key during request body intake returns 409 and never charges shared key.
+    answer = 200;
+    answerBody = undefined;
+    const sentBefore = sent.length;
+    const { request: httpReq } = await import('node:http');
+    const midStream = new Promise<{ status: number; body: string }>((ok, fail) => {
+      const req = httpReq(`${proxyBase}/api/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' } }, res => {
+        const chunks: Buffer[] = [];
+        res.on('data', c => chunks.push(c)).on('end', () => ok({ status: res.statusCode!, body: Buffer.concat(chunks).toString() }));
+      });
+      req.on('error', fail);
+      req.write('{"model":"m",');
+      setTimeout(() => {
+        saveLogin(runner, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: new Date().toISOString(), offers: [], enabled: true }, 'sk-or-byok-late');
+        req.end('"messages":[]}');
+      }, 40);
+    });
+    const switched = await midStream;
+    assert.equal(switched.status, 409, `expected 409 when BYOK enabled mid-body, got ${switched.status}: ${switched.body}`);
+    assert.equal(sent.length, sentBefore, 'shared server key was never dispatched after runner enabled BYOK');
+  } finally {
+    proxy.close();
+    proxy.closeAllConnections();
+    initSystem(root);
+    rmSync(isoRoot, { recursive: true, force: true });
   }
 });

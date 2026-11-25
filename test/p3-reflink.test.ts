@@ -89,7 +89,7 @@ test('P3: >64 MiB wake snapshot uses O(1) COW reflink with isolated inode, exact
   const grant = JSON.stringify(['reflink-gen-1', null]);
   const meta = {
     person: ALICE, source: OFFER, name: 'Big Archive', gen: 0, length: committed, lines: 1000, base: committed,
-    wakeGrant: grant, parts: { '': { link: 'http://x', delta: 'ok', as_of: '2026-11-24T00:00:00Z', pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
+    wakeGrant: grant, parts: { '': { link: 'http://x', delta: 'ok', as_of: new Date().toISOString(), pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
   };
   writeFileSync(`${at}.json`, JSON.stringify(meta));
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,6 +33,17 @@ const model = createServer(async (req, res) => {
 });
 
 const call = (method: string, path: string, body?: unknown, who = admin) => fetch(base + path, { method, headers: { cookie: cookies[who] }, body: body === undefined ? undefined : JSON.stringify(body) });
+let port = 0, preload = '';
+async function startServer() {
+  proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/server.ts', root, String(port)], {
+    env: { ...process.env, ...entra.env(base), RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_WAKE_TICK_MS: '100', RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'synthetic' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  await new Promise<void>((resolve, reject) => {
+    proc.stdout!.on('data', d => String(d).includes('rollforward on') && resolve());
+    proc.once('exit', code => reject(new Error(`server exited ${code}`)));
+  });
+}
 async function json(path: string, method = 'GET', body?: unknown) {
   const res = await call(method, path, body);
   assert.equal(res.status, 200, await res.clone().text());
@@ -56,7 +67,7 @@ before(async () => {
   await new Promise<void>(r => model.listen(0, '127.0.0.1', r));
   const probe = createServer();
   await new Promise<void>(r => probe.listen(0, '127.0.0.1', r));
-  const port = (probe.address() as { port: number }).port;
+  port = (probe.address() as { port: number }).port;
   await new Promise<void>(r => probe.close(() => r()));
   base = `http://127.0.0.1:${port}`;
   entra = await idp(async () => {
@@ -64,7 +75,7 @@ before(async () => {
     nextConfirmation = undefined;
     await wait?.();
   });
-  const preload = `
+  preload = `
     import { subscribe } from 'node:diagnostics_channel';
     import { upstreams } from ${JSON.stringify(new URL('../src/connections.ts', import.meta.url).href)};
     import { changes } from ${JSON.stringify(new URL('../src/system.ts', import.meta.url).href)};
@@ -74,14 +85,7 @@ before(async () => {
         changes.emit('index-removed', ${JSON.stringify(admin)}, ${JSON.stringify(mailbox.id)});
     });
   `;
-  proc = spawn(process.execPath, ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, 'src/server.ts', root, String(port)], {
-    env: { ...process.env, ...entra.env(base), RF_ADMINS: admin, RF_MIN_FREE_GB: '0', RF_WAKE_TICK_MS: '100', RF_SCRATCH: join(tmp, 'scratch'), OPENROUTER_API_KEY: 'synthetic' },
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
-  await new Promise<void>((resolve, reject) => {
-    proc.stdout!.on('data', d => String(d).includes('rollforward on') && resolve());
-    proc.once('exit', code => reject(new Error(`server exited ${code}`)));
-  });
+  await startServer();
   for (const who of [admin, bob]) cookies[who] = (await entra.signIn(base, who)).headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
   workspace = (await json('/api/workspaces', 'POST', { name: 'Test' })).id;
   await call('PUT', `/api/workspaces/${workspace}`, { members: [bob] });
@@ -178,7 +182,7 @@ test('a stalled check confirmation cannot postpone the deadline', { timeout: 15_
   }
 });
 
-test('a weekly wake checks the new period using the prior closed script and keeps its weekly time after the backstop', async () => {
+test('a weekly wake checks the new period using the prior closed script without creating an empty instance on stop, and keeps its weekly time after the backstop', async () => {
   const { iid, sid, check } = await fixture('Weekly', `print('{"decision":"stop","message":"Nothing this period"}')\n`, 'py', '2000-01-01');
   const close = await call('POST', `/api/instances/${iid}/close`, { quiet: true });
   assert.equal(close.status, 200, await close.text());
@@ -187,12 +191,18 @@ test('a weekly wake checks the new period using the prior closed script and keep
   const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][at.getDay()];
   await json(`/api/wakes/${sid}`, 'PUT', { at: at.toISOString(), days, check, deadline, label });
   const listing = async () => (await json('/api'))[0].series.find(s => s.id === sid);
-  const target = await until('the new period to stop', async () => (await listing()).instances.find(i => i.label === label && i.wakeCheck));
-  assert.equal(target.wakeCheck.message, 'Nothing this period');
   const next = new Date(at);
   next.setDate(at.getDate() + 7);
-  assert.equal((await listing()).wakes[0].at, next.toISOString());
-  await until('a run in the stopped period at the deadline', async () => (await info(target.id)).log.some(e => e.op === 'done'));
+  await until('the weekly check to stop and advance without creating an empty instance', async () => (await listing()).wakes[0]?.at === next.toISOString());
+  assert.equal((await listing()).instances.length, 1, 'stop creates zero empty open instances on disk');
+  assert.equal((await listing()).wakes[0].skipCount, 1);
+  assert.equal((await listing()).wakes[0].lastSkipMessage, 'Nothing this period');
+  const target = await until('the deadline to create and run the stopped period', async () => {
+    const inst = (await listing()).instances.find(i => i.label === label);
+    if (!inst) return false;
+    return (await info(inst.id)).log.some(e => e.op === 'done') && inst;
+  });
+  assert.equal(target.label, label);
   assert.equal((await listing()).wakes[0].at, next.toISOString());
   assert.equal((await listing()).instances.length, 2);
 });
@@ -254,4 +264,363 @@ test('continue, crash, malformed JSON and timeout all send their wake text to Pi
     assert.ok(prompts.some(p => p.includes(e.text) && !p.includes('Replaced wake text')));
     assert.ok(!e.text.includes('private diagnostic'));
   }));
+});
+
+test('stale M365 index forces Pi wake by default (150m), while --max-stale allows override, and flags are validated', async () => {
+  await json('/capabilities', 'PUT', { cap: 'wake-check', add: [admin] });
+  const person = join(root, '.rf', 'people', createHash('sha256').update(admin).digest('hex').slice(0, 16));
+  const cache = createHash('sha256').update(mailbox.id).digest('hex').slice(0, 16);
+  const login = { id: 'm365', kind: 'm365', name: 'Microsoft 365', since: iso(0), offers: [mailbox] };
+  mkdirSync(join(person, 'index'), { recursive: true });
+  writeFileSync(join(person, 'logins.json'), JSON.stringify([login]));
+  const delta = 'synthetic-delta', staleAsOf = new Date(Date.now() - 200 * 60_000).toISOString();
+  writeFileSync(join(person, 'index', `${cache}.json`), JSON.stringify({
+    person: admin, source: mailbox.id, name: mailbox.name, gen: 1, length: 0, lines: 0, base: 0,
+    wakeGrant: JSON.stringify([login.since, null]),
+    parts: { '': { link: delta, delta, as_of: staleAsOf, due: Date.now() + 3_600_000, pages: 1, tries: 0, error: null } },
+  }));
+
+  const { sid, iid, check } = await fixture('StaleIndex', `print('{"decision":"stop","message":"Should skip if fresh"}')\n`);
+  assert.equal((await call('PUT', `/api/series/${sid}/credentials`, { logins: [mailbox.id], autonomous: true })).status, 200);
+
+  // Validate maxStaleMin and backstopHours bounds & check requirement.
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), maxStaleMin: 60 })).status, 400);
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), check, maxStaleMin: 0 })).status, 400);
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), check, maxStaleMin: 10_081 })).status, 400);
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), backstopHours: 12 })).status, 400);
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), check, backstopHours: 0 })).status, 400);
+  assert.equal((await call('PUT', `/api/wakes/${iid}`, { at: iso(1200), check, backstopHours: 169 })).status, 400);
+
+  // With maxStaleMin=240 override, the 200-minute-old cache is accepted and the check stops cleanly.
+  const overridden = await json(`/api/wakes/${iid}`, 'PUT', { at: iso(1200), check, maxStaleMin: 240 });
+  assert.equal(overridden.maxStaleMin, 240);
+  const stopped = await until('stop with maxStaleMin=240', async () => (await info(iid)).wakeCheck);
+  assert.equal(stopped.message, 'Should skip if fresh');
+  assert.equal((await info(iid)).log.some((e: any) => e.op === 'done'), false);
+
+  // Without override (default 150m), the 200-minute-old cache is stale and falls through to Pi.
+  // Use the series-target schedule naming the same instance so it has its own spacing clock.
+  const beforePrompts = prompts.length;
+  await json(`/api/wakes/${sid}`, 'PUT', { at: iso(1200), label: '2026-11', check });
+  const done = await until('Pi run on stale index', async () => {
+    const d = await info(iid);
+    return d.log.some((e: any) => e.op === 'done') && d;
+  });
+  const wake = done.log.find((e: any) => e.op === 'wake');
+  assert.equal(wake.text, 'wake check failed: index cache is stale');
+  const recentPrompt = prompts.slice(beforePrompts).join('\n');
+  assert.ok(recentPrompt.includes('index cache is stale'), 'prompt carries stale failure reason');
+  assert.ok(recentPrompt.includes('Should skip if fresh'), 'wake-check stop entry included in Pi prompt via told');
+});
+
+test('recurring wake tracks skip streak across restarts, enforces backstopHours without spamming log, and surfaces skip history in Pi prompt', { timeout: 30_000 }, async () => {
+  const { iid, check } = await fixture('RecurringBackstop', `print('{"decision":"stop","message":"Still quiet"}')\n`);
+  const at = new Date(iso(1200));
+  const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][at.getDay()];
+  const created = await json(`/api/wakes/${iid}`, 'PUT', { at: at.toISOString(), days, check, backstopHours: 2, text: 'Daily check' });
+  assert.equal(created.backstopHours, 2);
+
+  // Skip #1: records wake-check once and persists skipCount=1 in wakes.json.
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  await until('first recurring skip', async () => {
+    const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    return w.pending[created.id]?.skipCount === 1;
+  });
+  let d = await info(iid);
+  assert.equal(d.log.filter((e: any) => e.op === 'wake-check').length, 1);
+  assert.equal(d.log.some((e: any) => e.op === 'run'), false);
+
+  // Trigger Skip #2 (same stop message): increments skipCount to 2 without adding a duplicate wake-check log row.
+  const w1 = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  w1.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+  delete w1.fired[iid];
+  writeFileSync(wakesFile, JSON.stringify(w1, null, 1));
+  await until('second recurring skip', async () => {
+    const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    return w.pending[created.id]?.skipCount === 2;
+  });
+  d = await info(iid);
+  assert.equal(d.log.filter((e: any) => e.op === 'wake-check').length, 1, 'identical stop does not spam log.jsonl');
+  assert.equal(d.log.some((e: any) => e.op === 'run'), false);
+
+  // Restart server and age skipSince past backstopHours (2h): persisted streak must survive restart and force a full Pi run.
+  proc.kill('SIGTERM');
+  await once(proc, 'exit');
+  const w2 = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  assert.equal(w2.pending[created.id].skipCount, 2, 'skip streak persisted on disk before restart');
+  w2.pending[created.id].skipSince = new Date(Date.now() - 3 * 3_600_000).toISOString();
+  w2.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+  delete w2.fired[iid];
+  writeFileSync(wakesFile, JSON.stringify(w2, null, 1));
+
+  const beforePrompts = prompts.length;
+  await startServer();
+  const done = await until('recurring backstop Pi run after restart', async () => {
+    const cur = await info(iid);
+    return cur.log.some((e: any) => e.op === 'done') && cur;
+  });
+
+  const wake = done.log.find((e: any) => e.op === 'wake');
+  assert.match(wake.text, /^recurring wake-check backstop reached after 2h \/ 2 skipped checks: Daily check$/);
+  assert.equal(wake.skippedChecks?.count, 2);
+  assert.equal(wake.skippedChecks?.lastMessage, 'Still quiet');
+  assert.ok(!wake.note, 'backstop wake carries owner wake standing');
+
+  // Skip streak cleared on pending wake after Pi run.
+  const wAfter = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  assert.equal(wAfter.pending[created.id].skipCount, undefined, 'skip streak cleared after backstop run');
+  assert.equal(wAfter.pending[created.id].skipSince, undefined);
+
+  // Prompt sent to Pi surfaces both the wake-check log entry and the concise skip-streak summary.
+  const piPrompt = prompts.slice(beforePrompts).join('\n');
+  assert.ok(piPrompt.includes('Skipped wake checks before this run: 2'), 'prompt shows skip-streak summary');
+  assert.ok(piPrompt.includes('Still quiet'), 'prompt shows last skipped check message');
+  assert.ok(piPrompt.includes('recurring wake-check backstop reached after 2h / 2 skipped checks'), 'prompt shows backstop reason');
+  assert.ok(piPrompt.includes('backstop 2h'), 'Pending wakes prompt line shows backstop 2h');
+});
+
+test('re-registering an equivalent recurring wake preserves skipSince/skipCount and rev-fences in-flight checks', { timeout: 20_000 }, async () => {
+  const { iid, check } = await fixture('RePutRecurring', `print('{"decision":"stop","message":"Still quiet"}')\n`);
+  const at = new Date(iso(1200));
+  const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][at.getDay()];
+  const created = await json(`/api/wakes/${iid}`, 'PUT', { at: at.toISOString(), days, check, backstopHours: 4, text: 'Initial' });
+
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  await until('first skip recorded', async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === 1);
+  const afterStop = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+
+  // Re-PUT equivalent recurring schedule (same target, next occurrence at, same days) -> must preserve skipCount/skipSince and bump rev.
+  const updated = await json(`/api/wakes/${iid}`, 'PUT', { at: afterStop.at, days, check, backstopHours: 4, text: 'Re-registered' });
+  assert.equal(updated.id, created.id);
+  assert.equal('rev' in updated, false, 'PUT /api/wakes response must omit internal rev');
+  const afterRePut = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+  assert.equal(afterRePut.skipCount, 1, 'skipCount preserved across equivalent re-PUT');
+  assert.equal(afterRePut.skipSince, afterStop.skipSince, 'skipSince preserved across equivalent re-PUT');
+  assert.ok((afterRePut.rev ?? 0) > (afterStop.rev ?? 0), 'schedule rev incremented on re-PUT');
+  const listed = await json('/api');
+  const listedWake = listed.flatMap((ws: any) => ws.series).flatMap((s: any) => [...s.wakes, ...s.instances.flatMap((i: any) => i.wakes)]).find((w: any) => w.id === created.id);
+  assert.ok(listedWake, 'wake appears in GET /api listing');
+  assert.equal('rev' in listedWake, false, 'GET /api wake listing must omit internal rev');
+
+  // Re-PUT while a check is in-flight -> in-flight check must NOT clobber the updated schedule.
+  const started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  nextConfirmation = () => { started.resolve(); return release.promise; };
+  try {
+    const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    const nextAt = new Date(Date.now() - 1000).toISOString();
+    w.pending[created.id].at = nextAt;
+    delete w.fired[iid];
+    writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+    await started.promise;
+
+    // Simulate a concurrent schedule update (rev bump + backstopHours=6) while confirmation is held;
+    // the superseded in-flight check must NOT clobber the updated schedule or mutate skipCount.
+    const wMid = JSON.parse(readFileSync(wakesFile, 'utf8'));
+    const midRev = (wMid.pending[created.id].rev ?? 0) + 1;
+    wMid.pending[created.id] = { ...wMid.pending[created.id], rev: midRev, backstopHours: 6, text: 'Updated mid-flight' };
+    writeFileSync(wakesFile, JSON.stringify(wMid, null, 1));
+    // Hold the next confirmation so only the superseded in-flight check settles first.
+    const nextStarted = Promise.withResolvers<void>(), nextRelease = Promise.withResolvers<void>();
+    nextConfirmation = () => { nextStarted.resolve(); return nextRelease.promise; };
+    release.resolve();
+    await nextStarted.promise;
+
+    const afterFlight = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+    assert.equal(afterFlight.rev, midRev, 'in-flight check did not overwrite concurrent schedule update');
+    assert.equal(afterFlight.backstopHours, 6);
+    assert.equal(afterFlight.text, 'Updated mid-flight');
+    assert.equal(afterFlight.skipCount, 1, 'superseded in-flight check did not mutate skipCount');
+    assert.equal(afterFlight.skipSince, afterStop.skipSince);
+    nextRelease.resolve();
+    await until('replacement check completes with updated schedule', async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === 2);
+    const afterReplacement = JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id];
+    assert.equal(afterReplacement.backstopHours, 6);
+    assert.equal(afterReplacement.skipSince, afterStop.skipSince);
+  } finally {
+    nextConfirmation = undefined;
+    release.resolve();
+  }
+});
+
+test('weekly series wake-check returning stop 4 times leaks 0 empty open instances, and 5th continue creates the instance cleanly', { timeout: 30_000 }, async () => {
+  const modeFile = join(tmp, 'weekly-noleak-mode.txt');
+  writeFileSync(modeFile, 'stop');
+  // Seed a closed period holding the check script (which reads a sibling file via Python or simply switches after 4 stops via RF_INDEX? No, bwrap cannot see tmp outside /work, so put mode file inside the closed instance's working/ or update the script file in the closed instance's working/!).
+  const { iid, sid, check } = await fixture('WeeklyNoLeak', `print('{"decision":"stop","message":"Quiet week"}')\n`, 'py', '2026-01-01');
+  const close = await call('POST', `/api/instances/${iid}/close`, { quiet: true });
+  assert.equal(close.status, 200, await close.text());
+
+  const at = new Date(iso(1200));
+  const label = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+  const days = 'mon,tue,wed,thu,fri,sat,sun';
+  const created = await json(`/api/wakes/${sid}`, 'PUT', { at: at.toISOString(), days, check, label, backstopHours: 168 });
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  const listing = async () => (await json('/api'))[0].series.find((s: any) => s.id === sid);
+
+  // Fire 4 consecutive stops (exceeding MAX_OPEN=3!): open instance count must remain 0 and no requests created.
+  for (let n = 1; n <= 4; n++) {
+    await until(`stop #${n} recorded`, async () => JSON.parse(readFileSync(wakesFile, 'utf8')).pending[created.id]?.skipCount === n);
+    const ser = await listing();
+    assert.equal(ser.instances.filter((i: any) => i.status === 'open').length, 0, `stop #${n} created 0 empty open instances`);
+    assert.equal(ser.requests.length, 0, `stop #${n} did not hit MAX_OPEN`);
+    if (n < 4) {
+      const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+      w.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+      delete w.fired[sid];
+      writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+    }
+  }
+
+  // On the 5th firing, switch the check script to return `continue`: must create the new period cleanly and run Pi with 4 skipped checks.
+  const scriptPath = join(root, 'instances', iid, check);
+  writeFileSync(scriptPath, `print('{"decision":"continue","message":"New batch ready"}')\n`);
+  const w5 = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  const expectedLabel = w5.pending[created.id].label;
+  w5.pending[created.id].at = new Date(Date.now() - 1000).toISOString();
+  delete w5.fired[sid];
+  writeFileSync(wakesFile, JSON.stringify(w5, null, 1));
+
+  const createdInst = await until('5th continue creates instance and completes Pi run', async () => {
+    const inst = (await listing()).instances.find((i: any) => i.label === expectedLabel);
+    if (!inst) return false;
+    return (await info(inst.id)).log.some((e: any) => e.op === 'done') && inst;
+  });
+  const instData = await info(createdInst.id);
+  const wakeEntry = instData.log.find((e: any) => e.op === 'wake');
+  assert.equal(wakeEntry?.text, 'New batch ready');
+  assert.equal(wakeEntry?.skippedChecks?.count, 4);
+  assert.equal((await listing()).instances.filter((i: any) => i.status === 'open').length, 1);
+  rmSync(modeFile, { force: true });
+});
+
+test('one-off series wake-check without an open instance supports rf show, mounts empty RO RF_WORKING, leaves 0 empty instances, and records $0 stop in /api/runs', async () => {
+  const { sid, iid, dir, check } = await fixture('SeriesEnv', `
+import errno, json, os, subprocess
+from pathlib import Path
+screen = json.loads(subprocess.check_output(['rf', 'show']))
+assert screen['rev'] == 1 and screen['status'] == 'open' and screen['items'] == [] and screen['label'] == '2026-04-08', screen
+working = Path(os.environ['RF_WORKING'])
+assert list(working.iterdir()) == [], f'RF_WORKING not empty: {list(working.iterdir())}'
+assert not (working / 'state.json').exists(), 'prior period state.json leaked into RF_WORKING'
+assert not Path('working/state.json').exists(), 'prior period state.json leaked into relative working/'
+try:
+    (working / 'blocked').write_text('no')
+except OSError as e:
+    assert e.errno == errno.EROFS
+else:
+    raise AssertionError('RF_WORKING was writable')
+print(json.dumps({'decision': 'stop', 'message': 'Env clean, rf show ok, nothing due'}))
+`, 'py', '2026-04-01');
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ done: true }));
+  assert.equal((await call('POST', `/api/instances/${iid}/close`, {})).status, 200);
+
+  const created = await json(`/api/wakes/${sid}`, 'PUT', { at: iso(1200), label: '2026-04-08', check });
+  const row = await until('series wake-check-stop recorded in /api/runs', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'Test/SeriesEnv/2026-04-08' && r.outcome === 'wake-check-stop');
+  });
+  assert.equal(row.cost, 0);
+  assert.equal(row.run, null);
+  assert.equal(row.message, 'Env clean, rf show ok, nothing due');
+  assert.equal(row.provenance?.schedule, created.id);
+  const series = (await json('/api'))[0].series.find((s: any) => s.id === sid);
+  assert.equal(series.instances.filter((i: any) => i.status === 'open').length, 0, 'one-off series stop creates zero open instances');
+  assert.equal(series.instances.some((i: any) => i.label === '2026-04-08'), false);
+});
+
+test('series-level wake-check open fallback selects open period before target label, never a future open period', async () => {
+  const { id: sid } = await json('/api/series', 'POST', { workspace, name: 'OpenFallback', logins: [], autonomous: true });
+  const { id: marId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-03', quiet: true });
+  const { id: mayId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-05', quiet: true });
+  writeFileSync(join(root, 'instances', marId, 'working', 'pick.py'), `print('{"decision":"stop","message":"picked march"}')\n`);
+  writeFileSync(join(root, 'instances', mayId, 'working', 'pick.py'), `print('{"decision":"continue","message":"wrongly picked may"}')\n`);
+
+  await json(`/api/wakes/${sid}`, 'PUT', { at: iso(1200), label: '2026-04', check: 'working/pick.py' });
+  const row = await until('april check picks march and stops', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'Test/OpenFallback/2026-04' && r.outcome === 'wake-check-stop');
+  });
+  assert.equal(row.message, 'picked march');
+  const series = (await json('/api'))[0].series.find((s: any) => s.id === sid);
+  assert.equal(series.instances.some((i: any) => i.label === '2026-04'), false, 'future May script must not be chosen for April');
+});
+
+test('creating the target label mid-check invalidates the missing-target check and re-runs against the real target instance', async () => {
+  const { sid, iid, check } = await fixture('MidCreate', `
+import json, os, time
+from pathlib import Path
+if not os.environ.get('RF_INSTANCE'):
+    time.sleep(0.8)
+    print(json.dumps({'decision': 'stop', 'message': 'stale empty-view stop'}))
+else:
+    marker = (Path(os.environ['RF_WORKING']) / 'real.txt').read_text().strip()
+    print(json.dumps({'decision': 'continue', 'message': f'saw real target: {marker}'}))
+`, 'py', '2026-06-01');
+  assert.equal((await call('POST', `/api/instances/${iid}/close`, {})).status, 200);
+
+  // Wait for confirm() to fire so Python launches its empty-view check, then create the real target 2026-06-08 while Python is mid-sleep.
+  const started = Promise.withResolvers<void>();
+  nextConfirmation = async () => { started.resolve(); };
+  const createdWake = await json(`/api/wakes/${sid}`, 'PUT', { at: iso(400), label: '2026-06-08', check });
+  await started.promise;
+  await nap(200);
+  const { id: realId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-06-08', quiet: true });
+  writeFileSync(join(root, 'instances', realId, 'working', 'real.txt'), 'real-payload');
+
+  // The invalidated empty-view check must NOT record a series stop or consume the wake;
+  // instead the wake re-runs against the real instance, sees working/real.txt, and wakes Pi.
+  const doneInst = await until('re-run against real target instance wakes Pi', async () => {
+    const d = await info(realId);
+    return d.log.some((e: any) => e.op === 'done') && d;
+  });
+  const wakeEntry = doneInst.log.find((e: any) => e.op === 'wake' && e.schedule === createdWake.id);
+  assert.equal(wakeEntry?.text, 'saw real target: real-payload');
+  const rows = await json('/api/runs?since=2000-01-01');
+  assert.equal(rows.some((r: any) => r.path === 'Test/MidCreate/2026-06-08' && r.message === 'stale empty-view stop'), false, 'invalidated empty-view stop must never be persisted');
+});
+
+test('series-level wake-check stop retention is isolated per series across workspaces (>20 stops in ws A never evict ws B)', async () => {
+  const wsA = (await json('/api/workspaces', 'POST', { name: 'NoisyWs' })).id;
+  const wsB = (await json('/api/workspaces', 'POST', { name: 'QuietWs' })).id;
+  const { id: sidA } = await json('/api/series', 'POST', { workspace: wsA, name: 'Noisy', logins: [], autonomous: true });
+  const { id: sidB } = await json('/api/series', 'POST', { workspace: wsB, name: 'Quiet', logins: [], autonomous: true });
+  const { id: instA } = await json(`/api/series/${sidA}`, 'POST', { label: '2026-01', quiet: true });
+  const { id: instB } = await json(`/api/series/${sidB}`, 'POST', { label: '2026-01', quiet: true });
+  writeFileSync(join(root, 'instances', instA, 'working', 'chk.py'), `print('{"decision":"stop","message":"noisy stop"}')\n`);
+  writeFileSync(join(root, 'instances', instB, 'working', 'chk.py'), `print('{"decision":"stop","message":"quiet stop must survive"}')\n`);
+  assert.equal((await call('POST', `/api/instances/${instA}/close`, {})).status, 200);
+  assert.equal((await call('POST', `/api/instances/${instB}/close`, {})).status, 200);
+
+  // Record 1 stop in QuietWs first.
+  await json(`/api/wakes/${sidB}`, 'PUT', { at: iso(300), label: '2026-02', check: 'working/chk.py' });
+  await until('quiet ws stop recorded', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'QuietWs/Quiet/2026-02' && r.outcome === 'wake-check-stop');
+  });
+
+  // Seed 20 prior stops in NoisyWs and fire 2 more real stops so NoisyWs trims past 20.
+  const wakesFile = join(root, '.rf', 'wakes.json');
+  const w = JSON.parse(readFileSync(wakesFile, 'utf8'));
+  w.checks = w.checks ?? [];
+  for (let i = 1; i <= 20; i++) {
+    w.checks.push({
+      at: new Date(Date.now() - (30 - i) * 1000).toISOString(),
+      series: sidA, label: `2026-02-${String(i).padStart(2, '0')}`, schedule: `seed_${i}`, check: 'working/chk.py',
+      runner: admin, from: admin, seconds: 0, message: `seeded noisy ${i}`,
+    });
+  }
+  writeFileSync(wakesFile, JSON.stringify(w, null, 1));
+  await json(`/api/wakes/${sidA}`, 'PUT', { at: iso(300), label: '2026-02-21', check: 'working/chk.py' });
+  await until('21st noisy stop recorded', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'NoisyWs/Noisy/2026-02-21' && r.outcome === 'wake-check-stop');
+  });
+
+  const rows = await json('/api/runs?since=2000-01-01');
+  const noisyRows = rows.filter((r: any) => r.path.startsWith('NoisyWs/Noisy/') && r.outcome === 'wake-check-stop');
+  const quietRows = rows.filter((r: any) => r.path === 'QuietWs/Quiet/2026-02' && r.outcome === 'wake-check-stop');
+  assert.equal(noisyRows.length, 20, 'noisy series capped at 20 checks');
+  assert.equal(noisyRows.some((r: any) => r.message === 'seeded noisy 1'), false, 'oldest noisy check evicted');
+  assert.equal(quietRows.length, 1, 'quiet workspace stop survives noisy workspace eviction');
+  assert.equal(quietRows[0].message, 'quiet stop must survive');
 });

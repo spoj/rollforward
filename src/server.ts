@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
+import { accessSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync, fstatSync, futimesSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, type Dirent, type ReadStream } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { basename, dirname, join, posix, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentsFile, closedBefore, createInstance, keep, renameInstance, replaceReadOnly, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, openStore, readFile, folderName, seriesDir, type Entry, type Instance } from './store.ts';
 import { AGENT, commit, committed, refused } from './git.ts';
@@ -30,7 +30,7 @@ import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './serie
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, closed, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -186,7 +186,8 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (!a) {
     const check = wakeCheckView(token);
     if (!check) throw new HttpError(401, 'no run for this token');
-    if (req.method === 'GET' && url.pathname === `/api/instances/${check.inst.id}/screen`) return send(res, 200, check.inst.doc);
+    if (req.method === 'GET' && ((check.inst && url.pathname === `/api/instances/${check.inst.id}/screen`) || (!check.inst && url.pathname === '/api/check/screen')))
+      return send(res, 200, check.inst ? check.inst.doc : { rev: 1, status: 'open', items: [], ...(check.label && { label: check.label }) });
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
@@ -437,8 +438,18 @@ function runsOf(i: Instance, since = ''): (RunRow | WakeCheckRow)[] {
 // Every run in what `me` sees, started since `since`, by where it ran.
 function runs(me: Me, since: string) {
   const t = tree();
-  return Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace])).flatMap(([sid]) => instances(sid).flatMap(i => runsOf(i, since).map(r => ({ path: `${named(t, sid)}/${i.label}`, ...r }))))
-    .sort((x, y) => x.at.localeCompare(y.at));
+  const visible = Object.entries(t.series).filter(([, s]) => canSee(me, t.workspaces[s.workspace]));
+  const visibleIds = new Set(visible.map(([sid]) => sid));
+  const instRuns = visible.flatMap(([sid]) => instances(sid).flatMap(i => runsOf(i, since).map(r => ({ path: `${named(t, sid)}/${i.label}`, ...r }))));
+  const seriesChecks = seriesWakeChecks()
+    .filter(c => visibleIds.has(c.series) && c.at >= since)
+    .map(c => ({
+      path: `${named(t, c.series)}/${c.label}`,
+      run: null, outcome: 'wake-check-stop' as const, at: c.at, seconds: c.seconds, cost: 0,
+      runner: c.runner, started: { op: 'wake', by: c.from }, failure: null, error: null,
+      message: c.message, provenance: { schedule: c.schedule },
+    }));
+  return [...instRuns, ...seriesChecks].sort((x, y) => x.at.localeCompare(y.at));
 }
 
 // What people and the agent said, what people uploaded, closed and deleted, and each run's failure, per instance `me` sees, since
@@ -710,6 +721,149 @@ function pullable(me: Me, path: string) {
 let previewing = 0;
 const turns: (() => void)[] = [];
 
+function leafPreviewQuery(name: string, params: URLSearchParams): string {
+  const ext = extname(name).toLowerCase();
+  const out = new URLSearchParams();
+  if (ext === '.xlsx' || ext === '.xlsm') {
+    const s = params.get('sheet');
+    if (s !== null) out.set('sheet', s);
+  } else if (ext === '.pdf') {
+    const p = params.get('page');
+    if (p !== null && /^\d+$/.test(p)) {
+      const n = Number(p);
+      if (Number.isSafeInteger(n)) out.set('page', String(n));
+    }
+  } else if (ext === '.docx') {
+    if (params.has('layout')) out.set('layout', '1');
+  }
+  return out.toString();
+}
+
+function mailAttachmentChain(params: URLSearchParams): { attachments: number[]; rest: URLSearchParams } {
+  const entries = [...params.entries()];
+  const attachments: number[] = [];
+  let i = 0;
+  while (i < entries.length && entries[i][0] === 'attachment' && /^\d+$/.test(entries[i][1])) {
+    const idx = Number(entries[i][1]);
+    if (!Number.isSafeInteger(idx)) break;
+    attachments.push(idx);
+    i++;
+  }
+  return { attachments, rest: new URLSearchParams(entries.slice(i)) };
+}
+
+async function previewCachePath(instId: string, name: string, part: string, fd: number): Promise<string> {
+  const sum = createHash('sha256').update(`${name}\n${part}\n`);
+  for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
+  return join(previews, `${instId}-${sum.digest('hex')}`);
+}
+
+function openCachedPreview(path: string): number | undefined {
+  try {
+    const fd = openSync(path, constants.O_RDONLY);
+    const now = new Date();
+    try { futimesSync(fd, now, now); } catch {}
+    return fd;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw e;
+  }
+}
+
+async function renderPreview(inst: Instance, fd: number, name: string, part: string): Promise<string> {
+  if (previewing < 2) previewing++;
+  else await new Promise<void>(go => turns.push(go));
+  try {
+    if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+    const run = exec('bwrap', [
+      '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
+      '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', name, part,
+    ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
+    const content = createHash('sha256').update(`${name}\n${part}\n`);
+    // A file preview.py can't read, as a broken or password-protected one, is a plain message.
+    const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0, autoClose: false }), async function* (chunks: AsyncIterable<Buffer>) {
+      for await (const c of chunks) { content.update(c); yield c; }
+    }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${name}: download it`); });
+    if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+    const tmp = join(tmpDir, randomUUID()), dest = join(previews, `${inst.id}-${content.digest('hex')}`);
+    writeFileSync(tmp, stdout);
+    renameSync(tmp, dest);
+    prunePreviews(previews, dest);
+    return stdout;
+  } finally {
+    const go = turns.shift();
+    if (go) go();
+    else previewing--;
+  }
+}
+
+async function resolveMailPreviewPart(inst: Instance, fd: number, name: string, params: URLSearchParams): Promise<string> {
+  const { attachments, rest } = mailAttachmentChain(params);
+  if (!attachments.length) return '';
+  const baseParams = new URLSearchParams();
+  for (const a of attachments) baseParams.append('attachment', String(a));
+  if (rest.get('sheet') === null && rest.get('page') === null && !rest.has('layout')) return baseParams.toString();
+  // Resolve the target attachment's filename via the sandboxed parent email preview so text/image attachments ignore sheet/page/layout.
+  let targetName: string | undefined;
+  const prefix = new URLSearchParams();
+  for (const idx of attachments) {
+    const prefixPart = prefix.toString(), cached = await previewCachePath(inst.id, name, prefixPart, fd);
+    let raw: string;
+    const hitFd = openCachedPreview(cached);
+    if (hitFd !== undefined) {
+      try { raw = readFileSync(hitFd, 'utf8'); } finally { closeSync(hitFd); }
+    } else {
+      raw = await renderPreview(inst, fd, name, prefixPart);
+    }
+    let parsed: { email?: { attachments?: { name?: string; k?: number }[] } };
+    try { parsed = JSON.parse(raw); } catch { break; }
+    const found = parsed.email?.attachments?.find(a => a.k === idx);
+    targetName = found?.name;
+    if (!targetName) break;
+    prefix.append('attachment', String(idx));
+  }
+  if (targetName) {
+    const leaf = leafPreviewQuery(targetName, rest);
+    if (leaf) for (const [k, v] of new URLSearchParams(leaf)) baseParams.append(k, v);
+  }
+  return baseParams.toString();
+}
+
+function previewCacheBytes(): number {
+  const rawBytes = process.env.RF_PREVIEW_CACHE_BYTES;
+  if (rawBytes !== undefined && rawBytes.trim()) {
+    const n = Number(rawBytes);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  const rawMb = process.env.RF_PREVIEW_CACHE_MB;
+  if (rawMb !== undefined && rawMb.trim()) {
+    const mb = Number(rawMb);
+    if (Number.isFinite(mb) && mb >= 0) return Math.floor(mb * 2 ** 20);
+  }
+  return 256 * 2 ** 20;
+}
+
+function prunePreviews(dir: string, keepPath?: string) {
+  const budget = previewCacheBytes();
+  let entries: { path: string; size: number; mtimeMs: number }[];
+  try {
+    entries = readdirSync(dir).flatMap(name => {
+      const p = join(dir, name);
+      try { const st = statSync(p); return st.isFile() ? [{ path: p, size: st.size, mtimeMs: st.mtimeMs }] : []; }
+      catch { return []; }
+    });
+  } catch { return; }
+  let total = entries.reduce((sum, e) => sum + e.size, 0);
+  if (total <= budget) return;
+  // Evict oldest previews first; keep the freshly written entry unless it alone exceeds the budget.
+  entries.sort((a, b) => (a.path === keepPath ? 1 : b.path === keepPath ? -1 : a.mtimeMs - b.mtimeMs));
+  for (const e of entries) {
+    if (total <= budget) break;
+    rmSync(e.path, { force: true });
+    total -= e.size;
+  }
+}
+
 async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
   const [id, ...rest] = url.pathname.split('/').slice(2).map(decodeURIComponent);
   const rel = rest.join('/');
@@ -745,49 +899,26 @@ async function file(me: Me, res: ServerResponse, url: URL, preview: boolean) {
     // bwrap's PID 1 inside would keep: the file, up to 100 MB, streams to its stdin. What it makes is kept, until the server
     // restarts, by the file's name and the content it was given; at most 2 run at once, the rest waiting their turn, so previews
     // never crowd out runs.
-    if (fstatSync(fd).size > 100e6) {
-      closeSync(fd);
-      throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
-    }
-    // A part of the file, as its query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
-    const part = url.search.slice(1), sum = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
-    for await (const c of createReadStream('', { fd, start: 0, autoClose: false })) sum.update(c);
-    const kept = join(previews, `${inst.id}-${sum.digest('hex')}`);
-    if (inst.doc.status === 'deleted') {
-      closeSync(fd);
-      throw new HttpError(404, 'the instance was deleted');
-    }
-    if (existsSync(kept)) {
-      closeSync(fd);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return sendStream(createReadStream(kept), res);
-    }
-    if (previewing < 2) previewing++;
-    else await new Promise<void>(go => turns.push(go));
     try {
-      if (inst.doc.status === 'deleted') {
-        closeSync(fd);
-        throw new HttpError(404, 'the instance was deleted');
-      }
-      const run = exec('bwrap', [
-        '--unshare-all', '--die-with-parent', '--new-session', '--clearenv', ...userland(), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
-        '--ro-bind', join(app, 'src', 'preview.py'), '/preview.py', '--setenv', 'HOME', '/tmp', '--setenv', 'LANG', 'C.UTF-8', '--', '/opt/venv/bin/python', '/preview.py', basename(rel), part,
-      ], { timeout: 30_000, maxBuffer: 64e6, env: { PATH: process.env.PATH } });
-      const content = createHash('sha256').update(`${basename(rel)}\n${part}\n`);
-      // A file preview.py can't read, as a broken or password-protected one, is a plain message.
-      const [{ stdout }] = await Promise.all([run, pipeline(createReadStream('', { fd, start: 0 }), async function* (chunks: AsyncIterable<Buffer>) {
-        for await (const c of chunks) { content.update(c); yield c; }
-      }, run.child.stdin!)]).catch(() => { throw new HttpError(422, `can't preview ${basename(rel)}: download it`); });
+      if (fstatSync(fd).size > 100e6) throw new HttpError(413, `${basename(rel)} is over 100 MB, too big to preview: download it`);
+      const name = basename(rel), ext = extname(name).toLowerCase();
       if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
-      const tmp = join(tmpDir, randomUUID());
-      writeFileSync(tmp, stdout);
-      renameSync(tmp, join(previews, `${inst.id}-${content.digest('hex')}`));
+      // A part of the file, as its validated renderer query asks, such as a workbook's sheet or an email's attachment, is a preview of its own.
+      const part = ext === '.eml' || ext === '.msg'
+        ? await resolveMailPreviewPart(inst, fd, name, url.searchParams)
+        : leafPreviewQuery(name, url.searchParams);
+      const kept = await previewCachePath(inst.id, name, part, fd);
+      if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+      const hitFd = openCachedPreview(kept);
+      if (hitFd !== undefined) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        return sendStream(createReadStream('', { fd: hitFd }), res);
+      }
+      const stdout = await renderPreview(inst, fd, name, part);
       res.writeHead(200, { 'content-type': 'application/json' });
       return void res.end(stdout);
     } finally {
-      const go = turns.shift();
-      if (go) go();
-      else previewing--;
+      closeSync(fd);
     }
   }
   const image = rel.match(/\.(png|jpe?g|gif|webp|svg)$/i)?.[1].toLowerCase().replace('jpg', 'jpeg').replace('svg', 'svg+xml');
@@ -902,7 +1033,7 @@ async function monitor(me: Me, req: IncomingMessage, res: ServerResponse, url: U
     // Without its start, the process the PID names now: it must still be a run's, and not the sandbox's own.
     const start = given ?? startOf(pid), { box, script } = find(pid, start, sandboxes()), inst = instance(box.instance);
     inst.append(me.email, 'kill', { run: box.run, pid, script });
-    const killed = await killTree(pid, start);
+    const killed = await killTree(pid, start, { box });
     if (active.get(inst.seriesId)?.inst === inst) kick(inst);
     return send(res, 200, { ...killed, path: box.path, run: box.run, script });
   }
@@ -1314,6 +1445,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const canRead = reads(t, t.series[run.inst.seriesId].workspace).includes(t.series[sid].workspace);
       if (req.method === 'DELETE' && !canRead) throw new HttpError(404, 'no such wake pending');
       throw new HttpError(403, canRead ? `${named(t, sid)} is in another workspace: you can read it, not wake it` : 'that is in another workspace: you can read it if it lets you, not wake it');
+    } else if (sid !== run.inst.seriesId) {
+      if (req.method === 'DELETE') throw new HttpError(403, 'runs can only cancel wakes in their own series');
+      throw new HttpError(403, `${named(t, sid)} is another series: runs can only wake their own series`);
     }
     if (t.series[to]?.single) throw new HttpError(400, `${t.series[to].name} is a task, with one instance: wake that`);
     if (req.method === 'DELETE') {
@@ -1326,7 +1460,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!run && !t.series[to] && by === owner) see(by, to, instance(to).log.at(-1)!.seq);
       return void (cancelWake(id), send(res, 200, 'ok'));
     }
-    const { at: when = '', label, days, text, check, deadline } = payload, w = String(when);
+    const { at: when = '', label, days, text, check, deadline, maxStaleMin, backstopHours } = payload, w = String(when);
     const at = w === 'now' ? Date.now() : /^\+\d+[mhd]$/.test(w) ? Date.now() + Number(w.slice(1, -1)) * { m: 60e3, h: 3600e3, d: 86400e3 }[w.at(-1) as 'm'] : Date.parse(w);
     if (req.method !== 'PUT' || Number.isNaN(at)) throw new HttpError(400, 'PUT {"at", "label" for a series, "days", "text"}, or DELETE; at is now, +<n>m|h|d, or a date and time such as 2026-09-14T07:00+08:00');
     if (text != null && (typeof text !== 'string' || text.length > 500)) throw new HttpError(400, "a wake's text is a short message, 500 characters at most");
@@ -1336,15 +1470,25 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const until = typeof deadline === 'string' && /^\d{4}-\d{2}-\d{2}T\d\d:\d\d(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:\d\d)$/.test(deadline) ? Date.parse(deadline) : NaN;
     if (deadline !== undefined && (!check || !Number.isFinite(until) || until <= at))
       throw new HttpError(400, 'deadline: a timestamp with its offset, after the scheduled wake and only with a check');
+    const parsedMaxStale = typeof maxStaleMin === 'number' ? maxStaleMin
+      : typeof maxStaleMin === 'string' && /^\d+$/.test(maxStaleMin) ? Number(maxStaleMin) : NaN;
+    if (maxStaleMin !== undefined && (!check || !Number.isSafeInteger(parsedMaxStale) || parsedMaxStale < 1 || parsedMaxStale > 10_080))
+      throw new HttpError(400, 'maxStaleMin: an integer from 1 to 10080 minutes, and only with a check');
+    const parsedBackstop = typeof backstopHours === 'number' ? backstopHours
+      : typeof backstopHours === 'string' && /^\d+$/.test(backstopHours) ? Number(backstopHours) : NaN;
+    if (backstopHours !== undefined && (!check || !Number.isSafeInteger(parsedBackstop) || parsedBackstop < 1 || parsedBackstop > 168))
+      throw new HttpError(400, 'backstopHours: an integer from 1 to 168 hours, and only with a check');
     if (archived(t, sid)) throw new HttpError(409, `${named(t, sid)} is archived`);
     if (t.series[to] && !label) throw new HttpError(400, `waking a series starts a new instance: name it with a label${run ? '; to wake your own instance, name its folder: .' : ''}`);
-    if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to correct it, wake its series with the label ${instance(to).label}-r2`);
+    if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to record a correction on a closed instance, use rf correct --superseded (or Correct… on its page)`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
     const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
       ...(check && { check }), ...(deadline !== undefined && { deadline: new Date(until).toISOString() }),
+      ...(maxStaleMin !== undefined && { maxStaleMin: parsedMaxStale }),
+      ...(backstopHours !== undefined && { backstopHours: parsedBackstop }),
     });
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);
@@ -1644,9 +1788,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (action === 'close' || action === 'abandon') {
         if (mine) throw new HttpError(409, 'wait for the run to end');
         if (ownerOf(inst).by !== by) throw new HttpError(403, `only the series owner, ${ownerOf(inst).by}, ${action === 'close' ? 'closes it, making it the record' : 'abandons it'}`);
-        await (action === 'close' ? inst.close(who) : inst.abandon(by));
+        await (action === 'close' ? inst.close(who, quiet) : inst.abandon(by));
         cancelWakes([inst.id]);
-        if (action === 'close') closed(inst, by, quiet);
         return 'ok';
       }
       throw new HttpError(404, `no action ${action}`);

@@ -24,6 +24,7 @@ import { scratch } from './runner.ts';
 // one, so a run copies a cache as it is, without waiting.
 const SLICE_MS = 5_000, REFRESH_MS = 60 * 60_000, TRIES = 5;
 const WAKE_COPY_BYTES = 64 * 2 ** 20;
+const WAKE_MAX_STALE_MIN = 150;
 const TRANSIENT_ERROR = /^(?:Microsoft Graph answered (?:500|502|504):|The operation was aborted due to timeout\b)/;
 const wakeRebuildAfter = new Map<string, number>();
 
@@ -37,6 +38,13 @@ function wakeCopyBytes(): number {
   if (raw === undefined || !raw.trim()) return WAKE_COPY_BYTES;
   const mb = Number(raw);
   return Number.isFinite(mb) && mb >= 0 ? Math.floor(mb * 2 ** 20) : WAKE_COPY_BYTES;
+}
+function wakeMaxStaleMin(override?: number): number {
+  if (override !== undefined) return override;
+  const raw = process.env.RF_WAKE_MAX_STALE_MIN;
+  if (raw === undefined || !raw.trim()) return WAKE_MAX_STALE_MIN;
+  const min = Number(raw);
+  return Number.isFinite(min) && min > 0 ? min : WAKE_MAX_STALE_MIN;
 }
 
 // A feed line, U+2028 and U+2029 escaped: JSON.stringify leaves them raw, and line readers such as node's readline and Python's
@@ -253,7 +261,7 @@ async function slice(person: string, offer: string, until: number): Promise<void
     if (lost) {
       const [part, p, e] = lost, parts = e.status === 410 ? Object.fromEntries(Object.keys(c.parts).map(part => [part, fresh(start(offer, part))]))
         : { [part]: { ...fresh(start(offer, part)), tries: p.tries } };
-      failed(parts[part], e, start(offer, part));
+      if (parts[part]) failed(parts[part], e, start(offer, part));
       return reset(c, parts);
     }
     if (lines.length) {
@@ -319,6 +327,7 @@ async function tidy(c: Cache) {
     }
   };
   const ids: string[] = [], last = new Map<string, number>(), gone = new Set<string>(), parent = new Map<string, string>();
+  const parentFields = new Map<string, { parentFolderId: string } | { parentReference: { driveId?: string; id?: string; path?: string } }>(), needsParent = new Set<string>();
   for await (const line of read()) {
     let it: any;
     try {
@@ -329,8 +338,40 @@ async function tidy(c: Cache) {
     last.set(it.id, ids.push(it.id) - 1);
     if (it.deleted || it['@removed']) gone.add(it.id);
     else gone.delete(it.id);
-    const p = it.parentFolderId ?? it.parentReference?.id ?? it.parentReference?.driveId;
-    if (p !== undefined) parent.set(it.id, p);
+    if (it.parentFolderId !== undefined) {
+      parent.set(it.id, it.parentFolderId);
+      parentFields.set(it.id, { parentFolderId: it.parentFolderId });
+      needsParent.delete(it.id);
+    } else if (it.parentReference && typeof it.parentReference === 'object') {
+      const prev = parentFields.get(it.id);
+      const prevRef = prev && 'parentReference' in prev ? prev.parentReference : undefined;
+      const curDrive = it.parentReference.driveId as string | undefined;
+      const curId = it.parentReference.id as string | undefined;
+      const curPath = it.parentReference.path as string | undefined;
+      const sameDrive = !!prevRef && (curDrive === undefined || prevRef.driveId === undefined || curDrive === prevRef.driveId);
+      const merged: { driveId?: string; id?: string; path?: string } = {
+        ...(sameDrive && prevRef.driveId !== undefined && { driveId: prevRef.driveId }),
+        ...(sameDrive && prevRef.id !== undefined && { id: prevRef.id }),
+        ...(sameDrive && (curId === undefined || prevRef.id === curId) && prevRef.path !== undefined && { path: prevRef.path }),
+        ...(curDrive !== undefined && { driveId: curDrive }),
+        ...(curId !== undefined && { id: curId }),
+        ...(curPath !== undefined && { path: curPath }),
+      };
+      const p = merged.id ?? merged.driveId;
+      if (p !== undefined) parent.set(it.id, p);
+      if (p !== undefined || merged.path !== undefined) {
+        parentFields.set(it.id, { parentReference: merged });
+        const missing = (merged.id !== undefined && curId === undefined)
+          || (merged.driveId !== undefined && curDrive === undefined)
+          || (merged.path !== undefined && curPath === undefined);
+        if (missing) needsParent.add(it.id);
+        else needsParent.delete(it.id);
+      } else if (prev) {
+        needsParent.add(it.id);
+      }
+    } else if (parentFields.has(it.id)) {
+      needsParent.add(it.id);
+    }
   }
   const dead = new Map<string, boolean>();
   const under = (id: string | undefined): boolean => {
@@ -348,7 +389,14 @@ async function tidy(c: Cache) {
         const id = ids[i];
         if (last.get(id) === i++ && !under(id)) {
           kept++;
-          yield ndjson(line);
+          if (needsParent.has(id)) {
+            const it = JSON.parse(line), pf = parentFields.get(id)!;
+            if ('parentFolderId' in pf) it.parentFolderId = pf.parentFolderId;
+            else it.parentReference = { ...(it.parentReference && typeof it.parentReference === 'object' ? it.parentReference : {}), ...pf.parentReference };
+            yield ndjson(JSON.stringify(it));
+          } else {
+            yield ndjson(line);
+          }
         }
       }
     }, createZstdCompress(), createWriteStream(next));
@@ -453,13 +501,13 @@ export function forget(email: string, offer?: string) {
 }
 
 // What a run of the instance reads: the cache of each source its lender ticked that has one so far, without waiting for it.
-export function sources(inst: Instance, run?: number | Authority): { o: Offer; c: Cache }[] {
+export function sources(inst: Instance | string, run?: number | Authority): { o: Offer; c: Cache }[] {
   let by: string, ticked: string[];
   try {
     if (typeof run === 'object') {
       if (!sameAuthority(inst, run) || m365(run.owner)?.expired) return [];
       ({ owner: by, logins: ticked } = run);
-    } else ({ by, logins: ticked } = lender(inst, run));
+    } else ({ by, logins: ticked } = lender(inst as Instance, run));
   } catch {
     return [];
   }
@@ -498,8 +546,8 @@ A ticked source with neither file has no cache yet.
 // snapshot without touching the feeds, so its deadline can still fire during a slow copy.
 export type Snapshot = { offers: string[]; valid(): boolean };
 export function prepare(inst: Instance, to: string, run?: number): boolean;
-export function prepare(inst: Instance, to: string, run: Authority, signal: AbortSignal): Promise<Snapshot | undefined>;
-export function prepare(inst: Instance, to: string, run?: number | Authority, signal?: AbortSignal): boolean | Promise<Snapshot | undefined> {
+export function prepare(inst: Instance | string, to: string, run: Authority, signal: AbortSignal, maxStaleMin?: number): Promise<Snapshot | undefined>;
+export function prepare(inst: Instance | string, to: string, run?: number | Authority, signal?: AbortSignal, maxStaleMin?: number): boolean | Promise<Snapshot | undefined> {
   signal?.throwIfAborted();
   const names = new Set<string>(), included = sources(inst, run);
   const lease = typeof run === 'object' ? run : undefined, login = lease && m365(lease.owner), grant = wakeGrant(login);
@@ -507,6 +555,16 @@ export function prepare(inst: Instance, to: string, run?: number | Authority, si
   if (selected?.length && (!grant || selected.length !== included.length ||
       included.some(({ c }) => c.wakeGrant !== grant || c.compact || !Object.keys(c.parts).length || Object.values(c.parts).some(p => !p.delta || p.due === null))))
     throw new Error('Microsoft 365 indexes are not ready for a wake check');
+  if (selected?.length) {
+    const cutoff = Date.now() - wakeMaxStaleMin(maxStaleMin) * 60_000;
+    for (const { c } of included) {
+      const ps = Object.values(c.parts);
+      const asOf = ps.length && ps.every(p => p.as_of) ? ps.map(p => p.as_of!).sort()[0] : null;
+      const ts = asOf ? Date.parse(asOf) : NaN;
+      if (!Number.isFinite(ts) || ts < cutoff)
+        throw new Error('Microsoft 365 indexes are stale for a wake check');
+    }
+  }
   const planned: { o: Offer; c: Cache; name: string; ps: Part[] }[] = [];
   for (const { o, c } of included) {
     const base = o.name.replace(/[/\0]/g, '-'), ps = Object.values(c.parts);
@@ -636,6 +694,10 @@ export function startIndexing() {
       if (f.endsWith('.json.tmp')) { rmSync(join(dir, f), { force: true }); continue; }
       if (!f.endsWith('.json')) continue;
       const c = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Cache;
+      if (!hasOffer(c.person, c.source)) {
+        rmSync(join(dir, f), { force: true });
+        continue;
+      }
       if (c.compact?.state === 'pending-append') resetCompact(c);
       live.add(`${f.slice(0, -5)}.${c.gen}.ndjson.zst`);
     }

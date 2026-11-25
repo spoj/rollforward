@@ -98,12 +98,13 @@ const ranBy = (e: Entry) => e.op === 'assign' ? e.to as string : e.by;
 // Who ran an instance as an entry, by its seq, was made, as the page shows history and costs count runs.
 export const runnerAt = (log: Entry[], seq: number) => ranBy(log.findLast(e => e.seq < seq && MADE.includes(e.op))!);
 
-export function ownerOf(inst: Instance): { by: string; logins: string[]; epoch: number; workspace: string; consent?: SeriesConsent } {
-  const s = seriesSettings(inst.series());
-  return { by: s.owner ?? '', logins: s.consent?.logins ?? [], epoch: s.epoch, workspace: tree().series[inst.seriesId].workspace, consent: s.consent };
+export function ownerOf(inst: Instance | string): { by: string; logins: string[]; epoch: number; workspace: string; consent?: SeriesConsent } {
+  const sid = typeof inst === 'string' ? inst : inst.seriesId;
+  const s = seriesSettings(typeof inst === 'string' ? seriesDir(inst) : inst.series());
+  return { by: s.owner ?? '', logins: s.consent?.logins ?? [], epoch: s.epoch, workspace: tree().series[sid].workspace, consent: s.consent };
 }
 
-export function authority(inst: Instance): Authority {
+export function authority(inst: Instance | string): Authority {
   const r = ownerOf(inst), p = asPerson(r.by), t = tree();
   if (!p || !canSee(p, t.workspaces[r.workspace]))
     throw new HttpError(403, 'the series owner must be enabled and able to see its workspace');
@@ -112,7 +113,7 @@ export function authority(inst: Instance): Authority {
   return { version: 1, owner: r.by, epoch: r.epoch, workspace: r.workspace, logins: [...r.logins], autonomous: r.consent.autonomous };
 }
 
-export function sameAuthority(inst: Instance, lease: Authority): boolean {
+export function sameAuthority(inst: Instance | string, lease: Authority): boolean {
   const r = ownerOf(inst), p = asPerson(r.by);
   return !!p && canSee(p, tree().workspaces[r.workspace])
     && lease.version === 1 && lease.owner === r.by && lease.epoch === r.epoch && lease.workspace === r.workspace

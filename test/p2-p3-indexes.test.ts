@@ -33,6 +33,7 @@ const under = (d: string, id: string, top: string) => { for (let x: string | und
 
 const asked: { who: string; url: string }[] = [];
 const locked = new Set<string>();
+let reverseBatch = false;
 
 function delta(who: string, d: string, scope: string | undefined, token: string | null) {
   const link = (t: string) => `${base}/v1.0/drives/${d}/${scope ? `items/${scope}` : 'root'}/delta?token=${t}`;
@@ -55,11 +56,12 @@ function delta(who: string, d: string, scope: string | undefined, token: string 
 }
 
 function mail(fid: string | undefined, token: string | null) {
+  if (token === 'gone') return { status: 410, body: { error: { code: 'resyncRequired' } } };
   if (fid && state.mail.get(fid)?.['@removed']) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
   const where = fid ?? '', link = (t: string) => `${base}/v1.0/users/${encodeURIComponent(BOX)}/mailFolders/${fid ? `${fid}/messages/` : ''}delta?$deltatoken=${t}`;
   if (token?.startsWith('s')) {
-    const ids = [...new Set(changed.filter(c => c.at === 'mail' && c.where === where && c.seq > Number(token.slice(1))).map(c => c.id))];
-    return { status: 200, body: { value: ids.map(id => state.mail.get(id)), '@odata.deltaLink': link(`s${seq}`) } };
+    const events = changed.filter(c => c.at === 'mail' && c.where === where && c.seq > Number(token.slice(1)));
+    return { status: 200, body: { value: events.map(ev => ev.raw ?? state.mail.get(ev.id)), '@odata.deltaLink': link(`s${seq}`) } };
   }
   const [at, from] = token ? token.slice(1).split('.').map(Number) : [0, seq];
   const all = [...(state.mail?.values() ?? [])].filter(it => !it['@removed'] && (fid ? it.parentFolderId === fid && it.subject : it.displayName));
@@ -104,7 +106,7 @@ before(async () => {
       if (path === '/v1.0/$batch') {
         const requests = JSON.parse(body).requests as { id: string; url: string }[];
         const responses = requests.map(r => ({ id: r.id, ...answer(who, r.url) }));
-        return send(200, { responses });
+        return send(200, { responses: reverseBatch ? responses.toReversed() : responses });
       }
       const a = answer(who, req.url!);
       send(a.status, a.body);
@@ -267,6 +269,91 @@ test('P2: HTTP 200 deletion compacts locally with zero Graph recrawl, fires inde
   assert.equal(cache(ALICE, MAIL).parts.submail, undefined);
   assert.equal(cache(ALICE, MAIL).wakeGrant, grant);
   assert.deepEqual(lines(feedOf(ALICE, MAIL)).map(l => l.id).sort(), ['inbox', 'm1'], 'deleted mail folder and its messages purged locally');
+});
+
+test('P1: surviving sparse rows preserve parentReference and parentFolderId across a first compaction so a later parent deletion purges descendants', async () => {
+  const grant = JSON.stringify(['gen-1', null]);
+  // 1) Drive item: create folder + child + unrelated file, sync, then sparse-update child + delete unrelated file (compaction #1),
+  // then delete parent folder in a subsequent batch (compaction #2).
+  put('b!d', folder('b!d', 'p1Folder', 'P1Folder', 'top'));
+  put('b!d', file('b!d', 'p1Child', 'p1child.xlsx', 'p1Folder'));
+  put('b!d', file('b!d', 'p1Unrelated', 'unrelated.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+
+  const genBefore1 = cache(ALICE, FOLDER).gen;
+  put('b!d', { ...state['b!d'].get('p1Child')!, name: 'p1child-sparse.xlsx' }, '', { id: 'p1Child', name: 'p1child-sparse.xlsx', file: {} });
+  put('b!d', { id: 'p1Unrelated', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, genBefore1 + 1, 'compaction #1 completed on unrelated deletion');
+  assert.equal(cache(ALICE, FOLDER).wakeGrant, grant);
+  const survivedDrive = lines(feedOf(ALICE, FOLDER)).find(l => l.id === 'p1Child');
+  assert.ok(survivedDrive, 'sparse child survives compaction #1 while parent is live');
+  assert.deepEqual(survivedDrive.parentReference, { driveId: 'b!d', id: 'p1Folder' }, 'parentReference persisted across compaction #1');
+
+  const genBefore2 = cache(ALICE, FOLDER).gen;
+  put('b!d', { id: 'p1Folder', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, genBefore2 + 1, 'compaction #2 completed on parent deletion');
+  assert.equal(cache(ALICE, FOLDER).wakeGrant, grant);
+  const afterDriveIds = lines(feedOf(ALICE, FOLDER)).map(l => l.id);
+  assert.ok(!afterDriveIds.includes('p1Folder') && !afterDriveIds.includes('p1Child'), `deleted parent and sparse descendant purged in second compaction: ${JSON.stringify(afterDriveIds)}`);
+  const inst = instance(ALICE, [FOLDER]), lease = logins.authority(inst);
+  const snap = await ix.prepare(inst, join(tmp, 'runs', 'p1-drive-after'), lease, new AbortController().signal);
+  assert.equal(snap?.valid(), true);
+  assert.ok(!lines(join(tmp, 'runs', 'p1-drive-after', 'Top.ndjson.zst')).some(l => l.id === 'p1Child'));
+
+  // 2) Mail item: same two-compaction sequence preserving parentFolderId.
+  put('mail', { id: 'p1MailFolder', displayName: 'P1Mail', parentFolderId: 'inbox' }, '');
+  await due(ALICE, MAIL);
+  put('mail', { id: 'p1Msg', subject: 'P1Msg', parentFolderId: 'p1MailFolder', body: { contentType: 'text', content: 'secret' } }, 'p1MailFolder');
+  put('mail', { id: 'p1MailOther', subject: 'Other', parentFolderId: 'inbox', body: { contentType: 'text', content: 'other' } }, 'inbox');
+  await due(ALICE, MAIL);
+
+  const mailGen1 = cache(ALICE, MAIL).gen;
+  put('mail', { ...state.mail.get('p1Msg')!, subject: 'P1Msg-sparse' }, 'p1MailFolder', { id: 'p1Msg', subject: 'P1Msg-sparse' });
+  put('mail', { id: 'p1MailOther', '@removed': { reason: 'deleted' } }, 'inbox');
+  await due(ALICE, MAIL);
+
+  assert.equal(cache(ALICE, MAIL).gen, mailGen1 + 1, 'mail compaction #1 completed');
+  assert.equal(cache(ALICE, MAIL).wakeGrant, grant);
+  const survivedMail = lines(feedOf(ALICE, MAIL)).find(l => l.id === 'p1Msg');
+  assert.ok(survivedMail, 'sparse mail message survives compaction #1');
+  assert.equal(survivedMail.parentFolderId, 'p1MailFolder', 'parentFolderId persisted across compaction #1');
+
+  const mailGen2 = cache(ALICE, MAIL).gen;
+  put('mail', { id: 'p1MailFolder', '@removed': { reason: 'deleted' } }, '');
+  await due(ALICE, MAIL);
+
+  assert.equal(cache(ALICE, MAIL).gen, mailGen2 + 1, 'mail compaction #2 completed');
+  assert.equal(cache(ALICE, MAIL).wakeGrant, grant);
+  const afterMailIds = lines(feedOf(ALICE, MAIL)).map(l => l.id);
+  assert.ok(!afterMailIds.includes('p1MailFolder') && !afterMailIds.includes('p1Msg'), `deleted mail folder and sparse message purged: ${JSON.stringify(afterMailIds)}`);
+
+  // 3) Drive item with partial parentReference { driveId } (omitting folder id) must merge rather than lose folder id across compaction.
+  put('b!d', folder('b!d', 'p1PartialFolder', 'P1Partial', 'top'));
+  put('b!d', file('b!d', 'p1PartialChild', 'partial.xlsx', 'p1PartialFolder', { parentReference: { driveId: 'b!d', id: 'p1PartialFolder', path: '/drives/b!d/root:/P1Partial' } }));
+  put('b!d', file('b!d', 'p1PartialOther', 'other.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+
+  const partialGen1 = cache(ALICE, FOLDER).gen;
+  put('b!d', { ...state['b!d'].get('p1PartialChild')!, name: 'partial-renamed.xlsx' }, '', { id: 'p1PartialChild', name: 'partial-renamed.xlsx', file: {}, parentReference: { driveId: 'b!d' } });
+  put('b!d', { id: 'p1PartialOther', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, partialGen1 + 1, 'compaction #1 completed for partial parentReference test');
+  const survivedPartial = lines(feedOf(ALICE, FOLDER)).find(l => l.id === 'p1PartialChild');
+  assert.ok(survivedPartial, 'partial-parentReference child survives compaction #1');
+  assert.deepEqual(survivedPartial.parentReference, { driveId: 'b!d', id: 'p1PartialFolder', path: '/drives/b!d/root:/P1Partial' }, 'merged folder id and path preserved across compaction #1');
+
+  const partialGen2 = cache(ALICE, FOLDER).gen;
+  put('b!d', { id: 'p1PartialFolder', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, partialGen2 + 1, 'compaction #2 completed on partial folder deletion');
+  const afterPartialIds = lines(feedOf(ALICE, FOLDER)).map(l => l.id);
+  assert.ok(!afterPartialIds.includes('p1PartialFolder') && !afterPartialIds.includes('p1PartialChild'), `partial-parentReference child purged when folder deleted: ${JSON.stringify(afterPartialIds)}`);
 });
 
 test('P2: deleting every item in a wake cache compacts cleanly to an empty zstd feed and stays wake-ready', async () => {
@@ -442,6 +529,89 @@ test('P2: 410 and 403 on wake-capable caches still force full reset', async () =
   assert.ok(asked.slice(fromMail404).some(q => q.url === '/users/team%40demo.test/mailFolders/delta'), 'unexplained 404 recrawled from scratch');
 });
 
+test('P2: mail folder removal combined with HTTP 410 in the same Graph batch resets cleanly in either response order', async () => {
+  const grant = JSON.stringify(['gen-1', null]);
+  for (const rev of [false, true]) {
+    const fid = rev ? 'f410rev' : 'f410fwd', mid = rev ? 'm410rev' : 'm410fwd';
+    put('mail', { id: fid, displayName: fid, parentFolderId: 'inbox' }, '');
+    await due(ALICE, MAIL);
+    put('mail', { id: mid, subject: 'WillVanish', parentFolderId: fid, body: { contentType: 'text', content: 'x' } }, fid);
+    await due(ALICE, MAIL);
+    assert.ok(cache(ALICE, MAIL).parts[fid]?.delta, `folder ${fid} crawled`);
+
+    const c = cache(ALICE, MAIL), beforeGen = c.gen, oldFeed = feedOf(ALICE, MAIL);
+    c.parts[fid].link = `${base}/v1.0/users/${encodeURIComponent(BOX)}/mailFolders/${fid}/messages/delta?$deltatoken=gone`;
+    writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(c));
+    put('mail', { id: fid, '@removed': { reason: 'deleted' } }, '');
+
+    reverseBatch = rev;
+    try {
+      await due(ALICE, MAIL);
+    } finally {
+      reverseBatch = false;
+    }
+
+    const after = cache(ALICE, MAIL);
+    assert.ok(after.gen > beforeGen, `batch reset committed (reverse=${rev})`);
+    assert.equal(existsSync(oldFeed), false, `old feed removed (reverse=${rev})`);
+    assert.equal(after.parts[fid], undefined, `removed folder dropped from parts (reverse=${rev})`);
+    assert.ok(after.parts['']?.delta && after.parts.inbox?.delta, `surviving parts rebuilt and recrawled (reverse=${rev})`);
+  assert.equal(after.wakeGrant, grant);
+    const ids = lines(feedOf(ALICE, MAIL)).map(l => l.id).sort();
+    assert.deepEqual(ids, ['inbox', 'm1'], `surviving rows intact without removed folder/messages (reverse=${rev})`);
+  }
+});
+
+test('wake-check prepare rejects stale or null as_of past 150m default, honors RF_WAKE_MAX_STALE_MIN and per-wake maxStaleMin override', async () => {
+  await due(ALICE, FOLDER);
+  const c = cache(ALICE, FOLDER);
+  const origAsOf = c.parts[''].as_of;
+  const inst = instance(ALICE, [FOLDER]), lease = logins.authority(inst);
+  try {
+    // 1) Older than 150m default -> rejected as stale.
+    c.parts[''].as_of = new Date(Date.now() - 151 * 60_000).toISOString();
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-default'), lease, new AbortController().signal), /stale/);
+
+    // 2) Per-wake maxStaleMin=200 allows 151m-old cache, while maxStaleMin=120 rejects it.
+    const allowed = await ix.prepare(inst, join(tmp, 'runs', 'stale-override-ok'), lease, new AbortController().signal, 200);
+    assert.equal(allowed?.valid(), true);
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-override-reject'), lease, new AbortController().signal, 120), /stale/);
+
+    // 3) RF_WAKE_MAX_STALE_MIN overrides default when per-wake override is omitted.
+    process.env.RF_WAKE_MAX_STALE_MIN = '180';
+    const envOk = await ix.prepare(inst, join(tmp, 'runs', 'stale-env-ok'), lease, new AbortController().signal);
+    assert.equal(envOk?.valid(), true);
+    process.env.RF_WAKE_MAX_STALE_MIN = '60';
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-env-reject'), lease, new AbortController().signal), /stale/);
+    delete process.env.RF_WAKE_MAX_STALE_MIN;
+
+    // 4) Null as_of is always rejected as stale.
+    c.parts[''].as_of = null;
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+    await assert.rejects(async () => ix.prepare(inst, join(tmp, 'runs', 'stale-null'), lease, new AbortController().signal, 10_080), /stale/);
+
+    // 5) Multi-part cache uses conservative (oldest) part as_of.
+    const mc = cache(ALICE, MAIL), origInboxAsOf = mc.parts.inbox.as_of;
+    const mailInst = instance(ALICE, [MAIL]), mailLease = logins.authority(mailInst);
+    try {
+      mc.parts[''].as_of = new Date().toISOString();
+      mc.parts.inbox.as_of = new Date(Date.now() - 160 * 60_000).toISOString();
+      writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(mc));
+      await assert.rejects(async () => ix.prepare(mailInst, join(tmp, 'runs', 'stale-multipart'), mailLease, new AbortController().signal), /stale/);
+      const mpOk = await ix.prepare(mailInst, join(tmp, 'runs', 'stale-multipart-ok'), mailLease, new AbortController().signal, 200);
+      assert.equal(mpOk?.valid(), true);
+    } finally {
+      mc.parts.inbox.as_of = origInboxAsOf;
+      writeFileSync(`${at(ALICE, MAIL)}.json`, JSON.stringify(mc));
+    }
+  } finally {
+    delete process.env.RF_WAKE_MAX_STALE_MIN;
+    c.parts[''].as_of = origAsOf;
+    writeFileSync(`${at(ALICE, FOLDER)}.json`, JSON.stringify(c));
+  }
+});
+
 test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file overflow upfront with no stray files, and respects override', async t => {
   if (supportsReflink(tmp)) return t.skip('tmpdir supports reflink; non-reflink fallback covered on tmpfs/ext4');
 
@@ -454,7 +624,7 @@ test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file over
     writeFileSync(`${k}.0.ndjson.zst`, Buffer.alloc(actualBytes, 0x61));
     writeFileSync(`${k}.json`, JSON.stringify({
       person: BOB, source: offerId, name, gen: 0, length: claimedLength, lines: 1, base: claimedLength,
-      wakeGrant: grant, parts: { '': { link: `${base}/x`, delta: 'ok', as_of: '2026-11-24T00:00:00Z', pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
+      wakeGrant: grant, parts: { '': { link: `${base}/x`, delta: 'ok', as_of: new Date().toISOString(), pages: 1, due: Date.now() + 3_600_000, error: null, tries: 0 } },
     }));
   };
 
@@ -497,4 +667,20 @@ test('P3: non-reflink fallback enforces RF_WAKE_COPY_MB, rejects multi-file over
   } finally {
     delete process.env.RF_WAKE_COPY_MB;
   }
+});
+
+test('R1 #10: path-only parentReference survives sparse updates across compaction', async () => {
+  put('b!d', file('b!d', 'pathOnly', 'pathOnly.xlsx', 'top'), '', { id: 'pathOnly', name: 'pathOnly.xlsx', file: {}, parentReference: { path: '/drive/root:/Finance' } });
+  put('b!d', file('b!d', 'pathDrop', 'drop.xlsx', 'top'));
+  await due(ALICE, FOLDER);
+
+  const genBefore = cache(ALICE, FOLDER).gen;
+  put('b!d', file('b!d', 'pathOnly', 'pathOnly-renamed.xlsx', 'top'), '', { id: 'pathOnly', name: 'pathOnly-renamed.xlsx', file: {} });
+  put('b!d', { id: 'pathDrop', deleted: {} });
+  await due(ALICE, FOLDER);
+
+  assert.equal(cache(ALICE, FOLDER).gen, genBefore + 1, 'compaction ran on deletion');
+  const row = lines(feedOf(ALICE, FOLDER)).find(l => l.id === 'pathOnly');
+  assert.ok(row, 'path-only item survived compaction');
+  assert.deepEqual(row.parentReference, { path: '/drive/root:/Finance' }, 'path-only parentReference preserved after sparse update + compaction');
 });

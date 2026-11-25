@@ -239,7 +239,7 @@ test('index copies select only leased sources and prune after transfer', async (
   const check = join(root, '.rf/runs/check');
   await assert.rejects(async () => prepare(inst, check, captured, new AbortController().signal), /indexes/);
   assert.equal(readFileSync(meta, 'utf8'), before, 'a rejected wake snapshot does not resume a stopped feed');
-  writeFileSync(meta, JSON.stringify({ ...JSON.parse(before), parts: { first: { due: Date.now() + 3_600_000, tries: 0, delta: 'caught-up' } } }));
+  writeFileSync(meta, JSON.stringify({ ...JSON.parse(before), parts: { first: { due: Date.now() + 3_600_000, tries: 0, delta: 'caught-up', as_of: new Date().toISOString() } } }));
   const snapshot = await prepare(inst, check, captured, new AbortController().signal);
   assert.equal(snapshot?.valid(), true);
   const login = logins(ALICE).find(l => l.id === 'm365')!;
@@ -258,7 +258,7 @@ test('a wake snapshot copies only the accounted feed prefix and notices a change
   const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
   const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
   mkdirSync(secretDir, { recursive: true });
-  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 4, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up' } } };
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 4, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up', as_of: new Date().toISOString() } } };
   writeFileSync(`${at}.json`, JSON.stringify(meta));
   writeFileSync(`${at}.0.ndjson.zst`, 'abcd followed by an unaccounted append');
   const dir = join(root, '.rf/runs/check');
@@ -273,7 +273,7 @@ test('a wake snapshot refuses large non-reflink feeds and honours cancellation',
   const offer = 'm365:item:drive/one', inst = running([offer]), captured = authority(inst);
   const secretDir = join(personDir(ALICE), 'index'), at = join(secretDir, createHash('sha256').update(offer).digest('hex').slice(0, 16));
   mkdirSync(secretDir, { recursive: true });
-  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 100 * 2 ** 20, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up' } } };
+  const meta = { person: ALICE, source: offer, name: 'One', gen: 0, length: 100 * 2 ** 20, lines: 1, base: 0, wakeGrant: JSON.stringify(['', null]), parts: { '': { delta: 'caught-up', as_of: new Date().toISOString() } } };
   writeFileSync(`${at}.json`, JSON.stringify(meta));
   writeFileSync(`${at}.0.ndjson.zst`, 'abcd');
   const dir = join(root, '.rf/runs/check-limit');

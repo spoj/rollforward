@@ -18,7 +18,7 @@ process.env.RF_WAKE_TICK_MS = '50';
 process.env.RF_MIN_FREE_GB = '0';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { active, byToken, cancelWakes, closed, correct, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { active, byToken, cancelWakes, correct, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { authority, personDir, saveLogin, signOut } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
@@ -168,19 +168,23 @@ test('a process.md over 1 MB is none to the server, which would fail to read one
   await committed(huge.dir);
 });
 
-test("a series schedule needs autonomous consent, captures its owner and offers, and becomes a request with 3 open instances", async () => {
+test("a series schedule needs autonomous consent, rejects cross-series agent wakes, and becomes a request with 3 open instances", async () => {
+  // Cross-series agent wakes are always rejected with 403.
+  assert.throws(() => setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' }), /another series: runs can only wake their own series/);
+
   ownSeries('s2', alice, [], false);
-  setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'rates moved' });
+  setWake('s2', { at: new Date(Date.now() + 50).toISOString(), from: alice, label: '2026-10', text: 'rates moved' });
+  await new Promise(r => setTimeout(r, 80));
   await settle();
-  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from, r.text]), [['s2', '2026-10', 'Acme/Bank rec/2026-09', 'rates moved']]);
+  assert.deepEqual(Object.values(wakes().requests).map(r => [r.series, r.label, r.from, r.text]), [['s2', '2026-10', alice, 'rates moved']]);
   assert.equal(labels('s2').length, 0);
 
   ownSeries('s2', alice, ['m365:item:d1/i1'], true);
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setRunWake('s2', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-11', inst: sep.id, text: 'rates moved' });
+  setWake('s2', { at: new Date().toISOString(), from: alice, label: '2026-11', text: 'rates moved' });
   await settle();
   const made = instance(labels('s2').find(l => l.label === '2026-11')!.id);
-  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', 'agent', 'wake', 'Acme/Bank rec/2026-09', 'rates moved', true], 'the cross-series source remains a note and the creator; execution authority is captured separately');
+  assert.deepEqual([made.log[0].op, made.log[0].by, made.log[1].op, made.log[1].from, made.log[1].text, made.log[1].note], ['create', alice, 'wake', alice, 'rates moved', undefined]);
   assert.equal(made.log[0].logins, undefined);
   assert.deepEqual({ ...made.log.find(e => e.op === 'run')!.authority as object }, { version: 1, owner: alice, epoch: seriesSettings(made.series()).epoch, workspace: 'w', logins: ['m365:item:d1/i1'], autonomous: true });
   writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
@@ -197,34 +201,30 @@ test("a series schedule needs autonomous consent, captures its owner and offers,
   assert.ok(Object.values(wakes().requests).some(r => r.label === '2027-02'), '3 open already');
 });
 
-test("an authorized owner-agent schedule keeps source provenance when continuing a known label, including another series",  async () => {
+test("an authorized same-series agent schedule continues a known label while cross-series wakes are rejected and legacy persisted ones are dropped", async () => {
   const feed = make('s2', 'feed'), woke = () => oct.log.findLast(e => e.op === 'wake')!;
   setRunWake('s1', { at: new Date().toISOString(), from: 'Acme/Bank rec/2026-09', label: '2026-10', inst: sep.id, text: 'next period' });
   await settle();
   assert.deepEqual([woke().text, woke().note], ['next period', undefined]);
-  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
-  setRunWake('s1', { at: new Date().toISOString(), from: 'Acme/Borrowing base/feed', label: '2026-10', inst: feed.id, text: 'inputs are in' });
+  assert.throws(() => setRunWake('s1', { at: new Date().toISOString(), from: 'Acme/Borrowing base/feed', label: '2026-10', inst: feed.id, text: 'inputs are in' }), /another series/);
+  // Defense-in-depth: a legacy persisted cross-series wake in wakes.json is dropped by fire() without waking oct.
+  const beforeSeq = woke().seq;
+  const w = readJson<{ pending: Record<string, any>; fired: Record<string, string>; requests: Record<string, any> }>('wakes.json', { pending: {}, fired: {}, requests: {} });
+  w.fired = {};
+  w.pending['legacy_cross'] = { target: 's1', label: '2026-10', at: new Date(Date.now() - 1000).toISOString(), from: 'Acme/Borrowing base/feed', inst: feed.id, text: 'legacy cross', initiator: alice, authority: { version: 1, owner: alice, epoch: seriesSettings(oct.series()).epoch, workspace: 'w', logins: [], autonomous: true } };
+  writeJson('wakes.json', w);
   await settle();
-  assert.deepEqual([woke().text, woke().note], ['inputs are in', true], 'cross-series provenance remains a note');
-  assert.equal((oct.log.findLast(e => e.op === 'run')!.provenance as { cause: number }).cause, woke().seq, 'the authorized schedule still starts execution');
-  writeJson('wakes.json', { ...readJson('wakes.json', {}), fired: {} });
+  assert.equal(woke().seq, beforeSeq, 'legacy persisted cross-series wake must not wake target');
+  assert.equal(wakes().pending['legacy_cross'], undefined, 'legacy persisted cross-series wake was dropped');
 });
 
-test("closing an instance wakes the later open ones of its series, not the earlier; a note for those the closer doesn't start, and a quiet close's wake is quiet", async () => {
-  const before = make('s1', '2026-07');
+test("closing an instance finalizes only that instance and does not wake later open periods", async () => {
+  const before = make('s1', '2026-07'), beforeWakes = oct.log.filter(e => e.op === 'wake').length;
   await sep.close({ email: alice, name: 'Alice' });
-  closed(sep, alice);
   await settle();
-  assert.deepEqual([oct.log.findLast(e => e.op === 'wake')!.text, oct.log.findLast(e => e.op === 'wake')!.note], [`2026-09 closed: its final figures may differ from the draft you read`, undefined]);
+  assert.equal(sep.doc.status, 'closed');
+  assert.equal(oct.log.filter(e => e.op === 'wake').length, beforeWakes, 'closing does not fan out wakes to later open periods');
   assert.ok(!ops(before).includes('wake'));
-  closed(sep, 'bob@demo.test');
-  assert.equal(oct.log.findLast(e => e.op === 'wake')!.note, true);
-  await settle();
-  const runs = ops(oct).filter(op => op === 'run').length;
-  closed(sep, alice, true);
-  assert.equal(oct.log.findLast(e => e.op === 'wake')!.quiet, true);
-  await settle();
-  assert.equal(ops(oct).filter(op => op === 'run').length, runs, 'it starts no run, nor what waited');
 });
 
 test("a commit a restart cut leaves git's locks, which the next start clears for the instance's next commit", async () => {
@@ -522,16 +522,19 @@ test("a weekly wake fires on its days at its time and moves on, a series' label 
   cancelWakes(['s6', daily.id]);
 });
 
-test("a run's first message lists the corrections on its series' closed instances before it; a <label>-r2 closing supersedes <label>", async () => {
-  const { correct } = await import('../src/waker.ts'), q3 = make('s2', 'q3');
+test("a run's first message lists manual corrections on its series' closed instances before it; closing <label>-r2 does not auto-supersede <label>", async () => {
+  const q3 = make('s2', 'q3');
   await q3.close({ email: alice, name: 'Alice' });
   const r2 = make('s2', 'q3-r2'), q4 = make('s2', 'q4');
   correct(q3, alice, { kind: 'wrong', text: 'The rate was a day stale.' });
   assert.match(message(q4, 1, q4.log, true), / Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."\. New log entries:/);
   assert.doesNotMatch(message(q4, 2, q4.log), /Corrections/, 'the first message only');
+  const q3LogLen = q3.log.length;
   await r2.close({ email: alice, name: 'Alice' });
-  closed(r2, alice);
-  assert.deepEqual([q3.log.at(-1)!.by, q3.log.at(-1)!.kind, q3.log.at(-1)!.see, r2.log.at(-1)!.op], [alice, 'superseded', { inst: r2.id, label: 'q3-r2' }, 'corrected']);
+  assert.equal(q3.log.length, q3LogLen, 'closing q3-r2 does not mutate q3 automatically');
+  assert.equal(r2.log.some(e => e.op === 'corrected'), false);
+  // Explicit manual correction still works and shows up in q4's prompt.
+  correct(q3, alice, { kind: 'superseded', text: 'q3-r2 supersedes it', see: r2 });
   assert.match(message(q4, 1, q4.log, true), /Corrections on earlier instances: q3 is wrong, "The rate was a day stale\."; q3 is superseded, "q3-r2 supersedes it", see q3-r2\. New/);
   await settle();
 });

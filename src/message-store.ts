@@ -13,7 +13,17 @@ export const eventsFile = (dir: string, instance: string) => join(dir, 'events',
 export const messagesFile = (dir: string) => join(dir, 'messages.jsonl');
 export const notesFile = (dir: string) => join(dir, 'notes', 'log.jsonl');
 export const messageFloor = (dir: string) => join(dir, 'messages.floor');
-export const jsonLines = (entries: readonly unknown[]) => entries.map(e => JSON.stringify(e) + '\n').join('');
+export const jsonLines = (entries: readonly unknown[]) => entries.map(e => safeEntryJson(e) + '\n').join('');
+export function safeEntryJson(value: unknown): string {
+  const check = (_k: string, v: unknown) => {
+    if (typeof v === 'number' && (!Number.isFinite(v) || (Number.isInteger(v) && !Number.isSafeInteger(v))))
+      throw new Error('unrepresentable number in canonical log entry');
+    return v;
+  };
+  const raw = JSON.stringify(value, check);
+  JSON.parse(raw, check);
+  return raw;
+}
 const object = (o: unknown): o is Record<string, unknown> => !!o && typeof o === 'object' && !Array.isArray(o);
 const positive = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
 
@@ -312,7 +322,7 @@ export function appendMessage(dir: string, anchor: MessageAnchor, entry: Entry):
   const on = verdictTarget(entry);
   if (on !== undefined && b.notes.entries[on - 1]?.op !== 'note') throw new Error(`${dir}: verdict names no series note`);
   mkdirSync(dir, { recursive: true });
-  appendLine(messagesFile(dir), JSON.stringify(m), 0o600);
+  appendLine(messagesFile(dir), safeEntryJson(m), 0o600);
   b.messages.push(m);
   indexMessage(b, m);
   p?.update(entry);

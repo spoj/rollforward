@@ -1269,9 +1269,11 @@ test("rf pull refuses a link where a folder goes, dangling ones too, but follows
   const dest = join(tmp, 'pull-file-link'), file = join(dest, 'working', 'nested', 'victim.txt');
   mkdirSync(dirname(file), { recursive: true });
   symlinkSync(join(outside, 'victim.txt'), file);
+  await assert.rejects(rf('pull', path, dest), fails(1, /is a symlink: remove it or pull into another directory\n$/));
+  assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
+  rmSync(file);
   await rf('pull', path, dest);
   assert.equal(readFileSync(file, 'utf8'), 'from the server');
-  assert.equal(readFileSync(join(outside, 'victim.txt'), 'utf8'), 'local');
   symlinkSync(dest, join(tmp, 'pull-linked'));
   assert.match(await rf('pull', path, join(tmp, 'pull-linked')), /fetched 0, \d+ up to date/);
 });
@@ -1312,7 +1314,7 @@ test("rf alone lists its commands and rf help COMMAND gives one's usage; every r
   assert.match(await rf(), /^rf login URL \[TOKEN\] .*\nrf ls \[--mine\] \[--json\] /);
   assert.equal(await rf('--version'), `${JSON.parse(readFileSync(join(app, 'cli', 'package.json'), 'utf8')).version}\n`);
   const wakeHelp = await rf('help', 'wake');
-  assert.match(wakeHelp, /^rf wake PATH AT.*\[--check PATH \[--deadline ISO\]\] \| rf wake --cancel ID\n/);
+  assert.match(wakeHelp, /^rf wake PATH AT.*\[--check PATH \[--deadline ISO\] \[--max-stale MIN\] \[--backstop-hours H\]\] \| rf wake --cancel ID\n/);
   assert.match(wakeHelp, /AT now, \+<n>m\|h\|d or a date/);
   await assert.rejects(rf('wake'), fails(2, /^rf wake PATH AT [^\n]+\n +AT now/));
   await assert.rejects(rf('comment', 'nowhere/at/all', 'Hello'), fails(1, /^rf: nothing you can see at nowhere\/at\/all\n$/));
