@@ -861,8 +861,12 @@ export class Browsers {
   async expire(site: string): Promise<string> {
     const { email, login } = use(this.inst, this.run, `web:${site}`);
     saveLogin(email, { ...login, expired: true });
-    await this.close(site);
     this.logExpired(login.id, loginGeneration(login) ?? '', site, email);
+    try {
+      await this.close(site);
+    } catch (e) {
+      this.inst.append('server', 'browsers', { run: this.run, error: (e as Error).message });
+    }
     return `recorded: ${site} signed ${email} out; they sign in to it again on the Logins page, and the instance carries on`;
   }
 
