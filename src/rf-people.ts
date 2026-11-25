@@ -49,9 +49,9 @@ rf approve PATH cN [TEXT] [--wake]   records content approval of proposal cN, no
 rf reject PATH cN [TEXT] [--wake]   rejects the agent's proposal cN, with feedback on missing information or changes;
                                   revised work takes a new proposal
 rf react PATH [cN] up|down|none   your thumbs up or down on comment cN, or on the instance, or none; quiet, open or closed
-rf close PATH [--as-series NAME] [--wake]   the series owner makes it the record and an example,
+rf close PATH [--as-series NAME]  the series owner makes it the record and an example,
                                   approving nothing; a task closes as a one-off, or as the first instance of the series NAME it
-                                  becomes; --wake starts runs of the series' later open instances, which may have used its draft
+                                  becomes
 rf abandon PATH                   the series owner leaves it as it is, neither an example nor a starting point
 rf delete PATH [--yes]            its workspace's owners and admins delete an instance, in any status, once they confirm, or
                                   with --yes: a run for it is cut, and all the server holds of it goes but its label and place,
@@ -189,7 +189,7 @@ What there is
   credentials. Scheduled and autonomous runs need a separate opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
   Transferring the whole series stops old runs and clears consent; old unread instructions become notes. Each act keeps
   its author, and every run its executor.
-- rf is quiet: a comment, upload, approval, rejection, close, new instance or request it starts begins no run unless --wake, and the agent
+- rf is quiet: a comment, upload, approval, rejection, new instance or request it starts begins no run unless --wake, and the agent
   reads it at its next run. The owner's rf wake PATH now starts one under current consent, without autonomous opt-in.
   A quiet upload or comment is committed to the instance's history at once.
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its

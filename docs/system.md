@@ -54,7 +54,7 @@ For scale, a weekly borrowing base's runs cost about $0.20–0.60 each with Clau
   |---|---|
   | Current owner: comment, upload, approval, rejection or immediate wake | Starts a run with valid explicit consent, unless quiet |
   | A scheduled wake or autonomous continuation | Starts only within its saved authority and current autonomous consent |
-  | A server-authored one-shot OOM retry wake | Starts under the run's captured authority in both autonomous and non-autonomous series |
+  | A server-authored one-shot OOM retry wake | Starts under the run's captured authority and current autonomous consent (autonomous series only; max 1 consecutive retry) |
   | Whom the agent's ask named, answering it: a reply, an approval or a rejection | An answer; starts a run under current consent |
   | A colleague: a comment, upload, approval or rejection | A note; starts none |
   | Another instance's agent, or a series note | A note; starts none |
