@@ -441,6 +441,32 @@ test('close and abandon persist their terminal audit event before screen.json, r
     await r2.close(who);
     assert.equal(base.log.length, baseLogBefore, 'closing 202611-r2 does not append correction to 202611');
     assert.equal(r2.log.some(e => e.op === 'corrected'), false, 'closing 202611-r2 does not append corrected');
+
+    // 5) Failed/in-flight close must NOT let fire() consume a due one-off wake while inst.closing is true.
+    const { fire } = await import('../src/waker.ts');
+    const raceInst = createInstance('monthly', '202612', owner);
+    const itemFile = join(raceInst.dir, 'working', 'pack.csv');
+    writeFileSync(itemFile, 'data');
+    raceInst.put(JSON.stringify({ ...raceInst.doc, items: [{ id: 'pack', name: 'Pack', kind: 'output', file: 'working/pack.csv' }] }), 1);
+    const gate = Promise.withResolvers<void>();
+    const hold = commit(raceInst.dir, who, 'Hold commit', gate.promise);
+    const wakeAt = new Date(Date.now() - 1000).toISOString();
+    setWake(raceInst.id, { at: wakeAt, from: owner, text: 'must survive failed close' });
+    const closingPromise = raceInst.close(who);
+    assert.equal(raceInst.closing, true, 'instance is mid-close');
+    assert.equal(raceInst.doc.status, 'closed', 'in-memory status is closed while packing');
+    fire();
+    assert.equal(wakesOf(raceInst.id).length, 1, 'fire() defers and does NOT consume due wake while inst.closing is true');
+    rmSync(itemFile);
+    gate.resolve();
+    await hold;
+    await assert.rejects(closingPromise, { status: 409, message: 'pack: no file working/pack.csv' });
+    assert.equal(raceInst.doc.status, 'open');
+    assert.equal(raceInst.closing, false);
+    assert.equal(wakesOf(raceInst.id).length, 1, 'one-off wake remains pending after failed close');
+    fire();
+    assert.equal(wakesOf(raceInst.id).length, 0, 'one-off wake fires once instance returns to open');
+    assert.equal(raceInst.log.filter(e => e.op === 'wake' && e.text === 'must survive failed close').length, 1);
   } finally {
     stopWaker();
     rmSync(tmp, { recursive: true, force: true });

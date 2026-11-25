@@ -299,3 +299,166 @@ test('interrupted, revoked-consent, archived, or non-OOM runs do not auto-retry 
     await Promise.all([iInt, iRev, iArc, iErr].map(i => committed(i.dir)));
   `);
 });
+
+test('Interrupt arriving during post-OOM drainCalls() suppresses OOM auto-retry', () => {
+  runScript(`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    import { mkdirSync } from 'node:fs';
+    import * as runner from './src/runner.ts';
+    import * as entra from './src/entra.ts';
+    import { initSystem, saveTree, writeJson } from './src/system.ts';
+    import { ownSeries } from './test/owner-fixture.ts';
+    import { createInstance, openStore } from './src/store.ts';
+    import { committed } from './src/git.ts';
+
+    const root = __ROOT__, alice = 'alice@example.com';
+    initSystem(root);
+    openStore(root);
+    saveTree({ workspaces: { w: { name: 'W', owners: [alice], members: [] } }, series: { s: { name: 'S', workspace: 'w' } } });
+    writeJson('users.json', { [alice]: { role: 'user' } });
+    mkdirSync(root + '/series/s', { recursive: true });
+    ownSeries('s', alice, [], true);
+
+    const connections = await import('./src/connections.ts');
+    const drainEntered = Promise.withResolvers();
+    const drainGate = Promise.withResolvers();
+    let drainOnce = true;
+    mock.module('./src/connections.ts', {
+      namedExports: {
+        ...connections,
+        hasCalls: () => drainOnce,
+        drainCalls: async () => {
+          drainOnce = false;
+          drainEntered.resolve();
+          await drainGate.promise;
+        },
+      },
+    });
+
+    let runs = 0;
+    const stopDone = Promise.withResolvers();
+    mock.module('./src/runner.ts', {
+      namedExports: {
+        ...runner,
+        startRun: async ({ onEvent }) => {
+          runs++;
+          return {
+            turn: async text => {
+              onEvent({ type: 'message_start', message: { role: 'user', content: text } });
+              onEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse' } });
+              return { settled: Promise.resolve({ aborted: true, error: runner.OOM_ERROR, oom: true }) };
+            },
+            steer: async () => {},
+            interrupt: async () => {},
+            stop: async () => { stopDone.resolve(); },
+          };
+        },
+      },
+    });
+    mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
+
+    const { active, interruptRun, kick } = await import('./src/waker.ts');
+    const inst = createInstance('s', 'P1', alice);
+    inst.append(alice, 'comment', { thread: 'c2', text: 'Heavy job' });
+    kick(inst);
+
+    await drainEntered.promise;
+    const running = active.get('s');
+    assert.ok(running, 'run still active while draining calls after OOM');
+    const interrupted = interruptRun(running);
+    drainGate.resolve();
+    await interrupted;
+    await stopDone.promise;
+    await new Promise(r => setTimeout(r, 150));
+    await committed(inst.dir);
+
+    assert.equal(runs, 1, 'no retry run started after Interrupt during post-OOM drain');
+    assert.equal(inst.log.filter(e => e.op === 'wake').length, 0, 'OOM wake suppressed by Interrupt during drainCalls');
+    assert.equal(inst.log.find(e => e.op === 'done')?.aborted, true);
+  `);
+});
+
+test('archiving cancels pending OOM retry across restore while legacy why:archived preserves later queued owner comments', () => {
+  runScript(`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    import { mkdirSync } from 'node:fs';
+    import * as runner from './src/runner.ts';
+    import * as entra from './src/entra.ts';
+    import { initSystem, saveTree, tree, writeJson } from './src/system.ts';
+    import { ownSeries } from './test/owner-fixture.ts';
+    import { createInstance, openStore } from './src/store.ts';
+    import { committed } from './src/git.ts';
+
+    const root = __ROOT__, alice = 'alice@example.com';
+    initSystem(root);
+    openStore(root);
+    saveTree({
+      workspaces: { w: { name: 'W', owners: [alice], members: [] } },
+      series: { sArc: { name: 'Arc', workspace: 'w' }, sLeg: { name: 'Leg', workspace: 'w' } },
+    });
+    writeJson('users.json', { [alice]: { role: 'user' } });
+    for (const sid of ['sArc', 'sLeg']) {
+      mkdirSync(root + '/series/' + sid, { recursive: true });
+      ownSeries(sid, alice, [], true);
+    }
+
+    const runsByInst = new Map();
+    const stopDone = new Map();
+    mock.module('./src/runner.ts', {
+      namedExports: {
+        ...runner,
+        startRun: async ({ id, onEvent }) => {
+          runsByInst.set(id, (runsByInst.get(id) ?? 0) + 1);
+          return {
+            turn: async text => {
+              onEvent({ type: 'message_start', message: { role: 'user', content: text } });
+              onEvent({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse' } });
+              return { settled: Promise.resolve({ aborted: false }) };
+            },
+            steer: async () => {},
+            interrupt: async () => {},
+            stop: async () => { stopDone.get(id)?.resolve(); },
+          };
+        },
+      },
+    });
+    mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
+
+    const { cancelPendingOom, kick } = await import('./src/waker.ts');
+    const { authority } = await import('./src/logins.ts');
+
+    // (a) Archiving cancels a pending logged OOM recovery wake so restoring does NOT revive it.
+    const iArc = createInstance('sArc', 'P1', alice);
+    const d1 = iArc.append('server', 'done', { run: 1, aborted: true, seen: 1, cost: 0, estimated: false, error: runner.OOM_ERROR, oom: true });
+    iArc.append('server', 'wake', {
+      reason: 'Run 1 hit the memory limit', from: 'server', cause: d1.seq, initiator: alice,
+      authority: authority(iArc), recovery: { run: 1, reason: 'oom' },
+    });
+    const t1 = tree();
+    t1.series.sArc.archived = true;
+    saveTree(t1);
+    cancelPendingOom([iArc], alice);
+    t1.series.sArc.archived = false;
+    saveTree(t1);
+    kick(iArc);
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(runsByInst.get(iArc.id) ?? 0, 0, 'restoring archived series must not revive cancelled OOM wake');
+
+    // (b) Legacy pre-cutover log with why:archived written AFTER a queued owner comment must still run the owner comment on restore.
+    const iLeg = createInstance('sLeg', 'P1', alice);
+    stopDone.set(iLeg.id, Promise.withResolvers());
+    const d2 = iLeg.append('server', 'done', { run: 1, aborted: true, seen: 1, cost: 0, estimated: false, error: runner.OOM_ERROR, oom: true });
+    iLeg.append('server', 'wake', {
+      reason: 'Run 1 hit the memory limit', from: 'server', cause: d2.seq, initiator: alice,
+      authority: authority(iLeg), recovery: { run: 1, reason: 'oom' },
+    });
+    iLeg.append(alice, 'comment', { thread: 'c4', text: 'Owner follow-up queued before archive' });
+    iLeg.append(alice, 'interrupt', { quiet: true, why: 'archived' });
+    kick(iLeg);
+    await stopDone.get(iLeg.id).promise;
+    await committed(iLeg.dir);
+    assert.equal(runsByInst.get(iLeg.id), 1, 'owner comment queued before archive still runs after restore');
+  `);
+});

@@ -492,3 +492,55 @@ test('weekly series wake-check returning stop 4 times leaks 0 empty open instanc
   assert.equal((await listing()).instances.filter((i: any) => i.status === 'open').length, 1);
   rmSync(modeFile, { force: true });
 });
+
+test('one-off series wake-check without an open instance supports rf show, mounts empty RO RF_WORKING, leaves 0 empty instances, and records $0 stop in /api/runs', async () => {
+  const { sid, iid, dir, check } = await fixture('SeriesEnv', `
+import errno, json, os, subprocess
+from pathlib import Path
+screen = json.loads(subprocess.check_output(['rf', 'show']))
+assert screen['status'] == 'open' and screen['items'] == [] and screen['label'] == '2026-04-08', screen
+working = Path(os.environ['RF_WORKING'])
+assert list(working.iterdir()) == [], f'RF_WORKING not empty: {list(working.iterdir())}'
+assert not (working / 'state.json').exists(), 'prior period state.json leaked into RF_WORKING'
+assert not Path('working/state.json').exists(), 'prior period state.json leaked into relative working/'
+try:
+    (working / 'blocked').write_text('no')
+except OSError as e:
+    assert e.errno == errno.EROFS
+else:
+    raise AssertionError('RF_WORKING was writable')
+print(json.dumps({'decision': 'stop', 'message': 'Env clean, rf show ok, nothing due'}))
+`, 'py', '2026-04-01');
+  writeFileSync(join(dir, 'state.json'), JSON.stringify({ done: true }));
+  assert.equal((await call('POST', `/api/instances/${iid}/close`, {})).status, 200);
+
+  const created = await json(`/api/wakes/${sid}`, 'PUT', { at: iso(1200), label: '2026-04-08', check });
+  const row = await until('series wake-check-stop recorded in /api/runs', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'Test/SeriesEnv/2026-04-08' && r.outcome === 'wake-check-stop');
+  });
+  assert.equal(row.cost, 0);
+  assert.equal(row.run, null);
+  assert.equal(row.message, 'Env clean, rf show ok, nothing due');
+  assert.equal(row.provenance?.schedule, created.id);
+  const series = (await json('/api'))[0].series.find((s: any) => s.id === sid);
+  assert.equal(series.instances.filter((i: any) => i.status === 'open').length, 0, 'one-off series stop creates zero open instances');
+  assert.equal(series.instances.some((i: any) => i.label === '2026-04-08'), false);
+});
+
+test('series-level wake-check open fallback selects open period before target label, never a future open period', async () => {
+  const { id: sid } = await json('/api/series', 'POST', { workspace, name: 'OpenFallback', logins: [], autonomous: true });
+  const { id: marId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-03', quiet: true });
+  const { id: mayId } = await json(`/api/series/${sid}`, 'POST', { label: '2026-05', quiet: true });
+  writeFileSync(join(root, 'instances', marId, 'working', 'pick.py'), `print('{"decision":"stop","message":"picked march"}')\n`);
+  writeFileSync(join(root, 'instances', mayId, 'working', 'pick.py'), `print('{"decision":"continue","message":"wrongly picked may"}')\n`);
+
+  await json(`/api/wakes/${sid}`, 'PUT', { at: iso(1200), label: '2026-04', check: 'working/pick.py' });
+  const row = await until('april check picks march and stops', async () => {
+    const rows = await json('/api/runs?since=2000-01-01');
+    return rows.find((r: any) => r.path === 'Test/OpenFallback/2026-04' && r.outcome === 'wake-check-stop');
+  });
+  assert.equal(row.message, 'picked march');
+  const series = (await json('/api'))[0].series.find((s: any) => s.id === sid);
+  assert.equal(series.instances.some((i: any) => i.label === '2026-04'), false, 'future May script must not be chosen for April');
+});
