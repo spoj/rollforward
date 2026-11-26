@@ -407,8 +407,11 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
   }
 
   const known = all[email];
-  // Fence fresh JWT admission if an older server incremented `epoch` (e.g. sign-out during rollback) without recording `revoked_epoch`.
-  if ((known.epoch ?? 0) > (known.revoked_epoch ?? 0)) {
+  // Fence fresh JWT admission if an older server incremented `epoch` (e.g. sign-out during rollback) without updating `revoked_epoch`.
+  if (known.revoked_epoch === undefined) {
+    known.revoked_epoch = known.epoch ?? 0;
+    writeJson('users.json', all);
+  } else if ((known.epoch ?? 0) > known.revoked_epoch) {
     const floor = Math.max(known.revoked_before ?? 0, Date.now());
     known.revoked_before = floor;
     known.revoked_epoch = known.epoch ?? 0;

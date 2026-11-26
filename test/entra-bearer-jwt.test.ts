@@ -89,9 +89,9 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
 
     // Pre-enroll admin and bob with oid (Bearer JWTs never auto-provision or bind new OIDs).
     writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({
-      'admin@demo.test': { role: 'admin', name: 'Admin User', oid: 't1/oid-admin', groups: ['g-finance'], epoch: 1, revoked_epoch: 1 },
-      'bob@demo.test': { role: 'user', name: 'Bob', oid: 't1/oid-bob', groups: [], epoch: 1, revoked_epoch: 1 },
-      'unlinked@demo.test': { role: 'user', name: 'Unlinked', epoch: 1, revoked_epoch: 1 },
+      'admin@demo.test': { role: 'admin', name: 'Admin User', oid: 't1/oid-admin', groups: ['g-finance'], epoch: 1 },
+      'bob@demo.test': { role: 'user', name: 'Bob', oid: 't1/oid-bob', groups: [], epoch: 1 },
+      'unlinked@demo.test': { role: 'user', name: 'Unlinked', epoch: 1 },
     }));
 
     const nowSec = Math.floor(Date.now() / 1000);
@@ -242,8 +242,8 @@ printf '%s\\n' '${validApiAud}'
     mkdirSync(join(root, 's1'), { recursive: true });
     writeFileSync(join(root, 's1', 'settings.json'), JSON.stringify({ version: 1, owner: 'dave@demo.test', epoch: 1, since: new Date().toISOString() }));
     const uMgr = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
-    uMgr['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr'], epoch: 1, revoked_epoch: 1 };
-    uMgr['dave@demo.test'] = { role: 'user', name: 'Dave', oid: 't1/oid-dave', groups: [], epoch: 1, revoked_epoch: 1 };
+    uMgr['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr'], epoch: 1 };
+    uMgr['dave@demo.test'] = { role: 'user', name: 'Dave', oid: 't1/oid-dave', groups: [], epoch: 1 };
     // P1-A: pre-granted email in workspace without user row cannot auto-provision via JWT
     writeFixtureTree(root, {
       workspaces: { w1: { name: 'Team', owners: ['g-mgr', 'pregranted@demo.test'], members: ['carol@demo.test', 'dave@demo.test'] } },
@@ -281,7 +281,7 @@ printf '%s\\n' '${validApiAud}'
 
     // P1-4: wake-check and VPN-routed sign-in must enforce admitted JWT capabilities, not stored groups
     const uCap = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
-    uCap['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr', 'g-wc', 'g-vpn'], epoch: 1, revoked_epoch: 1 };
+    uCap['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr', 'g-wc', 'g-vpn'], epoch: 1 };
     writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(uCap));
     writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'wake-check': ['g-wc'], vpn: ['g-vpn'] }));
     mkdirSync(join(root, 's_wc'), { recursive: true });
