@@ -485,16 +485,14 @@ function finish(a: Active, aborted: boolean, error?: string, oom = false, allowO
   return done;
 }
 
-// A run is a lease on its view too: a workspace it reads taking it off its readers, or a series it reads moving out of reach, its own
-// series moving, or its runner no longer seeing its workspace cuts it at once, its token first, so nothing more goes out, and its
-// instance carries on in a run of the new view. Anything else, such as a rename or a series made in reach, waits for the next run.
+// A run is a lease on its series and authority: its own series moving, its runner no longer seeing its workspace, or its authority
+// ending cuts it at once, its token first, so nothing more goes out. Changes to its read view wait for the next run.
 function leases() {
   const t = tree();
   for (const a of active.values()) {
-    const ws = t.series[a.inst.seriesId].workspace, reads = [a.inst.seriesId, ...reach(t, a.inst.seriesId)];
+    const ws = t.series[a.inst.seriesId].workspace;
     const why = ws !== a.workspace ? CUT.moved : !sees(a.inst, t) ? CUT.runner
-      : !sameAuthority(a.inst, a.authority) ? CUT.authority
-      : Object.values(a.view.series).some(id => !reads.includes(id)) ? CUT.reach : undefined;
+      : !sameAuthority(a.inst, a.authority) ? CUT.authority : undefined;
     if (why) cut(a, why);
   }
   if (checking.size) {
@@ -550,25 +548,21 @@ function cut(a: Active, why: string) {
   a.ended = draining.then(() => a.ended).finally(() => retiring.delete(a));
 }
 
-// Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it, as a lease is cut, and any run whose view
-// holds it, which carries on in a run of a view without it; its wakes go, and its series' one-off wakes for its label, or all of a
-// task's. Requests to or from it go too. Once nothing runs in its folder, its last commit is done and its runs' browsers have logged what
-// they did, it becomes a hole. `fields` says what it cost, as its runs ended.
+// Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it; its wakes go, and its series' one-off wakes for
+// its label, or all of a task's. Requests to or from it go too. Once nothing runs in its folder, its last commit is done and its
+// runs' browsers have logged what they did, it becomes a hole. `fields` says what it cost, as its runs ended.
 export async function remove(inst: Instance, by: string, fields: () => Record<string, unknown>): Promise<Entry> {
   const t = tree(), task = !!t.series[inst.seriesId].single;
   inst.doc.status = 'deleted';
   clearTimeout(debounce.get(inst.id));
   debounce.delete(inst.id);
   waiting.delete(inst);
-  const runs = [...active.values()].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id));
+  const runs = [...active.values()].filter(a => a.inst === inst);
   const checks = [...checking.values()].filter(c => c.inst === inst || c.view && Object.values(c.view.names).includes(inst.id));
   for (const c of checks) c.cancel.abort();
-  for (const a of runs) {
-    if (a.inst !== inst) a.cut ??= CUT.gone;
-    revokeRun(a);
-  }
-  for (const a of runs) if (a.inst === inst && hasCalls(a)) await drainCalls(a);
-  for (const a of runs) a.inst === inst ? finish(a, true, CUT.deleted) : cut(a, CUT.gone);
+  for (const a of runs) revokeRun(a);
+  for (const a of runs) if (hasCalls(a)) await drainCalls(a);
+  for (const a of runs) finish(a, true, CUT.deleted);
   const w = wakes();
   for (const [id, k] of Object.entries(w.pending)) if (k.target === inst.id || (k.target === inst.seriesId && (task || (k.label === inst.label && !k.days)))) delete w.pending[id];
   for (const [id, r] of Object.entries(w.requests)) if (r.inst === inst.id || r.target === inst.id
@@ -577,7 +571,7 @@ export async function remove(inst: Instance, by: string, fields: () => Record<st
   saveWakes(w);
   const commits = forget(inst.dir), deleted = inst.markDeleted(by, fields());
   act(by, { method: 'POST', path: `/api/instances/${inst.id}/delete`, deleted: `${named(t, inst.seriesId)}/${inst.label}` });
-  await Promise.all([...[...retiring].filter(a => a.inst === inst || Object.values(a.view.names).includes(inst.id)).map(a => a.ended), ...checks.map(c => c.ended), commits]);
+  await Promise.all([...[...retiring].filter(a => a.inst === inst).map(a => a.ended), ...checks.map(c => c.ended), commits]);
   inst.clear();
   return deleted;
 }
@@ -1264,7 +1258,7 @@ export async function sweepIdleUngrouped(
 
 // Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).
 // Either way its instance is woken to carry on.
-export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
+export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', deleted: 'its instance was deleted' };
 
 // Conservative migration for legacy or rollback-written wakes.json entries:
 // every v2 wake carries an explicit boolean `request` marker; unmarked, stale,

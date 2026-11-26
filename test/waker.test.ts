@@ -552,7 +552,7 @@ test("a run starts only for a runner who still sees its workspace: one removed f
   assert.ok(!ops(inst).includes('run'));
 });
 
-test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
+test('deletion records its tombstone before waiting for a starting sandbox, and another deletion does not wait for an unrelated retiring reader', async () => {
   const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
   const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
   let cdpOpen = true;
@@ -567,16 +567,16 @@ test('deletion records its tombstone before waiting for a starting sandbox, and 
   assert.equal(new Instance(own.dir).hole, true, 'a restart already finds the tombstone');
   const removingRead = remove(read, alice, () => ({ cost: 0, runs: [] })).then(() => { readDone = true; });
   await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone], [false, false]);
+  assert.deepEqual([done, readDone], [false, true], 'unrelated deletion does not wait on another instance retiring');
   ready.resolve({ stop: () => stopped.promise } as Run);
   await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone], [false, false], 'starting is not stopping');
+  assert.equal(done, false, 'starting is not stopping');
   stopped.resolve();
   await new Promise(ok => setImmediate(ok));
   let lateDone = false;
   const removingLate = remove(late, alice, () => ({ cost: 0, runs: [] })).then(() => { lateDone = true; });
   await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone, lateDone], [false, false, false], 'a retired sandbox can still have browsers closing');
+  assert.deepEqual([done, lateDone], [false, true], 'own deletion still waits for browsers closing');
   browsers.resolve();
   await Promise.all([removing, removingRead, removingLate]);
   for (const inst of [own, read, late]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);

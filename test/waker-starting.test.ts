@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (const result of ['resolve', 'reject']) test(`a starting run retires fully before deletion or drain completes: ${action}, ${result}`, () => {
+for (const action of ['remove', 'lease', 'lease-calls']) for (const result of ['resolve', 'reject']) test(`a starting run retires fully before deletion or drain completes: ${action}, ${result}`, () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-starting-'));
   try {
     execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', `
@@ -31,7 +31,7 @@ for (const action of ['remove', 'remove-view', 'lease', 'lease-calls']) for (con
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       mock.module('./src/connections.ts', { namedExports: { ...connections, hasCalls: () => calls, abortCalls: () => {}, drainCalls: () => charged.promise } });
       const { active, byToken, drain, drained, kick, remove, updating } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Starting', alice), target = action === 'remove-view' ? createInstance('other', 'Viewed', alice) : inst;
+      const inst = createInstance('s', 'Starting', alice), target = inst;
       mkdirSync(target.dir + '/working', { recursive: true });
       const marker = target.dir + '/working/kept';
       writeFileSync(marker, 'kept until every sandbox stops');

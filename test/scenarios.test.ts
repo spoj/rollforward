@@ -509,7 +509,7 @@ test('an archived series or workspace does no work: one with a run going is arch
   assert.match(waited.prompt!, /Go on\./, 'restored, the run that waited starts');
 });
 
-test("a run reads only its workspace's links: membership adds no reach, removing a link cuts it, and a move requires fresh destination consent and owner initiation", async () => {
+test("a run reads only its workspace's links: membership adds no reach, removing a link waits for the next run, and a move requires fresh destination consent and owner initiation", async () => {
   const workspace = async (name: string) => (await (await call('POST', '/api/workspaces', { name })).json()).id as string;
   const source = await workspace('Lease source'), reader = await workspace('Lease reader'), elsewhere = await workspace('Lease elsewhere');
   const { id: ledger } = await (await call('POST', '/api/series', { workspace: source, name: 'Ledger', logins: [], autonomous: false })).json();
@@ -521,8 +521,8 @@ test("a run reads only its workspace's links: membership adds no reach, removing
     return 'ls /work';
   }, async () => {
     assert.equal((await call('DELETE', `/api/workspaces/${source}/readers/${reader}`)).status, 200);
-    return 'sleep 60';
-  }], report: 'Never said.', saw: [] };
+    return 'echo still running';
+  }], report: 'Finished without being cut.', saw: [] };
   const moved: Script = { bash: ['ls /work', async () => {
     assert.equal((await call('PUT', `/api/proposals/${reader}`, { kind: 'move', series, to: elsewhere })).status, 200);
     assert.equal((await call('POST', `/api/proposals/${reader}`, { owners: [], members: [] })).status, 200, 'accepted though a run of what moves is going');
@@ -531,6 +531,8 @@ test("a run reads only its workspace's links: membership adds no reach, removing
   const after: Script = { bash: ['pwd'], report: 'Carried on.', saw: [] };
   scripts.push(linked, moved, after);
   const { id } = await (await call('POST', `/api/series/${series}`, { label: '2026-11' })).json();
+  await runs(id, 1);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check new view.' })).status, 200);
   await runs(id, 2);
   await until('the move accepted', () => entries(id).some(e => e.op === 'move'));
   await new Promise(ok => setTimeout(ok, 2000));
@@ -540,15 +542,15 @@ test("a run reads only its workspace's links: membership adds no reach, removing
   const log = await runs(id, 3), done = log.filter(e => e.op === 'done'), leases = (ls: string) => ls.split('\n').filter(l => l.startsWith('Lease'));
   assert.deepEqual(leases(linked.saw[0]), ['Lease reader', 'Lease source'], 'its workspace is a reader of the other');
   assert.deepEqual(leases(linked.saw[1]), ['Lease reader', 'Lease source'], 'Carol joining changes nothing it reads');
-  assert.deepEqual(leases(moved.saw[0]), ['Lease reader'], 'the link taken off, it no longer reads the other');
+  assert.equal(linked.saw[2].trim(), 'still running', 'unlinking a sibling workspace does not cut an in-flight run');
+  assert.deepEqual(leases(moved.saw[0]), ['Lease reader'], 'the link taken off, the next run no longer reads the other');
   assert.equal(after.saw[0].trim(), '/work/Lease elsewhere/Report/2026-11');
-  assert.deepEqual(done.map(e => [e.aborted, e.error]), [[true, 'its reach narrowed'], [true, 'its series owner can no longer execute it'], [false, undefined]]);
-  assert.deepEqual(log.filter(e => e.op === 'wake' && e.from === 'server').map(e => [e.reason, log[(e.cause as number) - 1].op]),
-    [['Run 1 was cut: its reach narrowed; carry on', 'done']]);
+  assert.deepEqual(done.map(e => [e.aborted, e.error]), [[false, undefined], [true, 'its series owner can no longer execute it'], [false, undefined]]);
+  assert.deepEqual(log.filter(e => e.op === 'wake' && e.from === 'server'), []);
   assert.ok(log.findIndex(e => e.op === 'authority') < log.indexOf(done[1]), 'the destination invalidates authority before retirement');
   assert.deepEqual(log.filter(e => e.op === 'run').map(e => e.authority.workspace), [reader, reader, elsewhere]);
   const ran = (await (await call('GET', '/api/runs')).json()).filter((r: { path: string }) => r.path === 'Lease elsewhere/Report/2026-11');
-  assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['cut', 'cut', 'done'], 'each carried on by the next, as after a restart');
+  assert.deepEqual(ran.map((r: { outcome: string }) => r.outcome), ['done', 'cut', 'done'], 'unlinking lets the run finish, moving cuts it');
 });
 
 test("approvals are git commits: the agent commits a moment worth keeping and proposes what it will do; anyone who sees the instance approves it in their name, someone else's a note for the owner, or rejects it, once; a reply under it approves nothing, a question takes no approval, and the agent withdraws what it no longer needs; closing commits as the owner's", async () => {
@@ -1525,22 +1527,25 @@ os.close(w); os.read(r, 1)' </dev/null >/dev/null 2>&1`;
   assert.ok(!existsSync(runsDir) || !readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${id}\0`)), "Run 2's sandbox exited before its commit completed");
 });
 
-test("deleting an instance cuts a run whose view holds it, which carries on without it, and a run going for it, whose sandbox stops before its folder goes", async () => {
+test("deleting an unrelated instance does not cut an in-flight run, while deleting a running instance cuts it and stops its sandbox before its folder goes", async () => {
   const { id: ws } = await (await call('POST', '/api/workspaces', { name: 'Purge' })).json();
   const { id: payroll } = await (await call('POST', '/api/series', { workspace: ws, name: 'Payroll', logins: [], autonomous: false })).json();
   const { id: report } = await (await call('POST', '/api/series', { workspace: ws, name: 'Report', logins: [], autonomous: true })).json();
   const { id: old } = await (await call('POST', `/api/series/${payroll}`, { label: '2026-10', quiet: true })).json();
   const reader: Script = { bash: ['ls /work/Purge/Payroll', async () => {
     assert.equal((await call('POST', `/api/instances/${old}/delete`)).status, 200, 'deleted while a run in reach goes');
-    return 'sleep 60';
-  }], report: 'Never said.', saw: [] };
-  const after: Script = { bash: ['ls /work/Purge/Payroll 2>/dev/null; echo end'], report: 'Carried on.', saw: [] };
+    return 'echo still running';
+  }], report: 'Finished without being cut.', saw: [] };
+  const after: Script = { bash: ['ls /work/Purge/Payroll 2>/dev/null; echo end'], report: 'Next run.', saw: [] };
   scripts.push(reader, after);
   const { id } = await (await call('POST', `/api/series/${report}`, { label: '2026-11' })).json();
+  await runs(id, 1);
+  assert.equal((await call('POST', `/api/instances/${id}/comment`, { text: 'Check next run.' })).status, 200);
   const log = await runs(id, 2);
   assert.equal(reader.saw[0].trim(), '2026-10');
+  assert.equal(reader.saw[1].trim(), 'still running', 'deleting an unrelated instance does not cut an in-flight run');
   assert.equal(after.saw[0].trim(), 'end', 'its next run sees nothing of it');
-  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[true, 'an instance in its reach was deleted'], [false, undefined]]);
+  assert.deepEqual(log.filter(e => e.op === 'done').map(e => [e.aborted, e.error]), [[false, undefined], [false, undefined]]);
 
   // A run of its own, going as it's deleted: cut, its sandbox stopped, and nothing it wrote left behind.
   const runsDir = join(tmp, 'scratch', 'runs'), pi = (i: string) => existsSync(runsDir) && readdirSync(runsDir).some(t => existsSync(join(runsDir, t, 'bwrap.args')) && readFileSync(join(runsDir, t, 'bwrap.args'), 'utf8').includes(`RF_INSTANCE\0${i}\0`));
