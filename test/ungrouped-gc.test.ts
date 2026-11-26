@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { accessSync, constants, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initSystem, saveTree, tree } from '../src/system.ts';
+import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { createInstance, instance, openStore } from '../src/store.ts';
 import { sweepIdleUngrouped, UNGROUPED_IDLE_MS } from '../src/waker.ts';
 import { openSkills, pushed, skills } from '../src/skills.ts';
@@ -37,6 +37,43 @@ test('sweepIdleUngrouped abandons single:true open instances idle >= 24h and lea
     assert.equal(instance(oldInst.id).log.at(-1)?.by, 'server');
     assert.equal(instance(newInst.id).doc.status, 'open');
     assert.equal(instance(recInst.id).doc.status, 'open');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('sweepIdleUngrouped skips single:true open instances that have a pending wake', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-ungrouped-gc-wake-'));
+  try {
+    initSystem(root);
+    openStore(root);
+    const t = tree();
+    t.workspaces.w1 = { name: 'Main', owners: ['alice@example.com'], members: ['alice@example.com'] };
+    t.series.s_waked = { name: 'Scheduled Task', workspace: 'w1', single: true };
+    t.series.s_idle = { name: 'Idle Task', workspace: 'w1', single: true };
+    saveTree(t);
+
+    const wakedInst = createInstance('s_waked', 'Scheduled Task', 'alice@example.com');
+    const idleInst = createInstance('s_idle', 'Idle Task', 'alice@example.com');
+
+    const now = Date.now();
+    const oldAt = new Date(now - UNGROUPED_IDLE_MS - 3_600_000).toISOString();
+    wakedInst.log.at(-1)!.at = oldAt;
+    idleInst.log.at(-1)!.at = oldAt;
+
+    writeJson('wakes.json', {
+      pending: {
+        w1: { target: wakedInst.id, at: new Date(now + 3_600_000).toISOString(), from: 'alice@example.com', text: 'check later' },
+      },
+      requests: {},
+      fired: {},
+      checks: [],
+    });
+
+    const abandoned = await sweepIdleUngrouped(now);
+    assert.deepEqual(abandoned, [idleInst.id]);
+    assert.equal(instance(wakedInst.id).doc.status, 'open');
+    assert.equal(instance(idleInst.id).doc.status, 'abandoned');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

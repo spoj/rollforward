@@ -1178,12 +1178,13 @@ export async function sweepIdleUngrouped(
   idleMs = Number(process.env.RF_UNGROUPED_IDLE_MS ?? UNGROUPED_IDLE_MS),
 ): Promise<string[]> {
   if (!Number.isFinite(idleMs) || idleMs <= 0) return [];
-  const t = tree(), abandoned: string[] = [];
+  const t = tree(), pendingTargets = new Set(Object.values(wakes().pending).map(k => k.target)), abandoned: string[] = [];
   for (const [sid, s] of Object.entries(t.series)) {
     if (!s.single || busy(sid)) continue;
     for (const inst of instances(sid)) {
       if (inst.hole || inst.closing || inst.doc.status !== 'open') continue;
       if (debounce.has(inst.id) || waiting.has(inst) || sweeping.has(inst.id)) continue;
+      if (pendingTargets.has(inst.id) || pendingTargets.has(sid)) continue;
       const last = inst.log.at(-1)?.at;
       const lastMs = last ? Date.parse(last) : NaN;
       if (!Number.isFinite(lastMs) || now - lastMs < idleMs) continue;

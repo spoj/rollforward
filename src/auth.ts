@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify, type JsonWebKey } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -116,13 +116,16 @@ function bearer(req: IncomingMessage, url: URL, record = true): Me | null {
   return asPerson(t.email, u);
 }
 
-const admitted = new WeakMap<IncomingMessage, { me: Me; url: URL; caps: string[] }>();
+const admitted = new WeakMap<IncomingMessage, { me: Me; url: URL; caps: string[]; entraJwt?: { email: string; exp: number } }>();
 
 // Revalidate the credential, not just its person; pre-body permission checks cannot survive changed authority.
 export function recheckRequest(req: IncomingMessage) {
   const before = admitted.get(req);
   if (!before) return; // Sandbox requests authenticate by their run, not a person's credential.
-  const now = bearer(req, before.url, false) ?? session(req), { me, caps } = before;
+  const now = before.entraJwt
+    ? (before.entraJwt.exp > Date.now() ? asPerson(before.entraJwt.email) : null)
+    : (bearer(req, before.url, false) ?? session(req));
+  const { me, caps } = before;
   if (!now) throw new HttpError(401, 'sign in first');
   if (now.email !== me.email || now.role !== me.role || now.groups.length !== me.groups.length || now.groups.some(g => !me.groups.includes(g)) || caps.some(c => !can(now, c)))
     throw new HttpError(403, 'permissions changed during the request; try again');
@@ -253,7 +256,99 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
 <form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
 }
 
-let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; end_session_endpoint?: string } | undefined;
+let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri?: string; end_session_endpoint?: string } | undefined;
+
+type Jwk = JsonWebKey & { kid?: string; use?: string; alg?: string };
+let jwksCache: { keys: Jwk[]; fetchedAt: number; uri: string } | undefined;
+const JWKS_TTL_MS = 3_600_000;
+const JWKS_MIN_REFRESH_MS = 60_000;
+const JWT_ALGS: Record<string, string> = { RS256: 'RSA-SHA256', RS384: 'RSA-SHA384', RS512: 'RSA-SHA512' };
+
+async function fetchJwks(uri: string, force = false): Promise<Jwk[]> {
+  if (!/^https:/.test(uri) && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(uri)) throw new HttpError(502, 'the jwks_uri must use https');
+  const now = Date.now();
+  if (!force && jwksCache && jwksCache.uri === uri && now - jwksCache.fetchedAt < JWKS_TTL_MS) return jwksCache.keys;
+  if (force && jwksCache && jwksCache.uri === uri && now - jwksCache.fetchedAt < JWKS_MIN_REFRESH_MS) return jwksCache.keys;
+  const r = await fetch(uri, { signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new HttpError(502, `Microsoft's signing keys did not load (${r.status})`);
+  const body = await r.json().catch(() => ({})) as { keys?: Jwk[] };
+  if (!Array.isArray(body.keys)) throw new HttpError(502, 'invalid JWKS response');
+  jwksCache = { keys: body.keys, fetchedAt: now, uri };
+  return body.keys;
+}
+
+function issuerMatches(iss: unknown, expected: string): boolean {
+  if (typeof iss !== 'string') return false;
+  const norm = (s: string) => s.replace(/\/$/, '');
+  if (norm(iss) === norm(expected)) return true;
+  const tid = /^https:\/\/(?:login\.microsoftonline\.com|sts\.windows\.net)\/([^/]+)/i.exec(expected)?.[1];
+  if (!tid) return false;
+  return norm(iss) === `https://login.microsoftonline.com/${tid}/v2.0` || norm(iss) === `https://sts.windows.net/${tid}`;
+}
+
+export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: number }> {
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new HttpError(401, 'invalid bearer token');
+  const [headerB64, payloadB64, sigB64] = parts;
+  let header: { alg?: string; kid?: string }, claims: Record<string, any>;
+  try {
+    header = JSON.parse(unb64(headerB64));
+    claims = JSON.parse(unb64(payloadB64));
+  } catch {
+    throw new HttpError(401, 'invalid bearer token');
+  }
+  const nodeAlg = header.alg ? JWT_ALGS[header.alg] : undefined;
+  if (!nodeAlg) throw new HttpError(401, 'unsupported bearer token algorithm');
+
+  const d = await discovery();
+  if (!d.jwks_uri) throw new HttpError(502, 'OIDC discovery has no jwks_uri');
+  let keys = await fetchJwks(d.jwks_uri);
+  let candidates = header.kid ? keys.filter(k => k.kid === header.kid) : keys.filter(k => k.kty === 'RSA' && (!k.use || k.use === 'sig'));
+  if (!candidates.length && header.kid) {
+    keys = await fetchJwks(d.jwks_uri, true);
+    candidates = keys.filter(k => k.kid === header.kid);
+  }
+  const signed = Buffer.from(`${headerB64}.${payloadB64}`);
+  const sig = Buffer.from(sigB64, 'base64url');
+  const verified = candidates.some(jwk => {
+    try {
+      return verify(nodeAlg, signed, createPublicKey({ key: jwk, format: 'jwk' }), sig);
+    } catch {
+      return false;
+    }
+  });
+  if (!verified) throw new HttpError(401, 'invalid bearer token signature');
+
+  const now = Date.now();
+  if (typeof claims.exp !== 'number' || !(claims.exp * 1000 > now)) throw new HttpError(401, 'bearer token has expired');
+  if (typeof claims.nbf === 'number' && claims.nbf * 1000 > now + 60_000) throw new HttpError(401, 'bearer token is not yet valid');
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!oidc.clientId || (!aud.includes(oidc.clientId) && !aud.includes(`api://${oidc.clientId}`))) throw new HttpError(401, 'bearer token audience does not match');
+  if (!issuerMatches(claims.iss, d.issuer)) throw new HttpError(401, 'bearer token issuer does not match');
+
+  const oid = claims.oid && claims.tid ? `${claims.tid}/${claims.oid}` : undefined;
+  const all = users();
+  let email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').trim().toLowerCase();
+  if (oid && (!email || !all[email])) {
+    const byOid = Object.entries(all).find(([, u]) => u.oid === oid)?.[0];
+    if (byOid) email = byOid;
+  }
+  if (!email.includes('@')) throw new HttpError(403, 'bearer token has no email address');
+  if (domains.length && !domains.includes(email.split('@')[1])) throw new HttpError(403, `${email} is not in an allowed domain`);
+
+  const known = all[email];
+  if (!known && env.RF_AUTO_PROVISION === '0' && !admins.has(email)) throw new HttpError(403, `${email} has no access yet`);
+  if (known?.disabled) throw new HttpError(403, `${email} is disabled`);
+  if (oid && known?.oid && known.oid !== oid) throw new HttpError(403, `${email} belongs to another Microsoft account`);
+
+  const groups = Array.isArray(claims.groups) ? claims.groups.map(String) : undefined;
+  const u = (!known || (oid && !known.oid) || groups)
+    ? upsertUser(email, { name: claims.name ?? known?.name, ...(oid && { oid }), ...(groups && { groups }), ...(admins.has(email) && { role: 'admin' as Role }) })
+    : known;
+  const me = asPerson(email, u);
+  if (!me) throw new HttpError(403, `${email} is disabled`);
+  return { me, exp: claims.exp * 1000 };
+}
 
 async function discovery() {
   if (discovered) return discovered;
@@ -380,14 +475,25 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     await callback(req, res, url);
   } else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
   else if (url.pathname === '/auth/cli/poll' && req.method === 'POST') await collect(req, res);
-  else if (url.pathname === '/auth/logout' && req.method === 'POST') {
+  else if (url.pathname === '/auth/info' && req.method === 'GET') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ clientId: oidc.clientId, resource: oidc.clientId ? `api://${oidc.clientId}` : '' }));
+  } else if (url.pathname === '/auth/logout' && req.method === 'POST') {
     const end = (await discovery().catch(() => undefined))?.end_session_endpoint;
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
-    const me = bearer(req, url, record) ?? session(req);
+    const jwtMatch = /^Bearer ([^\s.]+\.[^\s.]+\.[^\s.]+)$/.exec(req.headers.authorization ?? '');
+    let me = bearer(req, url, record);
+    let entraJwt: { email: string; exp: number } | undefined;
+    if (!me && jwtMatch) {
+      const verified = await verifyEntraJwt(jwtMatch[1]);
+      me = verified.me;
+      entraJwt = { email: verified.me.email, exp: verified.exp };
+    }
+    me ??= session(req);
     if (me) {
-      admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)) });
+      admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)), ...(entraJwt && { entraJwt }) });
       return me;
     }
     if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');

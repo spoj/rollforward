@@ -2,7 +2,7 @@
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -14,7 +14,7 @@ process.on('uncaughtException', e => {
 });
 
 const usage = (c?: string, vpn = false, admin = false) => {
-  const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
+  const all = `rf login URL [TOKEN] [--az [--resource URI]]   without a TOKEN, through the browser; with --az, short-lived Entra tokens via Azure CLI (no token on disk); run via npx @rfany/rf@latest
 rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, owner, asks waiting and wakes;
                                   --mine, only open instances of series you own
 rf waiting [--json]               what waits on you: asks, proposals, requests and expired logins; also note notices (FYI).
@@ -285,7 +285,7 @@ if (cmd === 'comment' || cmd === 'settle') {
 } else for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i] === '-d' ? 'delay' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all', 'az'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -300,10 +300,30 @@ if ((!cmd || cmd === 'help') && !existsSync(config)) {
   process.exit();
 }
 if (cmd !== 'login' && !existsSync(config)) throw new Error('sign in first: rf login URL');
-let { url, token } = cmd === 'login' ? { url: args[0]?.replace(/\/$/, ''), token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
+let { url, token, auth, resource } = cmd === 'login'
+  ? { url: args[0]?.replace(/\/$/, ''), token: args[1], auth: flags.az ? 'az' : (typeof flags.auth === 'string' ? flags.auth : undefined), resource: typeof flags.resource === 'string' ? flags.resource : undefined }
+  : JSON.parse(readFileSync(config, 'utf8'));
+
+let cachedAzToken: string | undefined;
+function bearerToken(): string {
+  if (auth === 'az') {
+    if (cachedAzToken) return cachedAzToken;
+    if (!resource) throw new Error('missing resource for --az auth; run rf login URL --az again');
+    const azBin = process.env.RF_AZ_BIN || 'az';
+    try {
+      const out = execFileSync(azBin, ['account', 'get-access-token', '--resource', resource, '--query', 'accessToken', '-o', 'tsv'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      if (!out) throw new Error('empty access token returned by az');
+      return (cachedAzToken = out);
+    } catch (e: any) {
+      const stderr = String(e?.stderr ?? '').trim();
+      throw new Error(`az account get-access-token failed: ${stderr || e.message}`);
+    }
+  }
+  return token;
+}
 
 async function api(path: string, init: RequestInit = {}, accept: number[] = []) {
-  const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${token}` } });
+  const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${bearerToken()}` } });
   if (!r.ok && !accept.includes(r.status)) throw new Error(`${init.method ?? 'GET'} ${path}: ${r.status} ${await r.text()}`);
   return r;
 }
@@ -577,11 +597,25 @@ async function browserToken(): Promise<string> {
 }
 
 if (cmd === 'login' && url) {
-  token ??= await browserToken();
-  const me = await get('/me');
-  mkdirSync(dirname(config), { recursive: true });
-  writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
-  console.log(`signed in as ${me.email}`);
+  if (auth === 'az') {
+    if (!resource) {
+      const infoRes = await fetch(url + '/auth/info');
+      if (!infoRes.ok) throw new Error(`GET /auth/info: ${infoRes.status} ${await infoRes.text()}`);
+      const info = await infoRes.json() as { resource?: string; clientId?: string };
+      resource = info.resource || (info.clientId ? `api://${info.clientId}` : '');
+    }
+    if (!resource) throw new Error('server did not advertise an Entra resource; pass --resource api://<app-id>');
+    const me = await get('/me');
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(config, JSON.stringify({ url, auth: 'az', resource }), { mode: 0o600 });
+    console.log(`signed in as ${me.email} (az)`);
+  } else {
+    token ??= await browserToken();
+    const me = await get('/me');
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
+    console.log(`signed in as ${me.email}`);
+  }
 } else if (cmd === 'ls' && !args.length) {
   // --mine: open instances of series you own.
   const me = flags.mine && await get('/me'), rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
