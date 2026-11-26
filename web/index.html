@@ -731,7 +731,7 @@ const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![
 // absolute, or escaping paths stay literal); a path may hold spaces and one level of parentheses, as in TB (final).csv, and a link's an &,
 // which the text holds escaped and data-file decodes. [name](#cN) links a comment, and [name](../<label>#cN) one of another instance, last,
 // so what its title quotes of the comment is left as it is.
-const inline = (s, base, inst) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
+const inline = (s, base, inst) => s.replace(/!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
   const raw = f.replace(/&(amp|quot|#39|lt|gt);/g, (_, k) => ({ amp: '&', quot: '"', '#39': "'", lt: '<', gt: '>' }[k]));
   if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(raw)) return m;
   const cross = raw.match(/^(\.\.\/(?!\.\.\/)[^/]+\/)(?=(?:upload|working)\/)/)?.[1];
