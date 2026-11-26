@@ -1258,7 +1258,8 @@ export async function sweepIdleUngrouped(
 
 // Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).
 // Either way its instance is woken to carry on.
-export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', deleted: 'its instance was deleted' };
+// `reach` and `removed` are legacy strings no longer emitted, retained so `cachedRunsOf()` still classifies historical log.jsonl `done` entries as `'cut'`.
+export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', deleted: 'its instance was deleted', reach: 'its reach narrowed', removed: 'an instance in its reach was deleted' };
 
 // Conservative migration for legacy or rollback-written wakes.json entries:
 // every v2 wake carries an explicit boolean `request` marker; unmarked, stale,

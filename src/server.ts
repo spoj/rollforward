@@ -190,6 +190,10 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
       return send(res, 200, check.inst ? check.inst.doc : { rev: 1, status: 'open', items: [], ...(check.label && { label: check.label }) });
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
+      if (!tree().series[id]) {
+        const targetInst = instance(id);
+        if (targetInst.hole) throw new HttpError(404, `${targetInst.label} was deleted`);
+      }
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
     }
     throw new HttpError(403, 'a wake check is read-only');
@@ -1177,6 +1181,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'resolve') {
     if (!run) throw new HttpError(404, 'not found');
     const target = resolveFor(run, url.searchParams.get('path') ?? '');
+    if (!t.series[target]) {
+      const targetInst = instance(target);
+      if (targetInst.hole) throw new HttpError(404, `${targetInst.label} was deleted`);
+    }
     return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
@@ -1197,7 +1205,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     })));
   }
   // A workspace's managers let another workspace they see read it, and its managers or the other's take that off. What its agents
-  // read, that one's people see, whoever they are; a run reading it as it's taken off is cut (waker.ts leases()).
+  // read, that one's people see, whoever they are; taking it off takes effect on the next run (an operator can still interrupt a live run).
   if (kind === 'workspaces' && action === 'readers') {
     const w = t.workspaces[id], o = t.workspaces[other];
     if (req.method === 'PUT') {
