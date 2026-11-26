@@ -189,11 +189,14 @@ export function session(req: IncomingMessage): Me | null {
 // app is set to send them), then sets the session cookie. Entra's sub differs for each app, but its tenant and object ids (oid, kept as
 // tid/oid) name the person whatever the app, so a record from before them, made through an app since replaced, takes them at its
 // next sign-in; another issuer's sub must match.
-function admit(res: ServerResponse, email: string, name: string | undefined, who: { sub?: string; oid?: string }, groups: string[], next: string, extra: string[], refresh?: string) {
+function admit(res: ServerResponse, email: string, name: string | undefined, who: { sub?: string; oid?: string; verifiedEmail?: boolean }, groups: string[], next: string, extra: string[], refresh?: string) {
   const known = users()[email];
   if (!known && env.RF_AUTO_PROVISION === '0' && !admins.has(email)) return page(res, 403, `${email} has no access yet. Ask an admin to add you.`);
   if (known?.disabled) return page(res, 403, `${email} is disabled. Ask an admin.`);
   if (who.oid ? known?.oid && known.oid !== who.oid : known?.sub && who.sub && known.sub !== who.sub) return page(res, 403, `${email} belongs to another Microsoft account.`);
+  if (known && !known.oid && who.oid && (known.role === 'admin' || (known.groups?.length ?? 0) > 0) && !who.verifiedEmail) {
+    return page(res, 403, `${email} requires a verified directory UPN or verified email claim to link this Microsoft account.`);
+  }
   const u = upsertUser(email, { name: name ?? known?.name, ...(who.sub && { sub: who.sub }), ...(who.oid && { oid: who.oid }), groups, last_login: new Date().toISOString(), ...(admins.has(email) && { role: 'admin' as Role }) });
   keepSignIn(email, refresh);
   const exp = String(Date.now() + SESSION_MS);
@@ -401,8 +404,8 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
       throw new HttpError(403, `${email} is not in an allowed domain`);
     }
     const tokenEmail = String(claims.preferred_username ?? claims.upn ?? claims.email ?? '').toLowerCase();
-    if (tokenEmail.includes('@') && !domains.includes(tokenEmail.split('@')[1])) {
-      throw new HttpError(403, `${tokenEmail} is not in an allowed domain`);
+    if (!tokenEmail.includes('@') || !domains.includes(tokenEmail.split('@')[1])) {
+      throw new HttpError(403, `${tokenEmail || 'bearer token'} is not in an allowed domain`);
     }
   }
 
@@ -478,10 +481,15 @@ async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refres
   if (claims.iss !== d.issuer || !aud.includes(oidc.clientId) || !(claims.exp * 1000 > Date.now()) || claims.nonce !== p.nonce) return page(res, 401, 'The sign-in token did not check out.');
   const reqTid = expectedTenantId(d.issuer);
   if (reqTid && claims.tid && claims.tid !== reqTid) return page(res, 401, 'The sign-in token tenant does not match.');
+  if (claims.xms_edov === false) return page(res, 403, 'Your email address is not verified by your directory.');
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
-  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }) }, Array.isArray(claims.groups) ? claims.groups.map(String) : [], p.next, [cookie(pendingCookie(p.state), '', 0)], refresh);
+  const verifiedEmail = String(claims.preferred_username ?? '').toLowerCase() === email
+    || String(claims.upn ?? '').toLowerCase() === email
+    || claims.email_verified === true
+    || claims.xms_edov === true;
+  admit(res, email, claims.name, { sub: claims.sub, ...(claims.oid && { oid: `${claims.tid}/${claims.oid}` }), verifiedEmail }, Array.isArray(claims.groups) ? claims.groups.map(String) : [], p.next, [cookie(pendingCookie(p.state), '', 0)], refresh);
 }
 
 async function callback(req: IncomingMessage, res: ServerResponse, url: URL) {

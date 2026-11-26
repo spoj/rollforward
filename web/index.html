@@ -1745,7 +1745,7 @@ async function onAct(act, el) {
   }
   if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'series-credentials') {
-    const body = { logins: ticked(), autonomous: $('#autonomous').checked, expectedEpoch: cur.s.epoch };
+    const body = { logins: ticked(), autonomous: $('#autonomous').checked, expectedEpoch: cur.s.epoch, ...(cur.s.scheduleRevision && { expectedSchedules: cur.s.scheduleRevision }) };
     await api(`${seriesPath(cur)}/credentials`, { method: 'PUT', body: JSON.stringify(body) });
     await refresh();
     await openSeriesSettings();

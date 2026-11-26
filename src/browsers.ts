@@ -169,12 +169,13 @@ export async function startSignIn(email: string, site: string, given: string, ca
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
   await checkHost(new URL(w.url).hostname, !!w.via);
   const via = await vpnVia(email, w, caller);
-  recheck?.();
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
+  recheck?.();
+  currentSignIn(signing);
   const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
-  try { currentSignIn(signing); } catch (e) { await close(id); throw e; }
+  try { recheck?.(); currentSignIn(signing); } catch (e) { await close(id); throw e; }
   signIns.set(id, signing);
   return id;
 }

@@ -336,14 +336,31 @@ const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
   return { id, into: p.to, kind: p.kind, from: w.name, to: t.workspaces[p.to].name, series: p.series ? t.series[p.series].name : null, by: p.by, at: p.at };
 });
 
+function seriesOwnerSchedules(sid: string, seriesName: string, w8 = wakes()) {
+  const instById = new Map(labels(sid).map(l => [l.id, l.label]));
+  const targets = new Set([sid, ...instById.keys()]);
+  const schedules = Object.entries(w8.pending)
+    .filter(([, k]) => targets.has(k.target) && k.request === false)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([wid, k]) => ({
+      id: wid, target: k.target, targetLabel: instById.get(k.target) ?? seriesName,
+      at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
+      ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
+    }));
+  const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+  return { schedules, scheduleRevision };
+}
+
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), wakesFor = wakesByTarget(w8), us = users(), instancesOf = instancesBySeries(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
       const periods = instancesOf(sid), discussion = seriesConversation(sid, periods, epoch);
+      const { scheduleRevision } = seriesOwnerSchedules(sid, s.name, w8);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
+        scheduleRevision,
         wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: openNotes(discussion.notes).length,
         noteNotices: s.archived || w.archived ? [] : notices(discussion.notes, discussion.dismissed, me.email, owner, s.name),
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
@@ -1339,17 +1356,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }));
     if (action === 'credentials' && req.method === 'GET') {
       const settings = seriesSettings(seriesDir(id));
-      const instById = new Map(labels(id).map(l => [l.id, l.label]));
-      const targets = new Set([id, ...instById.keys()]);
-      const schedules = Object.entries(wakes().pending)
-        .filter(([, k]) => targets.has(k.target) && k.request === false)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([wid, k]) => ({
-          id: wid, target: k.target, targetLabel: instById.get(k.target) ?? s.name,
-          at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
-          ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
-        }));
-      const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+      const { schedules, scheduleRevision } = seriesOwnerSchedules(id, s.name);
       return send(res, 200, { owner: settings.owner, epoch: settings.epoch, consent: settings.consent, schedules, scheduleRevision });
     }
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
@@ -1366,17 +1373,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       } else {
         if (settings.owner !== by) throw new HttpError(403, 'only the series owner selects credentials');
         if (!Array.isArray(payload.logins) || typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'select logins explicitly, including [], and an autonomous boolean');
-        const instById = new Map(labels(id).map(l => [l.id, l.label]));
-        const targets = new Set([id, ...instById.keys()]);
-        const schedules = Object.entries(wakes().pending)
-          .filter(([, k]) => targets.has(k.target) && k.request === false)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([wid, k]) => ({
-            id: wid, target: k.target, targetLabel: instById.get(k.target) ?? tree().series[id].name,
-            at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
-            ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
-          }));
-        const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+        const { schedules, scheduleRevision } = seriesOwnerSchedules(id, tree().series[id].name);
+        if (payload.autonomous && schedules.length > 0 && (payload.expectedEpoch !== settings.epoch || payload.expectedSchedules !== scheduleRevision)) {
+          return send(res, 409, { error: 'review the current series epoch and pending schedules before enabling autonomous runs', epoch: settings.epoch, schedules, scheduleRevision });
+        }
         if (payload.expectedEpoch !== undefined && payload.expectedEpoch !== settings.epoch) {
           return send(res, 409, { error: 'series ownership or settings changed; review updated schedules and save again', epoch: settings.epoch, schedules, scheduleRevision });
         }
@@ -1388,6 +1388,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const next = { ...settings, epoch: settings.epoch + (removed ? 1 : 0), since: removed ? at : settings.since, consent: { by, at, workspace: tree().series[id].workspace, logins: ticks, autonomous: payload.autonomous } };
         if (removed) await changeAuthority(id, next, by);
         else saveSeriesSettings(seriesDir(id), next);
+        act(by, { op: 'credentials', series: id, epoch: next.epoch, autonomous: payload.autonomous, logins: ticks, ...(payload.autonomous && schedules.length ? { adoptedSchedules: schedules.map(k => k.id), scheduleRevision } : {}) });
         return send(res, 200, { ok: true, epoch: next.epoch, schedules, scheduleRevision });
       }
     });
