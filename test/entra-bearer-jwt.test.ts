@@ -198,7 +198,7 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
     const algNone = `${b64u('{"alg":"none"}')}.${b64u(JSON.stringify({ iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' }))}.`;
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${algNone}` } })).status, 401);
 
-    // P1 #1 + P1 #6: built cli/rf.mjs rejects missing --resource and HTTP off loopback, succeeds with explicit --resource
+    // P1 #1 + P1 #6 + P1-D: pack @rfany/rf in isolated temp dir (clean-CI safe) and execute extracted rf.mjs
     const mockAz = join(home, 'mock-az.sh');
     writeFileSync(mockAz, `#!/usr/bin/env bash
 if [[ "$*" != *"--resource api://rf-test-app"* ]]; then
@@ -209,21 +209,91 @@ printf '%s\\n' '${validApiAud}'
 `);
     chmodSync(mockAz, 0o755);
 
-    const rfBuiltPath = new URL('../cli/rf.mjs', import.meta.url).pathname;
+    const packDir = mkdtempSync(join(tmpdir(), 'rf-cli-pack-'));
+    const cliDir = new URL('../cli', import.meta.url).pathname;
+    const tgzName = execFileSync('npm', ['pack', '--silent', '--pack-destination', packDir], { cwd: cliDir, encoding: 'utf8' }).trim().split('\n').at(-1)!;
+    execFileSync('tar', ['-xzf', join(packDir, tgzName), '-C', packDir]);
+    const rfBuiltPath = join(packDir, 'package', 'rf.mjs');
     const cliEnv = { ...process.env, HOME: home, RF_AZ_BIN: mockAz };
-    assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az'], { env: cliEnv, stdio: 'pipe' }), /--resource/);
-    assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', 'http://example.com', '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, stdio: 'pipe' }), /https:\/\//);
+    try {
+      assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az'], { env: cliEnv, stdio: 'pipe' }), /--resource/);
+      assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', 'http://example.com', '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, stdio: 'pipe' }), /https:\/\//);
 
-    const loginOut = execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, encoding: 'utf8' });
-    assert.match(loginOut, /signed in as admin@demo\.test \(az\)/);
+      const loginOut = execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, encoding: 'utf8' });
+      assert.match(loginOut, /signed in as admin@demo\.test \(az\)/);
 
-    const savedCfg = JSON.parse(readFileSync(join(home, '.config', 'rollforward.json'), 'utf8'));
-    assert.deepEqual(savedCfg, { url: base, auth: 'az', resource: 'api://rf-test-app' });
-    assert.equal('token' in savedCfg, false, 'no static token should be written to disk');
+      const savedCfg = JSON.parse(readFileSync(join(home, '.config', 'rollforward.json'), 'utf8'));
+      assert.deepEqual(savedCfg, { url: base, auth: 'az', resource: 'api://rf-test-app' });
+      assert.equal('token' in savedCfg, false, 'no static token should be written to disk');
 
-    // Subsequent rf command uses az on demand
-    const lsOut = execFileSync(process.execPath, [rfBuiltPath, 'ls', '--json'], { env: cliEnv, encoding: 'utf8' });
-    assert.deepEqual(JSON.parse(lsOut), []);
+      // Subsequent rf command uses az on demand
+      const lsOut = execFileSync(process.execPath, [rfBuiltPath, 'ls', '--json'], { env: cliEnv, encoding: 'utf8' });
+      assert.deepEqual(JSON.parse(lsOut), []);
+    } finally {
+      rmSync(packDir, { recursive: true, force: true });
+    }
+
+    // P1-C: member with stored manager group omitted from JWT cannot transfer series ownership
+    writeFixtureTree(root, {
+      workspaces: { w1: { name: 'Team', owners: ['g-mgr'], members: ['carol@demo.test', 'dave@demo.test'] } },
+      series: { s1: { name: 'Monthly', workspace: 'w1' } },
+    });
+    mkdirSync(join(root, 's1'), { recursive: true });
+    writeFileSync(join(root, 's1', 'settings.json'), JSON.stringify({ version: 1, owner: 'dave@demo.test', epoch: 1, since: new Date().toISOString() }));
+    const uMgr = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
+    uMgr['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr'], epoch: 1 };
+    uMgr['dave@demo.test'] = { role: 'user', name: 'Dave', oid: 't1/oid-dave', groups: [], epoch: 1 };
+    // P1-A: pre-granted email in workspace without user row cannot auto-provision via JWT
+    writeFixtureTree(root, {
+      workspaces: { w1: { name: 'Team', owners: ['g-mgr', 'pregranted@demo.test'], members: ['carol@demo.test', 'dave@demo.test'] } },
+      series: { s1: { name: 'Monthly', workspace: 'w1' } },
+    });
+    writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(uMgr));
+
+    const carolNoGroupJwt = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'carol@demo.test', tid: 't1', oid: 'oid-carol' },
+      privateKey,
+    );
+    const transferRes = await fetch(`${base}/api/series/s1/owner`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${carolNoGroupJwt}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: 'carol@demo.test' }),
+    });
+    assert.equal(transferRes.status, 403, 'JWT without manager group must not transfer ownership using stored group');
+
+    const preGrantedJwt = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'pregranted@demo.test', tid: 't1', oid: 'oid-pregranted' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${preGrantedJwt}` } })).status, 403);
+
+    // P1-A: duplicate OID rows rejected explicitly
+    const uDup = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
+    uDup['dup1@demo.test'] = { role: 'user', name: 'Dup1', oid: 't1/oid-dup', groups: [], epoch: 1 };
+    uDup['dup2@demo.test'] = { role: 'user', name: 'Dup2', oid: 't1/oid-dup', groups: [], epoch: 1 };
+    writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(uDup));
+    const dupJwt = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'dup2@demo.test', tid: 't1', oid: 'oid-dup' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${dupJwt}` } })).status, 403);
+
+    // P1-B: removing a user via admin API persists revocation across deletion & re-enrollment
+    const bobOldJwt = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec - 10, scp: 'access_as_user', upn: 'bob@demo.test', tid: 't1', oid: 'oid-bob' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${bobOldJwt}` } })).status, 200);
+    const rmRes = await fetch(`${base}/users/${encodeURIComponent('bob@demo.test')}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${validApiAud}` },
+    });
+    assert.equal(rmRes.status, 200);
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${bobOldJwt}` } })).status, 401, 'old JWT must not auto-provision after user removal');
 
     // P1 #4: local sign-out revokes previously issued JWT
     const uAfter = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));

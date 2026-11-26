@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetPerson, isIn, key, readJson, rfDir, writeJson } from './system.ts';
+import { everyone, forgetPerson, isIn, key, readJson, rfDir, tree, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 import { themeLogo } from './theme.ts';
@@ -62,6 +62,14 @@ export function users(): Record<string, User> {
   return readJson<Record<string, User>>('users.json', {});
 }
 
+const revokedPrincipals = () => readJson<Record<string, number>>('revoked-principals.json', {});
+function recordRevocation(email: string, oid?: string, at = Date.now()) {
+  const rev = revokedPrincipals();
+  rev[email] = Math.max(rev[email] ?? 0, at);
+  if (oid) rev[oid] = Math.max(rev[oid] ?? 0, at);
+  writeJson('revoked-principals.json', rev);
+}
+
 export function upsertUser(email: string, change: Partial<User>): User {
   const all = users(), id = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(id)) throw new HttpError(400, `not an email address: ${email}`);
@@ -71,6 +79,7 @@ export function upsertUser(email: string, change: Partial<User>): User {
   if (change.disabled) {
     all[id].epoch = (all[id].epoch ?? 0) + 1;
     all[id].revoked_before = Date.now();
+    recordRevocation(id, all[id].oid, all[id].revoked_before);
   }
   writeJson('users.json', all);
   return all[id];
@@ -79,6 +88,7 @@ export function upsertUser(email: string, change: Partial<User>): User {
 export function removeUser(email: string) {
   const all = users();
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
+  recordRevocation(email, all[email].oid, Date.now());
   delete all[email];
   writeJson('users.json', all);
   forgetPerson(email);
@@ -149,6 +159,7 @@ export function signOutEverywhere(email: string) {
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
   all[email].epoch = (all[email].epoch ?? 0) + 1;
   all[email].revoked_before = Date.now();
+  recordRevocation(email, all[email].oid, all[email].revoked_before);
   writeJson('users.json', all);
 }
 
@@ -377,20 +388,31 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
   const oid = `${claims.tid}/${claims.oid}`;
   const all = users();
   const tokenEmail = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').trim().toLowerCase();
-  const byOid = Object.entries(all).find(([, u]) => u.oid === oid)?.[0];
+  const oidMatches = Object.entries(all).filter(([, u]) => u.oid === oid).map(([k]) => k);
+  if (oidMatches.length > 1) throw new HttpError(403, 'ambiguous Microsoft account binding; sign in via the browser');
+  const byOid = oidMatches[0];
   const email = byOid ?? tokenEmail;
   if (!email.includes('@')) throw new HttpError(403, 'bearer token has no email address');
   if (domains.length) {
-    if (!domains.includes(email.split('@')[1])) throw new HttpError(403, `${email} is not in an allowed domain`);
-    if (tokenEmail && (!tokenEmail.includes('@') || !domains.includes(tokenEmail.split('@')[1]))) {
-      throw new HttpError(403, `${tokenEmail} is not in an allowed domain`);
+    if (!tokenEmail || !tokenEmail.includes('@') || !domains.includes(tokenEmail.split('@')[1])) {
+      throw new HttpError(403, `${tokenEmail || email} is not in an allowed domain`);
     }
+    if (!domains.includes(email.split('@')[1])) throw new HttpError(403, `${email} is not in an allowed domain`);
+  }
+
+  const rev = revokedPrincipals();
+  const revokedBefore = Math.max(rev[oid] ?? 0, rev[email] ?? 0, all[email]?.revoked_before ?? 0);
+  if (revokedBefore && claims.iat * 1000 < revokedBefore) {
+    throw new HttpError(401, 'this token was revoked; sign in again');
   }
 
   const known = all[email];
   if (!known) {
     if (env.RF_AUTO_PROVISION === '0') throw new HttpError(403, `${email} has no access yet`);
-    if (admins.has(email)) throw new HttpError(403, `${email} must sign in via the browser first`);
+    const hasPreGrant = admins.has(email)
+      || Object.values(tree().workspaces).some(w => everyone(w).includes(email))
+      || Object.values(capabilities()).some(list => list.includes(email));
+    if (hasPreGrant) throw new HttpError(403, `${email} must sign in via the browser first`);
   } else {
     if (known.disabled) throw new HttpError(403, `${email} is disabled`);
     if (known.oid && known.oid !== oid) throw new HttpError(403, `${email} belongs to another Microsoft account`);
@@ -398,9 +420,6 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
       if (!(known.sub && typeof claims.sub === 'string' && known.sub === claims.sub)) {
         throw new HttpError(403, `${email} must sign in via the browser first to link this account`);
       }
-    }
-    if (known.revoked_before && claims.iat * 1000 < known.revoked_before) {
-      throw new HttpError(401, 'this token was revoked; sign in again');
     }
   }
 

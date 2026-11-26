@@ -270,7 +270,13 @@ function flush(a: Active) {
 }
 
 // What a timer starts, as a kick's, logs what fails rather than ending the server.
-const start = (inst: Instance, tried = new Set<Instance>()) => begin(inst, tried).catch(e => console.error(`a run of ${inst.id} failed to start`, e));
+const starting = new Set<string>();
+const start = (inst: Instance, tried = new Set<Instance>()) => {
+  starting.add(inst.id);
+  return begin(inst, tried)
+    .catch(e => console.error(`a run of ${inst.id} failed to start`, e))
+    .finally(() => starting.delete(inst.id));
+};
 
 const runnable = (i: Instance) => due(i) && sees(i) && !held(i, 'entra', ownerOf(i).by);
 function bail(inst: Instance, tried: Set<Instance>) {
@@ -1166,18 +1172,20 @@ export function fire() {
     }
   }
   if (changed) saveWakes(w);
-  if (process.env.RF_UNGROUPED_GC === '1' || process.env.RF_UNGROUPED_GC_OWNERS) {
+  if (ungroupedGcConfig().enabled) {
     void sweepIdleUngrouped();
   }
 }
 
 const sweeping = new Set<string>();
 
-function ungroupedGcOwners(): Set<string> | undefined {
-  const raw = process.env.RF_UNGROUPED_GC_OWNERS?.trim();
-  if (!raw) return undefined;
-  const set = new Set(raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
-  return set.size ? set : undefined;
+function ungroupedGcConfig(): { enabled: boolean; owners?: Set<string> } {
+  const raw = process.env.RF_UNGROUPED_GC_OWNERS;
+  if (raw !== undefined) {
+    const set = new Set(raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+    return set.size ? { enabled: true, owners: set } : { enabled: false };
+  }
+  return process.env.RF_UNGROUPED_GC === '1' ? { enabled: true } : { enabled: false };
 }
 
 function isIdleUngroupedEligible(sid: string, inst: Instance, now: number, idleMs: number, allowedOwners?: Set<string>): boolean {
@@ -1185,11 +1193,11 @@ function isIdleUngroupedEligible(sid: string, inst: Instance, now: number, idleM
   const s = t.series[sid];
   if (!s || !s.single || archived(t, sid) || busy(sid)) return false;
   if (allowedOwners) {
-    const owner = ownerOf(sid).owner?.toLowerCase();
+    const owner = ownerOf(sid).by?.toLowerCase();
     if (!owner || !allowedOwners.has(owner)) return false;
   }
   if (inst.hole || inst.closing || inst.doc.status !== 'open') return false;
-  if (debounce.has(inst.id) || waiting.has(inst)) return false;
+  if (debounce.has(inst.id) || waiting.has(inst) || starting.has(inst.id) || due(inst)) return false;
   const w = wakes();
   for (const k of Object.values(w.pending)) {
     if (k.target === inst.id || k.target === sid) return false;
@@ -1210,7 +1218,9 @@ export async function sweepIdleUngrouped(
   idleMs = Number(process.env.RF_UNGROUPED_IDLE_MS ?? UNGROUPED_IDLE_MS),
 ): Promise<string[]> {
   if (!Number.isFinite(idleMs) || idleMs <= 0) return [];
-  const allowedOwners = ungroupedGcOwners();
+  const cfg = ungroupedGcConfig();
+  if (process.env.RF_UNGROUPED_GC_OWNERS !== undefined && !cfg.enabled) return [];
+  const allowedOwners = cfg.owners;
   const t = tree(), bySeries = instancesBySeries(), abandoned: string[] = [];
   for (const [sid, s] of Object.entries(t.series)) {
     if (!s.single || archived(t, sid) || busy(sid)) continue;

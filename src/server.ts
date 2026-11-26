@@ -214,11 +214,12 @@ function mustKeepNotes(sid: string, s = tree().series[sid]) {
   if (s.single && instances(sid).some(i => i.doc.status === 'deleted')) throw new HttpError(409, `${s.name} was deleted`);
 }
 
-function mustUnarchived(by: string, sid: string, run?: Me) {
+function mustUnarchived(by: string, sid: string, effective?: Me, isRun = false) {
   const now = tree(), s = now.series[sid], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
-  const who = run ?? asPerson(by);
+  const fresh = isRun && effective ? effective : asPerson(by);
+  const who = fresh ? (effective && !isRun ? { ...fresh, groups: fresh.groups.filter(g => effective.groups.includes(g)) } : fresh) : null;
   if (!who) throw new HttpError(401, 'sign in');
-  if (!run) mustSee(who, ws);
+  if (!isRun) mustSee(who, ws);
   if (shut) throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
   return { ws, who };
 }
@@ -1338,7 +1339,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }));
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
       recheckRequest(req);
-      const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
+      const { ws, who } = mustUnarchived(by, id, me), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
       if (action === 'owner') {
         if (settings.owner !== by && !canManage(who, ws)) throw new HttpError(403, 'only the current series owner or a workspace manager transfers ownership');
         if ('logins' in payload || 'autonomous' in payload || 'consent' in payload) throw new HttpError(400, 'a transfer never grants credential consent; the new owner selects credentials separately');
@@ -1703,7 +1704,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const recheck = () => {
         recheckRequest(req);
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
-        const { ws, who } = mustUnarchived(by, inst.seriesId, run ? me : undefined);
+        const { ws, who } = mustUnarchived(by, inst.seriesId, me, !!run);
         if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };

@@ -17,17 +17,17 @@ bash "$RF_SKILLS/subagent/run_subagent.sh" \
   --prompt "Extract all unpaid invoices from working/inbox/ and write working/extracted.json"
 ```
 
-Resume an existing subagent session (for example, after a 15-minute checkpoint timeout, or to steer it):
+Resume an existing subagent session using the exact `session:` path printed by `run_subagent.sh` (scoped to the current run under `session/subagents/<run-scope>/`):
 ```bash
 bash "$RF_SKILLS/subagent/run_subagent.sh" \
-  --resume session/subagents/20261126-103500-a1b2.jsonl \
+  --resume session/subagents/<run-scope>/20261126-103500-task-a1b2.jsonl \
   --prompt "Continue from where you left off."
 ```
 
 Or resume with steering:
 ```bash
 bash "$RF_SKILLS/subagent/run_subagent.sh" \
-  --resume session/subagents/20261126-103500-a1b2.jsonl \
+  --resume session/subagents/<run-scope>/20261126-103500-task-a1b2.jsonl \
   --prompt "I see the portal pagination timed out on page 4; filter by date range instead and finish the remaining rows."
 ```
 
@@ -48,6 +48,6 @@ Keep the default 10-minute (`600s`) timeout even when a task may take 30–60 mi
 
 ## Boundaries
 
-- **Main agent owns the user-facing surface:** Do not ask a subagent to post user-facing replies, sign-off cards, or final summaries. Have it write its findings/artifacts to `working/` and return a concise status to you.
-- **Otherwise unrestricted:** Inside the workspace, the subagent has the same tools you do and can inspect files, run scripts, and verify its own outputs.
-- **Transcripts:** All child transcripts live under `session/subagents/` so you (and reviewers) can inspect them without cluttering the main trace.
+- **Main agent owns the user-facing surface and external actions:** Subagents are drafting-only and do not hold the parent's user-approval context. Have the subagent write drafts/findings/artifacts to `working/` and return a concise status; the main agent performs any approved external actions, user-facing replies, or sign-offs.
+- **Anchored to the instance workspace:** `run_subagent.sh` always anchors execution and transcript storage to the instance workspace (`/work`) and requires the RF policy prompt.
+- **Transcripts:** All child transcripts live under `session/subagents/<run-scope>/` so you (and reviewers) can inspect them without cluttering the main trace.

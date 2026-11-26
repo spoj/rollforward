@@ -107,7 +107,7 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);
-  const now = asPerson(me.email), wNow = tree().workspaces[workspace];
+  const fresh = asPerson(me.email), now = fresh ? { ...fresh, groups: fresh.groups.filter(g => me.groups.includes(g)) } : null, wNow = tree().workspaces[workspace];
   if (!now) throw new HttpError(401, 'sign in');
   if (!wNow) throw new HttpError(409, `${w.name} was merged into another while it was checked: ask there`);
   if (!canSee(now, wNow)) throw new HttpError(404, `no workspace ${workspace} of yours`);

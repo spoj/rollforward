@@ -562,7 +562,9 @@ export async function checkWebsite(email: string, site: string, given?: Trace, s
       if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
       const res = await serverCall('openrouter', '/api/v1/chat/completions', {
         model, response_format: { type: 'json_object' }, messages, ...(exa && { tools, tool_choice: queries.length < 5 ? 'auto' : 'none' }),
-      }, cause, 120_000);
+      }, cause, 120_000, () => {
+        if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
+      });
       checkCost += res.cost;
       if (res.estimated) checkEstimated = true;
       if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);

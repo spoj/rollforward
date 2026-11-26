@@ -232,7 +232,7 @@ async function resolveCost(
 
 export async function serverCall(
   serviceName: 'openrouter' | 'exa', path: string, json: Record<string, any>,
-  cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000,
+  cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000, checkpoint?: () => void,
 ): Promise<{ ok: boolean; status: number; data: any; cost: number; estimated: boolean }> {
   const s = serviceName === 'openrouter' ? openrouter : exa;
   const apiKey = s === openrouter ? serverKey() : process.env[s.key] ?? '';
@@ -240,10 +240,11 @@ export async function serverCall(
   const out = s.check({ method: 'POST', url, headers: { 'content-type': 'application/json' }, json, body: raw }) ?? json;
   const target = `${upstreams[s.host] ?? `https://${s.host}`}${url.pathname}${url.search}`;
   const redact = (msg: string) => apiKey ? msg.replaceAll(apiKey, '[redacted]') : msg;
-  let r: Response | undefined, text = '', failed: Error | undefined;
+  let r: Response | undefined, text = '', failed: Error | undefined, abortedBetweenAttempts = false;
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     for (let attempt = 0; ; attempt++) {
+      checkpoint?.();
       r = await fetch(target, {
         method: 'POST', signal,
         headers: { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'content-type': 'application/json' },
@@ -253,7 +254,11 @@ export async function serverCall(
         const delay = openrouter.retryDelayMs(attempt, r.headers.get('retry-after'));
         if (delay !== undefined) {
           await r.body?.cancel().catch(() => {});
-          if (await openrouter.sleepAbortable(delay, signal)) continue;
+          if (await openrouter.sleepAbortable(delay, signal)) {
+            checkpoint?.();
+            continue;
+          }
+          abortedBetweenAttempts = true;
           signal.throwIfAborted();
         }
       }
@@ -261,13 +266,16 @@ export async function serverCall(
     }
     text = await providerText(r);
   } catch (e) {
+    if (e instanceof HttpError) throw e;
     failed = new Error(redact((e as Error).message));
   }
   const type = r?.headers.get('content-type') ?? '', events = parseEvents(text);
   const headers: Record<string, string> = {};
   r?.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
   if (s === openrouter && r && !failed) keyOut(apiKey, r.status, events.at(-1), 'POST');
-  const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
+  const { cost, estimated } = abortedBetweenAttempts
+    ? { cost: 0, estimated: false }
+    : await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
   if ((!failed && r!.status < 400) || cost > 0 || estimated) {
     recordCost({
       at: new Date().toISOString(), by: 'server', service: serviceName, kind: cause.kind,
