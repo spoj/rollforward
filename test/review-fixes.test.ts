@@ -28,8 +28,8 @@ after(() => rmSync(tmp, { recursive: true, force: true }));
 test('persisted done entries with legacy CUT reasons still classify as cut in /api/runs', async () => {
   assert.equal(Object.values(CUT).includes('its reach narrowed'), false);
   assert.equal(Object.values(CUT).includes('an instance in its reach was deleted'), false);
-  assert.ok((LEGACY_CUT as readonly string[]).includes('its reach narrowed'));
-  assert.ok((LEGACY_CUT as readonly string[]).includes('an instance in its reach was deleted'));
+  assert.ok(LEGACY_CUT.includes('its reach narrowed'));
+  assert.ok(LEGACY_CUT.includes('an instance in its reach was deleted'));
 
   initSystem(root);
   openStore(root);
@@ -87,11 +87,15 @@ test('/api/resolve returns 404 for a deleted instance', async () => {
       import { createServer } from 'node:http';
       import { mock } from 'node:test';
       import { mkdirSync } from 'node:fs';
+      import * as connections from './src/connections.ts';
       import * as sandbox from './src/sandbox.ts';
       import { createInstance, openStore } from './src/store.ts';
       import { initSystem, saveTree, writeJson } from './src/system.ts';
       import { ownSeries } from './test/owner-fixture.ts';
-      let agentHandler;
+      let agentHandler, releaseDrain, drainingNow;
+      const drainedReady = new Promise(r => { drainingNow = r; });
+      const drainGate = new Promise(r => { releaseDrain = r; });
+      mock.module('./src/connections.ts', { namedExports: { ...connections, hasCalls: a => a.token === 'tok-drain' || connections.hasCalls(a), drainCalls: a => a.token === 'tok-drain' ? (drainingNow(), drainGate) : connections.drainCalls(a) } });
       mock.module('./src/sandbox.ts', { namedExports: { ...sandbox, serveSandboxes: o => { agentHandler = o.agent; return sandbox.serveSandboxes(o); } } });
       const root = ${JSON.stringify(join(dir, 'data'))}, port = ${port}, base = ${JSON.stringify(base)}, admin = ${JSON.stringify(admin)};
       initSystem(root);
@@ -118,7 +122,16 @@ test('/api/resolve returns 404 for a deleted instance', async () => {
       const before = await fetch(agentBase + '/api/resolve?path=' + encodeURIComponent('../2026-02'), { headers: { authorization: 'Bearer ' + token } });
       assert.equal(before.status, 200);
       assert.equal((await before.json()).id, cur2.id);
-      await remove(cur2, admin, () => ({ cost: 0, runs: [] }));
+      const a2 = { inst: cur2, n: 1, runner: lease.owner, authority: lease, token: 'tok-drain', workspace: lease.workspace, view: view(cur2), process: '', cost: 0, seen: [], stop: () => {}, ended: Promise.resolve() };
+      active.set('drain-cur2', a2);
+      const removing = remove(cur2, admin, () => ({ cost: 0, runs: [] }));
+      await drainedReady;
+      assert.equal(cur2.doc.status, 'deleted');
+      assert.equal(cur2.hole, false);
+      const during = await fetch(agentBase + '/api/resolve?path=' + encodeURIComponent('../2026-02'), { headers: { authorization: 'Bearer ' + token } });
+      assert.equal(during.status, 404);
+      releaseDrain();
+      await removing;
       const after = await fetch(agentBase + '/api/resolve?path=' + encodeURIComponent('../2026-02'), { headers: { authorization: 'Bearer ' + token } });
       assert.equal(after.status, 404);
       process.exit(0);

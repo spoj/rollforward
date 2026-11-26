@@ -401,7 +401,7 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       const cause = slice.find(e => e.seq === (r.provenance as { cause?: number } | undefined)?.cause);
       // A run with no done is going only if it's the one going here; any other ended unlogged, cut, as its last entry tells.
       const going = !d && runningHere && a.n === r.run, end = d ?? (going ? undefined : slice.findLast(e => e.run === r.run) ?? r);
-      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : (Object.values(CUT).includes(error) || (LEGACY_CUT as readonly string[]).includes(error)) ? 'cut' : 'failed';
+      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : (Object.values(CUT).includes(error) || LEGACY_CUT.includes(error)) ? 'cut' : 'failed';
       const estimated = d ? d.estimated === true : going && !!a.estimated;
       const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
       const calls = r.key === 'own' ? [] : slice.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');

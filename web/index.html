@@ -730,7 +730,21 @@ const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![
 // opening the preview, and an image, ![name](working/x.png), shows as a thread's file does; a path may hold spaces and one level of
 // parentheses, as in TB (final).csv, and a link's an &, which the text holds escaped and data-file decodes. [name](#cN) links a comment, and
 // [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.
-const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+function resolveMdPath(f, base) {
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(f)) return null;
+  if (/^(?:\.\.\/[^/]+\/)?(?:upload|working)\//.test(f)) return f;
+  const parts = base ? base.split('/').slice(0, -1) : [];
+  for (const seg of f.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') { if (!parts.length) return null; parts.pop(); }
+    else parts.push(seg);
+  }
+  return parts.length ? parts.join('/') : null;
+}
+const inline = (s, base) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
+  const r = resolveMdPath(f, base);
+  return r ? `<img class="md" src="${fileUrl(r)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${r}">` : m;
+})
   .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/(?:[^()]|\([^()]*\))+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>')
   .replace(/\[([^\]]+)\]\((?:\.\.\/([^/)#]+))?#c(\d+)\)/g, (_, name, label, n) => {
@@ -740,14 +754,14 @@ const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|j
 
 // With an item's threads, each line but a heading or a table's is a point to comment on where it stands: a
 // thread there names it by its opening words, its ref, and marks it.
-function md(text, threads) {
+function md(text, threads, base) {
   let h = '', rows = [];
-  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
+  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c, base)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
   for (const raw of text.split('\n')) {
     const l = esc(raw);
     if (l.trim().startsWith('|')) { if (!/^[\s|:-]+$/.test(l)) rows.push(l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())); continue; }
     table();
-    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>')), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
+    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>'), base), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
     if (!point) { h += line + '\n'; continue; }
     const ref = point.length > 60 ? point.slice(0, 60).replace(/\s+\S*$/, '') + '\u2026' : point, on = threads.filter(t => t.ref && point.startsWith(t.ref.replace(/\u2026$/, '')));
     h += `<span class="pt ${on.length ? 'noted' : ''} ${on.some(t => t.waits) ? 'q' : ''}" data-act="cell" data-ref="${esc(ref)}"${on.length ? ` data-thread="${esc(on[0].id)}" data-note="${esc(on.map(t => t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n')).join('\n\n'))}"` : ''}>${line}</span>\n`;
@@ -1013,10 +1027,10 @@ function renderPv() {
     h += '</div>';
   }
   // Drawn again as it is, as live updates redraw Waiting on you, the dialog stays scrolled where its reader left it.
-  const key = `${pv.title}\n${pv.settings?.kind ?? ''}\n${pv.path ?? ''}`, tops = d.open && d.dataset.key === key ? [...d.querySelectorAll('.pvb')].map(b => b.scrollTop) : [];
+  const key = `${pv.title}\n${pv.settings?.kind ?? ''}\n${pv.path ?? ''}`, scrolls = d.open && d.dataset.key === key ? [...d.querySelectorAll('.pvb')].map(b => [b.scrollTop, b.scrollLeft]) : [];
   d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;
   d.dataset.key = key;
-  d.querySelectorAll('.pvb').forEach((b, i) => { if (tops[i]) b.scrollTop = tops[i]; });
+  d.querySelectorAll('.pvb').forEach((b, i) => { if (scrolls[i]) [b.scrollTop, b.scrollLeft] = scrolls[i]; });
   if (pv.settings?.kind === 'workspace' ? cur.w.archived : pv.settings?.kind === 'series' && archived()) {
     d.querySelector('.pvb').insertAdjacentHTML('afterbegin', '<div class="sub">Archived · read-only</div>');
     for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
@@ -1470,7 +1484,7 @@ function previewBody(p) {
   if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
-  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item))}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
+  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item), p.path)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
 // A PDF's pages, each fetched as it scrolls into view and kept apart from those the preview came with, so a card drawn again on each

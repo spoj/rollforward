@@ -548,9 +548,11 @@ function cut(a: Active, why: string) {
   a.ended = draining.then(() => a.ended).finally(() => retiring.delete(a));
 }
 
-// Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it; its wakes go, and its series' one-off wakes for
-// its label, or all of a task's. Requests to or from it go too. Once nothing runs in its folder, its last commit is done and its
-// runs' browsers have logged what they did, it becomes a hole. `fields` says what it cost, as its runs ended.
+// Deleting an instance (store.ts markDeleted()) cuts a run going or queued for it, and cancels and waits on any in-flight wake
+// checks whose view includes it (leaving those wakes pending to re-fire without it); other in-flight runs in reach are not cut or
+// waited on. Its wakes go, and its series' one-off wakes for its label, or all of a task's. Requests to or from it go too. Once
+// nothing runs in its folder, its last commit is done and its runs' browsers have logged what they did, it becomes a hole. `fields`
+// says what it cost, as its runs ended.
 export async function remove(inst: Instance, by: string, fields: () => Record<string, unknown>): Promise<Entry> {
   const t = tree(), task = !!t.series[inst.seriesId].single;
   inst.doc.status = 'deleted';
@@ -1260,7 +1262,7 @@ export async function sweepIdleUngrouped(
 // Either way its instance is woken to carry on.
 export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', deleted: 'its instance was deleted' };
 // Legacy cut reasons no longer emitted, retained so `cachedRunsOf()` still classifies historical log.jsonl `done` entries as `'cut'`.
-export const LEGACY_CUT = ['its reach narrowed', 'an instance in its reach was deleted'] as const;
+export const LEGACY_CUT: readonly string[] = ['its reach narrowed', 'an instance in its reach was deleted'];
 
 // Conservative migration for legacy or rollback-written wakes.json entries:
 // every v2 wake carries an explicit boolean `request` marker; unmarked, stale,

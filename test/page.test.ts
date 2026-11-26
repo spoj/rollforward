@@ -2860,6 +2860,7 @@ test('composer shows distinct hints, placeholders, and buttons for non-owner and
   const { id: s } = await page.evaluate(async ws => (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'NoConsent' }) })).json(), ws);
   const { id: inst } = await page.evaluate(async s => (await fetch(`/api/series/${s}`, { method: 'POST', body: JSON.stringify({ label: 'ComposerHintTest', quiet: true }) })).json(), s);
   await page.goto(`${page.url().split('#')[0]}#/${inst}`);
+  await page.waitForFunction((id: string) => cur?.i?.id === id, inst);
   await page.waitForSelector('.compose .sub');
   assert.equal(await page.textContent('.compose .sub'), 'Save series credentials to start runs');
   assert.equal(await page.getAttribute('#newcomment', 'placeholder'), "Comment (won't start a run until you save series credentials)");
@@ -2867,14 +2868,21 @@ test('composer shows distinct hints, placeholders, and buttons for non-owner and
 
   // Non-owner view of the same instance: sees Owned by ... hint, note placeholder, Leave note button, and Request a proposal checkbox.
   await page.evaluate(() => {
-    const orig = data.owner.by;
+    const orig = { owner: data.owner, starts: data.starts };
     data.owner = { ...data.owner, by: 'bob@demo.test' };
     data.starts = false;
     render();
-    data.owner = { ...data.owner, by: orig };
+    (window as any).__origCompose = orig;
   });
   assert.match((await page.textContent('.compose .sub')) ?? '', /^Owned by .+ — comments here are notes and won't start a run$/);
   assert.match((await page.getAttribute('#newcomment', 'placeholder')) ?? '', /^A note for /);
   assert.equal(await page.textContent('.compose [data-act=comment]'), 'Leave note');
   assert.ok(await page.$('#comment-request'));
+  await page.evaluate(() => {
+    const orig = (window as any).__origCompose;
+    data.owner = orig.owner;
+    data.starts = orig.starts;
+    delete (window as any).__origCompose;
+    render();
+  });
 });
