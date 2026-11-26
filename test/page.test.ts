@@ -2886,3 +2886,28 @@ test('composer shows distinct hints, placeholders, and buttons for non-owner and
     render();
   });
 });
+
+test('markdown preview resolves relative image paths and dialog preserves scrollLeft on redraw', async () => {
+  await page.evaluate(() => {
+    pv = { title: 'notes.md', path: 'working/sub/notes.md', md: true, text: '![c](chart.png)\n![u](../../upload/x.png)\n![esc](../../../etc/passwd.png)\n![ext](https://evil.test/a.png)' };
+    renderPv();
+  });
+  const imgs = await page.evaluate(() => [...document.querySelectorAll('#pv img.md')].map(i => ({ file: i.getAttribute('data-file'), src: i.getAttribute('src') })));
+  const id = await page.evaluate(() => cur.i.id);
+  assert.deepEqual(imgs, [
+    { file: 'working/sub/chart.png', src: `/files/${id}/working/sub/chart.png` },
+    { file: 'upload/x.png', src: `/files/${id}/upload/x.png` },
+  ]);
+
+  // Dialog .pvb preserves scrollLeft across a live redraw.
+  await page.evaluate(() => {
+    pv = { title: 'wide.xlsx', path: 'working/wide.xlsx', sheets: [{ name: 'S1', rows: [Array.from({ length: 40 }, (_, i) => `column_${i}_value`)] }], sheet: 0 };
+    renderPv();
+    const b = document.querySelector('#pv .pvb') as HTMLElement;
+    b.scrollLeft = 120;
+    renderPv();
+  });
+  const left = await page.evaluate(() => (document.querySelector('#pv .pvb') as HTMLElement).scrollLeft);
+  assert.ok(left > 0, `expected scrollLeft > 0 after redraw, got ${left}`);
+  await page.click('#pv [data-act=unpv]');
+});

@@ -727,23 +727,29 @@ const cref = (seq, text, inst = cur.i.id) => {
 // code's text stays as it is.
 const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#=&;!:?-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
 // A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
-// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does; a path may hold spaces and one level of
-// parentheses, as in TB (final).csv, and a link's an &, which the text holds escaped and data-file decodes. [name](#cN) links a comment, and
-// [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.
-function resolveMdPath(f, base) {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(f)) return null;
-  if (/^(?:\.\.\/[^/]+\/)?(?:upload|working)\//.test(f)) return f;
-  const parts = base ? base.split('/').slice(0, -1) : [];
-  for (const seg of f.split('/')) {
-    if (!seg || seg === '.') continue;
-    if (seg === '..') { if (!parts.length) return null; parts.pop(); }
-    else parts.push(seg);
+// opening the preview, and an image, ![name](working/x.png) or relative to a markdown file, shows as a thread's file does (external,
+// absolute, or escaping paths stay literal); a path may hold spaces and one level of parentheses, as in TB (final).csv, and a link's an &,
+// which the text holds escaped and data-file decodes. [name](#cN) links a comment, and [name](../<label>#cN) one of another instance, last,
+// so what its title quotes of the comment is left as it is.
+const inline = (s, base, inst) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(f)) return m;
+  const prefix = base?.match(/^(\.\.\/[^/]+\/)/)?.[1] ?? '';
+  let r;
+  if (/^\.\.\/(?!\.\.\/)[^/]+\/(?:upload|working)\//.test(f)) r = f;
+  else if (/^(?:upload|working)\//.test(f)) r = prefix + f;
+  else {
+    const rel = prefix ? base.slice(prefix.length) : base ?? '', parts = rel ? rel.split('/').slice(0, -1) : [];
+    for (const seg of f.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') { if (!parts.length) return m; parts.pop(); }
+      else parts.push(seg);
+    }
+    if (!parts.length) return m;
+    r = prefix + parts.join('/');
   }
-  return parts.length ? parts.join('/') : null;
-}
-const inline = (s, base) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
-  const r = resolveMdPath(f, base);
-  return r ? `<img class="md" src="${fileUrl(r)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${r}">` : m;
+  const target = inst && !r.startsWith('../') ? { inst, path: r } : r;
+  const attr = typeof target === 'string' ? `data-file="${esc(target)}"` : `data-pin="${esc(JSON.stringify(target))}"`;
+  return `<img class="md" src="${fileUrl(target)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" ${attr}>`;
 })
   .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/(?:[^()]|\([^()]*\))+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -754,14 +760,14 @@ const inline = (s, base) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.
 
 // With an item's threads, each line but a heading or a table's is a point to comment on where it stands: a
 // thread there names it by its opening words, its ref, and marks it.
-function md(text, threads, base) {
+function md(text, threads, base, inst) {
   let h = '', rows = [];
-  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c, base)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
+  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c, base, inst)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
   for (const raw of text.split('\n')) {
     const l = esc(raw);
     if (l.trim().startsWith('|')) { if (!/^[\s|:-]+$/.test(l)) rows.push(l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())); continue; }
     table();
-    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>'), base), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
+    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>'), base, inst), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
     if (!point) { h += line + '\n'; continue; }
     const ref = point.length > 60 ? point.slice(0, 60).replace(/\s+\S*$/, '') + '\u2026' : point, on = threads.filter(t => t.ref && point.startsWith(t.ref.replace(/\u2026$/, '')));
     h += `<span class="pt ${on.length ? 'noted' : ''} ${on.some(t => t.waits) ? 'q' : ''}" data-act="cell" data-ref="${esc(ref)}"${on.length ? ` data-thread="${esc(on[0].id)}" data-note="${esc(on.map(t => t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n')).join('\n\n'))}"` : ''}>${line}</span>\n`;
@@ -1484,7 +1490,7 @@ function previewBody(p) {
   if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
-  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item), p.path)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
+  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item), p.path, p.inst)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
 // A PDF's pages, each fetched as it scrolls into view and kept apart from those the preview came with, so a card drawn again on each
@@ -1505,9 +1511,9 @@ const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Sec
 
 // A preview of a file, an item's or not, before what it shows is fetched (load), for the dialog or an item's card.
 function previewOf(file, item) {
-  const pinned = typeof file !== 'string', path = pinned ? file.path : file, download = fileUrl(file);
+  const pinned = typeof file !== 'string', path = pinned ? file.path : file, inst = pinned ? file.inst : undefined, download = fileUrl(file);
   return {
-    title: fname(path), path, pinned, download, src: fileUrl(file, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && download,
+    title: fname(path), path, inst, pinned, download, src: fileUrl(file, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && download,
     was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: pinned || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx|md|txt|json|py|sql|log)$/i.test(path),
   };
 }
