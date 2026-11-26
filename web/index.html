@@ -447,11 +447,11 @@ function renderBar() {
 
 function owner() {
   const r = data.owner, mine = r.by === me.email;
-  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. The owner closes instances. Their acts and answers to the agent's named asks start runs. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
+  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. The owner closes instances. Their acts and answers to the agent's named asks start runs. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Series credentials: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
     + (mine && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
 }
 
-// The selected series ceiling at a glance, by kind, such as "Mail · 2 folders".
+// The selected series credentials at a glance, by kind, such as "Mail · 2 folders".
 function credentials(r) {
   const n = {}, say = { mail: ['Mail', 'mailboxes'], site: ['1 site', 'sites'], folder: ['1 folder', 'folders'], file: ['1 file', 'files'], website: ['1 website', 'websites'], warehouse: ['1 warehouse', 'warehouses'] };
   r.logins.forEach((id, k) => {
@@ -1050,10 +1050,12 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
 
 function startsHtml(s) {
   const mine = s.owner === me.email;
+  const schedules = [...(s.wakes ?? []), ...(s.instances ?? []).flatMap(i => i.wakes ?? [])].filter(k => !k.request);
+  const schedList = schedules.length ? `<div class="sub">Pending schedules that will run with autonomous on (${schedules.length}): ${schedules.map(k => `${esc(k.label ?? when(k.at))}${k.days ? ` (${esc(k.days.join(','))})` : ''}`).join(', ')}.</div>` : '';
   return ownershipHtml(cur.w, s) + `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. The owner's acts and answers to the agent's named asks start runs under the owner's current consent. Other collaborators' words are notes.</div>`
     + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
-    + (mine ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
-      : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
+    + (mine ? `<h3>Series credentials</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing a credential stops live runs using it; schedules use the current selection when they fire.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label>${schedList}<div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
+      : `<div class="sub">${s.consent ? `Series credentials: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }
 
 // A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
@@ -1091,8 +1093,8 @@ function wakesHtml(target, list, series) {
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
     + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
-    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && (k.initiator ?? k.from) !== cur.s.owner ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
-  const existing = list.map(k => !k.check && (owns || (!k.authority && k.from === me.email)) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''}${k.check ? ` · check ${esc(k.check)}${k.deadline ? ` · deadline ${when(k.deadline)}` : ''} (set with rf)` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${owns || cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
+    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && k.request ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
+  const existing = list.map(k => !k.check && (owns || (k.request && k.from === me.email)) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''}${k.check ? ` · check ${esc(k.check)}${k.deadline ? ` · deadline ${when(k.deadline)}` : ''} (set with rf)` : ''} · ${k.request ? `Request from ${person(k.from)}` : 'Schedule'}${owns || cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns && cur.s.consent?.autonomous ? '' : ' Each occurrence asks the owner to start it.'}</div>${existing}${row()}`;
 }
 
@@ -1205,7 +1207,7 @@ function loginsHtml(s) {
     ...s.logins.filter(l => l.missing.length && !l.expired).map(l => line(l.name, `<span class="q">runs can't send or save</span>: Microsoft hasn't granted it ${esc(l.missing.join(', '))}, which this server now asks for`, connect(l))),
     ...(k?.enabled && k.expired ? [line('Model key', '<span class="q">your key is out of credits</span>: save another, or stop using it', '<button class="btn primary" data-act="logins-show" data-id="key">Change</button>')] : []),
   ];
-  let h = `<div class="sub">Every login is yours alone. A run acts as its series owner, using only the explicitly selected series credential ceiling. Nothing here is a password: you sign in to each system yourself.</div>`
+  let h = `<div class="sub">Every login is yours alone. A run acts as its series owner, using only the explicitly selected series credentials. Nothing here is a password: you sign in to each system yourself.</div>`
     + (needs.length ? `<h3>Needs you</h3>${needs.join('')}<h3>All</h3>` : '');
   for (const c of entra) {
     const l = mine(c.login.id);
@@ -1262,7 +1264,7 @@ function loginsHtml(s) {
   return h;
 }
 
-// The owner's explicitly selected series-wide credential ceiling, by kind:
+// The owner's explicitly selected series credentials, by kind:
 // Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
 // ticks off. Website ticks need an approved grant in workspace w; asking belongs under Logins, Websites.
 function ticksHtml(logins, on = [], w, scope = 'pv') {
@@ -1285,7 +1287,7 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked:enabl
 
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Series credential ceiling</h3><div class="sub">You own this task's whole series. Every instance may use these selected credentials. Nothing is selected by default; an empty selection explicitly permits work without credentials.</div>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
+    + `<h3>Series credentials</h3><div class="sub">You own this task's whole series. Every instance may use these selected credentials. Nothing is selected by default; an empty selection explicitly permits work without credentials.</div>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
     + `<label><input type="checkbox" id="autonomous" ${s.autonomous ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">By clicking ${esc(s.go)}, you explicitly consent to this series-wide selection.</div>`
     + (s.warn ? `<div class="warn">${esc(s.warn)}</div>` : '') + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
@@ -1925,7 +1927,7 @@ async function onAct(act, el) {
   if (act === 'new-instance') {
     let made;
     if (await ask({
-      title: 'New instance', text: 'Uses the existing series owner and selected series credential ceiling. Creating it changes neither.', value: '', placeholder: 'Label', ok: 'Make',
+      title: 'New instance', text: 'Uses the existing series owner and selected series credentials. Creating it changes neither.', value: '', placeholder: 'Label', ok: 'Make',
       act: async label => (made = await api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, quiet: true }) })),
     })) go(made.id);
   }

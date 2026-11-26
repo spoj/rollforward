@@ -1253,7 +1253,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await ticks()).slice(0, 3), ['all:true', 'm365:onedrive:true', 'm365:site:s1:true'], "the group's tick ticks its sources");
   await page.click('#pv details.tgroup input[value="m365:onedrive"]');
   assert.deepEqual((await ticks()).slice(0, 3), ['all:false', 'm365:onedrive:false', 'm365:site:s1:true'], 'and follows them');
-  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Series credential ceiling'], 'By clicking Start, you explicitly consent to this series-wide selection.']);
+  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Series credentials'], 'By clicking Start, you explicitly consent to this series-wide selection.']);
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
   rmSync(join(mine, 'logins.json'));

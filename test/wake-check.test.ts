@@ -233,7 +233,8 @@ time.sleep(30)  # The test waits only 15 seconds for Pi: the check must be inter
 `);
   const consent = await call('PUT', `/api/series/${sid}/credentials`, { logins: [mailbox.id], autonomous: true });
   assert.equal(consent.status, 200, await consent.text());
-  const { authority } = await json(`/api/wakes/${iid}`, 'PUT', { at: iso(1200), check });
+  const wake = await json(`/api/wakes/${iid}`, 'PUT', { at: iso(1200), check });
+  assert.equal(wake.request, undefined);
   const data = await until('Pi run after index revocation', async () => {
     const d = await info(iid);
     return (d.wakeCheck || d.log.some(e => e.op === 'done')) && d;
@@ -241,7 +242,10 @@ time.sleep(30)  # The test waits only 15 seconds for Pi: the check must be inter
   const failure = 'wake check failed: index snapshot changed';
   assert.ok(!data.log.some(e => e.op === 'wake-check'), 'the stale stop was not recorded');
   assert.equal(data.log.find(e => e.op === 'wake')?.text, failure);
-  assert.deepEqual(data.log.find(e => e.op === 'run')?.authority, authority);
+  const runAuth = data.log.find(e => e.op === 'run')?.authority;
+  assert.equal(runAuth?.owner, admin);
+  assert.deepEqual(runAuth?.logins, [mailbox.id]);
+  assert.equal(runAuth?.autonomous, true);
   assert.equal(data.log.find(e => e.op === 'done')?.aborted, false);
   assert.ok(prompts.some(p => p.includes(failure)));
 });

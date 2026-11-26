@@ -128,7 +128,7 @@ export function seriesConversation(id: string, periods = instances(id), epoch = 
   return conversation(messagesAt(seriesDir(id)), periods, epoch);
 }
 
-// Messages describe the captured lease, never a later-expanded series ceiling.
+// Messages describe the captured lease, never a later-expanded series selection.
 export function message(inst: Instance, n: number, entries: Entry[], first = false, open: readonly Note[] = [], lease = (inst.log.find(e => e.op === 'run' && e.run === n)?.authority as Authority | undefined) ?? authority(inst), names: View['names'] = {}): string {
   const us = users(), who = (by: string) => `${us[by]?.name || by} <${by}>`;
   const by = lease.owner, ticked = lease.logins, set = [...wakesOf(inst.id), ...wakesOf(inst.seriesId)], sites = websitesOf(by);
@@ -188,7 +188,7 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
     .map(e => e.skippedChecks as SkippedChecks);
   return `Instance ${inst.label}, run ${n}.`
     + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
-    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${woken(inst, k).word === 'runner' ? '' : ', a note'}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}${k.skipCount ? ` (${k.skipCount} skipped since ${k.skipSince})` : ''}` : ''}`).join('; ')}.` : '')
+    + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${k.request ? ', a request' : ''}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}${k.skipCount ? ` (${k.skipCount} skipped since ${k.skipSince})` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')
     + (series.length ? ` Open notes on the series: ${series.map(e => `n${e.seq}, from ${from(e)} at ${e.at}, ${JSON.stringify(e.text)}${(e.files as string[] | undefined)?.map(f => `, ../.notes/${f}`).join('') ?? ''}${e.request ? ' [request]' : ''}${e.proposal ? ' [proposal pending]' : ''}`).join('; ')}.` : '')
@@ -653,7 +653,7 @@ function wakeBackstopHours(override?: number): number {
 export type SkippedChecks = { count: number; since: string; until: string; lastMessage?: string };
 export type Wake = {
   target: string; at: string; from: string; immediate?: boolean; label?: string; inst?: string; sourceRun?: number;
-  days?: string[]; text?: string; authority?: Authority; initiator?: string; check?: string; deadline?: string;
+  days?: string[]; text?: string; request?: true; check?: string; deadline?: string;
   deadlineTarget?: string; deadlineLabel?: string; maxStaleMin?: number; backstopHours?: number; rev?: number;
   skipCount?: number; skipSince?: string; lastSkipAt?: string; lastSkipMessage?: string;
 };
@@ -671,7 +671,7 @@ function trimSeriesChecks(list: SeriesWakeCheck[]): SeriesWakeCheck[] {
   }
   return kept.reverse();
 }
-type Wakes = { pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request>; checks?: SeriesWakeCheck[] };
+type Wakes = { version?: number; pending: Record<string, Wake>; fired: Record<string, string>; requests: Record<string, Request>; checks?: SeriesWakeCheck[] };
 
 // Keep the request scope in its pointer too: a tombstone can explain a missing row even after the canonical body has been purged.
 export function wakes(): Wakes {
@@ -729,7 +729,7 @@ function saveWakes(w: Wakes) {
     }
     requests[id] = { series, label, ...(source && { inst: source }), ...(target && { target }), message };
   }
-  writeJson('wakes.json', { ...w, requests });
+  writeJson('wakes.json', { ...w, version: 2, requests });
 }
 const publicWake = (id: string, k: Wake): Wake & { id: string } => {
   const { rev: _r, ...shown } = k;
@@ -791,16 +791,17 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>, caller?: Me)
   const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(sid) : undefined;
   const effectiveOwner = p && caller && caller.email === s.owner ? { ...p, groups: p.groups.filter(g => caller.groups.includes(g)) } : p;
   const immediate = !wake.inst && wake.from === s.owner && wake.at <= new Date().toISOString();
-  const authorized = s.consent && (immediate || s.consent.autonomous) && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
-    && effectiveOwner && canSee(effectiveOwner, t.workspaces[t.series[sid].workspace])
-    && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
-  if (wake.check && (!authorized || !s.consent?.autonomous || immediate || !can(effectiveOwner, 'wake-check')))
-    throw new HttpError(403, 'a wake check needs a scheduled wake of your own series, autonomous consent, and the wake-check capability');
-  const k: Wake = { ...wake, target, immediate: immediate || undefined, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.authority.logins.includes(o)), autonomous: s.consent!.autonomous } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
+  const owned = wake.inst
+    ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && sameAuthority(source.inst, source.authority)
+    : wake.from === s.owner;
+  if (wake.check && (!owned || immediate || !can(effectiveOwner, 'wake-check')))
+    throw new HttpError(403, 'a wake check needs a scheduled wake of your own series and the wake-check capability');
+  const k: Wake = { ...wake, target, immediate: immediate || undefined, ...(!owned && { request: true }), ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days && !k.immediate) k.at = new Date(Math.min(k.deadline ? Date.parse(k.deadline) : Infinity, Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS))).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
-    && !!p.immediate === !!k.immediate && !!p.authority === !!k.authority && (k.authority ? p.authority!.owner === k.authority.owner && p.authority!.epoch === k.authority.epoch && p.authority!.workspace === k.authority.workspace && p.authority!.autonomous === k.authority.autonomous : p.from === k.from && p.inst === k.inst)
+    && !!p.immediate === !!k.immediate && !!p.request === !!k.request
+    && (!k.request || (p.from === k.from && p.inst === k.inst))
     && (labelled || (p.at === k.at && String(p.days) === String(k.days)))) ?? [];
   if (!was && Object.values(w.pending).filter(p => p.target === target).length >= MAX_WAKES) throw new HttpError(409, `${MAX_WAKES} wakes are pending for it: cancel one first`);
   if (!(labelled && was?.days)) {
@@ -913,12 +914,12 @@ function advanceWake(w: Wakes, id: string, wake: Wake) {
   delete w.pending[id];
   if (!k.days) return;
   const was = new Date(k.at), next = step(was, k.days, 1), date = dateIn(k.label);
-  w.pending[id] = { ...k, immediate: undefined, ...(!k.authority?.autonomous && { authority: undefined, initiator: undefined }),
+  w.pending[id] = { ...k, immediate: undefined,
     at: next.toISOString(), ...(date && { label: k.label!.replace(date, ymd(date === ymd(was) ? next : was)) }) };
 }
 
-function scheduled(wake: Wake, id: string, from: string, text = wake.text): Woken {
-  return { from, immediate: wake.immediate, text, inst: wake.inst, sourceRun: wake.sourceRun, authority: wake.authority, initiator: wake.initiator, schedule: id };
+function scheduled(wake: Wake, id: string, from: string, lease: Authority, text = wake.text): Woken {
+  return { from, immediate: wake.immediate, text, inst: wake.inst, sourceRun: wake.sourceRun, authority: lease, initiator: lease.owner, schedule: id };
 }
 
 export function wakeCheckStatus(inst: Instance): { at: string; message: string } | undefined {
@@ -1063,7 +1064,7 @@ async function checkWake(c: Check, from: string) {
     } else {
       const text = forced ? liveWake.text : failure ? `wake check failed: ${failure}` : result?.message;
       const skippedChecks = skippedOf(liveWake, now);
-      const wakeEntry = { ...scheduled(liveWake, id, from, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) };
+      const wakeEntry = { ...scheduled(liveWake, id, from, lease, text), ...(!forced && { check: liveWake.check, note: true }), ...(skippedChecks && { skippedChecks }) };
       if (inst) {
         wakeWith(inst, [wakeEntry]);
       } else if (instances(seriesId).filter(i => i.doc.status === 'open').length < MAX_OPEN) {
@@ -1117,22 +1118,23 @@ export function fire() {
       }
     }
     const setter = asPerson(wake.from);
-    if (!wake.inst && wake.from.includes('@') && !(setter && canSee(setter, ws))) {
+    if (wake.request && !wake.inst && wake.from.includes('@') && !(setter && canSee(setter, ws))) {
       delete w.pending[id];
       changed = true;
       console.log(`a wake ${wake.from} set went unfired, as they can no longer see ${ws.name}`);
       continue;
     }
-    const s = seriesSettings(seriesDir(targetSeries)), lease = wake.authority, owner = s.owner && asPerson(s.owner);
-    const authorized = !!lease && (lease.autonomous ? !!s.consent?.autonomous : wake.immediate && !wake.inst && wake.from === s.owner) && wake.initiator === lease.owner && s.owner === lease.owner && s.epoch === lease.epoch && wsId === lease.workspace
-      && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId && lease.logins.every(o => s.consent!.logins.includes(o))
-      && !!owner && canSee(owner, ws);
+    const s = seriesSettings(seriesDir(targetSeries)), owner = s.owner && asPerson(s.owner);
+    const authorized = !wake.request && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId
+      && !!owner && canSee(owner, ws)
+      && (s.consent.autonomous || (!!wake.immediate && !wake.inst && wake.from === s.owner));
     if (!authorized) {
       advanceWake(w, id, wake);
       changed = true;
       w.requests[days ? newId() : id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
       continue;
     }
+    const lease = authority(targetSeries);
     // Where the run that set it is now, though it was renamed or moved since.
     const from = wake.inst ? `${named(t, instance(wake.inst).seriesId)}/${instance(wake.inst).label}` : wake.from;
     const known = t.series[target] ? labels(target).find(l => l.label === label)?.id : target, inst = known ? instance(known) : undefined;
@@ -1167,7 +1169,7 @@ export function fire() {
       const wakeText = recurringBackstop
         ? `recurring wake-check backstop reached after ${backstopHrs}h / ${wake.skipCount} skipped ${wake.skipCount === 1 ? 'check' : 'checks'}${wake.text ? `: ${wake.text}` : ''}`
         : wake.text;
-      const entry = { ...scheduled(wake, id, from, wakeText), ...(skippedChecks && { skippedChecks }) };
+      const entry = { ...scheduled(wake, id, from, lease, wakeText), ...(skippedChecks && { skippedChecks }) };
       if (inst) wakeWith(inst, [entry]);
       else startWith(target, label!, wake.inst ? 'agent' : wake.from, [entry]);
     }
@@ -1264,9 +1266,44 @@ export async function sweepIdleUngrouped(
 // Either way its instance is woken to carry on.
 export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
 
+// Conservative one-off migration for legacy wakes.json entries that stored authority/initiator snapshots:
+// stale or unauthorized wakes become request: true so they are never silently adopted under prior consent.
+export function migrateWakes() {
+  const w = wakes(), t = tree();
+  let changed = false;
+  const legacy = w.version !== 2;
+  for (const [id, raw] of Object.entries(w.pending)) {
+    const k = raw as Wake & { authority?: Authority; initiator?: string };
+    const hasLegacyKeys = 'authority' in k || 'initiator' in k;
+    if (!legacy && !hasLegacyKeys) continue;
+    const target = k.deadlineTarget ?? k.target;
+    let sid: string | undefined;
+    try { sid = t.series[target] ? target : instance(target).seriesId; } catch {}
+    const ws = sid ? t.series[sid]?.workspace : undefined;
+    const s = sid ? seriesSettings(seriesDir(sid)) : undefined;
+    const valid = !!(k.authority && s && ws && k.authority.owner === s.owner && k.authority.epoch === s.epoch && k.authority.workspace === ws);
+    if (!valid && !k.request) {
+      k.request = true;
+      if (k.authority) console.log(`migrated stale wake ${id} on ${sid ? named(t, sid) : target} (was ${k.authority.owner}, epoch ${k.authority.epoch}) to a request`);
+      changed = true;
+    }
+    if (hasLegacyKeys) {
+      delete k.authority;
+      delete k.initiator;
+      changed = true;
+    }
+  }
+  if (legacy && Object.keys(w.pending).length) {
+    w.version = 2;
+    changed = true;
+  }
+  if (changed) saveWakes(w);
+}
+
 // Recovery accounts for the captured executor and resumes only a still-valid captured authority.
 // No git runs at startup, so interrupted commit locks can be removed.
 export function recover() {
+  migrateWakes();
   // A deletion a restart cut is done: what's left of its folder goes.
   const t = tree();
   for (const id of Object.keys(t.series)) for (const inst of instances(id).filter(i => i.hole)) inst.clear();

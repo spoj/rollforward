@@ -136,8 +136,8 @@ test('wake editor explains recurring requests without owner autonomous authority
   assert.match(html(owner, false), /Each occurrence asks the owner to start it/);
   assert.match(html(colleague, true), /Each occurrence asks the owner to start it/);
   assert.doesNotMatch(html(owner, true), /asks the owner/);
-  assert.match(html(owner, true, [{ id: 'wake1', from: colleague }]), /Each occurrence asks the owner to start it/);
-  assert.doesNotMatch(html(owner, true, [{ id: 'wake1', from: 'agent/path', initiator: owner }]), /asks the owner/);
+  assert.match(html(owner, true, [{ id: 'wake1', from: colleague, request: true }]), /Each occurrence asks the owner to start it/);
+  assert.doesNotMatch(html(owner, true, [{ id: 'wake1', from: 'agent/path' }]), /asks the owner/);
 });
 
 test('website selection retains setup-only grant gating and no implicit grant request', () => {

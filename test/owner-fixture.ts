@@ -19,7 +19,7 @@ export const migrateFixtureMessages = (root: string) => migrateMessageCopy(realp
 export async function fireFixtureRequests(root: string, wakes: Record<string, Pick<Wake, 'target' | 'from' | 'label' | 'inst' | 'text'>>) {
   const path = join(root, '.rf', 'wakes.json'), at = new Date().toISOString();
   const state = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : { pending: {}, fired: {}, requests: {} };
-  for (const [id, wake] of Object.entries(wakes)) state.pending[id] = { ...wake, at };
+  for (const [id, wake] of Object.entries(wakes)) state.pending[id] = { ...wake, at, request: true };
   replaceFile(path, JSON.stringify(state));
   for (let i = 0; i < 200; i++) {
     const { requests } = JSON.parse(readFileSync(path, 'utf8'));

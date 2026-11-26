@@ -8,7 +8,7 @@ import { changes, initSystem, saveTree, tree, writeJson } from '../src/system.ts
 import { createInstance, openStore, seriesDir } from '../src/store.ts';
 import { authority, lender, ownerOf, runnerAt, saveLogin, signOut, unoffer, use } from '../src/logins.ts';
 import { saveSeriesSettings, seriesSettings, type Authority } from '../src/series.ts';
-import { fire, held, pending, recover, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
+import { fire, held, migrateWakes, pending, recover, retireSeries, setWake, standing, wakes } from '../src/waker.ts';
 
 const alice = 'alice@example.test', bob = 'bob@example.test', admin = 'admin@example.test';
 
@@ -141,41 +141,41 @@ for (const remove of ['unoffer', 'signout'] as const) test(`${remove} narrows ev
   assert.equal(seriesSettings(inst.series()).epoch, 3);
 });
 
-test('a collaborator schedule request cannot overwrite an owner-authorized schedule', t => {
+test('a collaborator schedule request cannot overwrite an owner-side schedule', t => {
   fixture(t);
   consent([], true, 'empty');
   const owner = setWake('empty', { at: '2099-01-01', from: alice, label: 'Next' });
   const request = setWake('empty', { at: '2099-02-01', from: bob, label: 'Next' });
   assert.notEqual(request.id, owner.id);
-  assert.deepEqual({ ...wakes().pending[owner.id].authority }, owner.authority);
+  assert.equal(wakes().pending[owner.id].request, undefined);
+  assert.equal(wakes().pending[request.id].request, true);
   assert.equal(wakes().pending[owner.id].at, owner.at);
 });
 
-test('a revoked weekly schedule cannot swallow the incoming owner\'s new one-off consent', t => {
+test('a weekly schedule is reused by a one-off for the same label, and resolves at fire time under the new owner (D1)', t => {
   fixture(t);
   consent([], true, 'empty');
   const old = setWake('empty', { at: '2099-01-01', from: alice, label: 'Next', days: ['mon'] });
   saveSeriesSettings(seriesDir('empty'), { version: 1, owner: bob, epoch: 2, since: 'later' });
   consent([], true, 'empty');
   const next = setWake('empty', { at: '2099-01-02', from: bob, label: 'Next' });
-  assert.notEqual(next.id, old.id);
-  assert.equal(next.authority?.owner, bob);
-  assert.equal(next.authority?.epoch, 2);
-  assert.equal(next.days, undefined);
+  assert.equal(next.id, old.id);
+  assert.equal(next.request, undefined);
+  assert.deepEqual(next.days, ['mon']);
 });
 
-test('schedules snapshot credentials for both existing and new periods; stale epochs become requests', t => {
+test('schedules resolve credentials at fire time: additions reach schedules, missing consent becomes a request', t => {
   const inst = fixture(t);
   consent(['m365:x'], true);
   consent(['m365:x'], true, 'empty');
   const existing = setWake(inst.id, { at: '2000-01-01', from: alice });
   const next = setWake('empty', { at: '2000-01-01', from: alice, label: 'Next' });
-  assert.deepEqual(next.authority?.logins, ['m365:x']);
+  assert.equal(next.request, undefined);
   consent(['m365:x', 'm365:y'], true);
   consent(['m365:x', 'm365:y'], true, 'empty');
   fire();
   const entry = inst.log.findLast(e => e.op === 'wake')!;
-  assert.deepEqual((entry.authority as Authority).logins, ['m365:x']);
+  assert.deepEqual((entry.authority as Authority).logins, ['m365:x', 'm365:y']);
   assert.equal(entry.initiator, alice);
   assert.equal(entry.schedule, existing.id);
   const later = setWake(inst.id, { at: '2000-01-01', from: alice });
@@ -227,7 +227,7 @@ test('confirm ABA cannot authorize a delayed start, and retirement blocks replac
     const old = active.get('s'), record = inst.log.find(e => e.op === 'run');
     saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 3, since: '', consent: { by: alice, at: '', workspace: 'w', logins: ['m365:x'], autonomous: true } });
     const continuation = setWake(inst.id, { at: '2099-01-01', from: 'W/S/First', inst: inst.id });
-    assert.deepEqual(continuation.authority.logins, [], 'a narrow run cannot self-broaden by minting a fresh same-series schedule');
+    assert.equal(continuation.request, undefined, 'same-series live run sets an owner-side schedule resolved at fire time');
     let browsersCut = 0;
     old.browsers = { cut: () => { browsersCut++; }, end: async () => {} };
     set(bob, 4);
@@ -278,17 +278,24 @@ test('only immediate personal owner wakes can execute without autonomy', t => {
   consent();
   const now = new Date().toISOString();
   const immediate = setWake(inst.id, { from: alice, at: now });
-  assert.equal(immediate.authority?.autonomous, false);
+  assert.equal(immediate.request, undefined);
+  assert.equal(immediate.immediate, true);
   fire();
   assert.deepEqual(standing(inst, inst.log.findLast(e => e.op === 'wake')!), { word: 'runner', starts: true });
-  const future = setWake(inst.id, { from: alice, at: '2099-01-01' });
-  assert.equal(future.authority, undefined);
+  const future = setWake(inst.id, { from: alice, at: '2000-01-01' });
+  const w = wakes();
+  delete w.fired[inst.id];
+  w.pending[future.id].immediate = undefined;
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(wakes().requests[future.id].target, inst.id, 'non-immediate owner wake without autonomy becomes a request at fire');
   const agent = setWake(inst.id, { from: 'W/S/First', inst: inst.id, at: now });
-  assert.equal(agent.authority, undefined);
+  assert.equal(agent.request, true);
   const absent = seriesSettings(inst.series());
   saveSeriesSettings(inst.series(), { ...absent, consent: undefined });
   const noConsent = setWake(inst.id, { from: alice, at: now });
-  assert.equal(noConsent.authority, undefined);
+  fire();
+  assert.equal(wakes().requests[noConsent.id].target, inst.id, 'immediate owner wake without consent becomes a request at fire');
 });
 
 for (const [from, autonomous] of [[bob, true], [alice, false]] as const) for (const series of [false, true]) test(`weekly requests keep recurring: setter ${from}, autonomous ${autonomous}, series ${series}`, t => {
@@ -317,14 +324,21 @@ for (const [from, autonomous] of [[bob, true], [alice, false]] as const) for (co
   assert.equal(inst.log.some(e => e.op === 'wake' || e.op === 'run'), false);
 });
 
-for (const autonomous of [false, true]) test(`an immediate weekly wake keeps autonomy ${autonomous} for later occurrences`, t => {
+for (const autonomous of [false, true]) test(`an immediate weekly wake clears immediate and resolves autonomy ${autonomous} at next fire`, t => {
   const inst = fixture(t);
   consent([], autonomous);
   const { id } = setWake(inst.id, { from: alice, at: new Date().toISOString(), days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] });
   fire();
   assert.equal(inst.log.some(e => e.op === 'wake'), true);
   assert.equal(wakes().pending[id].immediate, undefined);
-  assert.equal(!!wakes().pending[id].authority, autonomous);
+  assert.equal(wakes().pending[id].request, undefined);
+  const w = wakes();
+  delete w.fired[inst.id];
+  w.pending[id].at = '2000-01-01T00:00:00.000Z';
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(inst.log.filter(e => e.op === 'wake').length, autonomous ? 2 : 1);
+  assert.equal(Object.keys(wakes().requests).length, autonomous ? 0 : 1);
 });
 
 for (const autonomous of [false, true]) test(`an immediate owner wake bypasses schedule spacing with autonomy ${autonomous}`, t => {
@@ -397,4 +411,107 @@ test('membership withdrawal clears consent even for an empty owned series', t =>
   assert.equal(seriesSettings(seriesDir('empty')).consent, undefined);
   assert.equal(seriesSettings(seriesDir('empty')).owner, alice);
   assert.equal(seriesSettings(seriesDir('empty')).epoch, 2);
+});
+
+test('D1: after transfer, schedule waits as request until new owner consents with autonomous on, then fires as new owner', t => {
+  const inst = fixture(t);
+  consent(['m365:x'], true);
+  saveLogin(bob, { id: 'm365', kind: 'm365', name: 'M365', since: '2026-01-01', offers: [{ id: 'm365:bob', name: 'Bob' }] });
+  const sched = setWake(inst.id, { at: '2099-01-01T08:00:00.000Z', from: alice, days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
+  // Transfer to bob (clears consent, bumps epoch)
+  saveSeriesSettings(inst.series(), { version: 1, owner: bob, epoch: 2, since: '2026-01-02' });
+  let w = wakes();
+  w.pending[sched.id].at = '2000-01-03T08:00:00.000Z';
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(Object.keys(wakes().requests).length, 1, 'before new owner consents, occurrence becomes a request');
+  assert.equal(inst.log.some(e => e.op === 'wake'), false);
+  // Bob saves credentials with autonomous on
+  saveSeriesSettings(inst.series(), { version: 1, owner: bob, epoch: 2, since: '2026-01-02', consent: { by: bob, at: '2026-01-02', workspace: 'w', logins: ['m365:bob'], autonomous: true } });
+  w = wakes();
+  delete w.fired[inst.id];
+  w.pending[sched.id].at = '2000-01-04T08:00:00.000Z';
+  writeJson('wakes.json', { ...w, requests: {} });
+  fire();
+  const entry = inst.log.findLast(e => e.op === 'wake')!;
+  assert.equal((entry.authority as Authority).owner, bob);
+  assert.deepEqual((entry.authority as Authority).logins, ['m365:bob']);
+  assert.equal(entry.initiator, bob);
+});
+
+test('D2: narrowing credentials does not kill schedules; schedule fires with remaining credentials', t => {
+  const inst = fixture(t);
+  consent(['m365:x', 'm365:y'], true);
+  const sched = setWake(inst.id, { at: '2099-01-01T08:00:00.000Z', from: alice });
+  // Narrow credentials (untick m365:y, epoch bumps)
+  saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 2, since: '2026-01-02', consent: { by: alice, at: '2026-01-02', workspace: 'w', logins: ['m365:x'], autonomous: true } });
+  const w = wakes();
+  w.pending[sched.id].at = '2000-01-01T08:00:00.000Z';
+  writeJson('wakes.json', w);
+  fire();
+  const entry = inst.log.findLast(e => e.op === 'wake')!;
+  assert.deepEqual((entry.authority as Authority).logins, ['m365:x']);
+  assert.equal(Object.keys(wakes().requests).length, 0);
+});
+
+test('D3: turning autonomous off pauses schedules as requests; turning it back on resumes them', t => {
+  const inst = fixture(t);
+  consent(['m365:x'], true);
+  const sched = setWake(inst.id, { at: '2099-01-01T08:00:00.000Z', from: alice, days: ['mon', 'tue', 'wed', 'thu', 'fri'] });
+  // Turn autonomous off
+  saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 2, since: '2026-01-02', consent: { by: alice, at: '2026-01-02', workspace: 'w', logins: ['m365:x'], autonomous: false } });
+  let w = wakes();
+  w.pending[sched.id].at = '2000-01-03T08:00:00.000Z';
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(Object.keys(wakes().requests).length, 1);
+  assert.equal(inst.log.some(e => e.op === 'wake'), false);
+  // Turn autonomous back on
+  saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 2, since: '2026-01-02', consent: { by: alice, at: '2026-01-03', workspace: 'w', logins: ['m365:x'], autonomous: true } });
+  w = wakes();
+  delete w.fired[inst.id];
+  w.pending[sched.id].at = '2000-01-04T08:00:00.000Z';
+  writeJson('wakes.json', { ...w, requests: {} });
+  fire();
+  assert.equal(inst.log.filter(e => e.op === 'wake').length, 1);
+});
+
+test('colleague-set request wake stays a request even after the colleague becomes owner', t => {
+  const inst = fixture(t);
+  consent([], true);
+  const reqWake = setWake(inst.id, { at: '2099-01-01T08:00:00.000Z', from: bob });
+  assert.equal(reqWake.request, true);
+  saveSeriesSettings(inst.series(), { version: 1, owner: bob, epoch: 2, since: '2026-01-02', consent: { by: bob, at: '2026-01-02', workspace: 'w', logins: [], autonomous: true } });
+  const w = wakes();
+  w.pending[reqWake.id].at = '2000-01-01T08:00:00.000Z';
+  writeJson('wakes.json', w);
+  fire();
+  assert.equal(wakes().requests[reqWake.id].target, inst.id);
+  assert.equal(inst.log.some(e => e.op === 'wake'), false);
+});
+
+test('migrateWakes conservatively converts stale snapshots and legacy requests to request:true while keeping current owner wakes', t => {
+  const inst = fixture(t);
+  consent(['m365:x'], true);
+  const currentAuth = authority(inst);
+  const staleAuth = { ...currentAuth, owner: bob, epoch: 0 };
+  writeJson('wakes.json', {
+    pending: {
+      current: { target: inst.id, at: '2099-01-01T08:00:00.000Z', from: alice, authority: currentAuth, initiator: alice },
+      stale: { target: inst.id, at: '2099-01-02T08:00:00.000Z', from: bob, authority: staleAuth, initiator: bob },
+      legacyReq: { target: inst.id, at: '2099-01-03T08:00:00.000Z', from: bob },
+    },
+    fired: {},
+    requests: {},
+  });
+  migrateWakes();
+  const after = wakes();
+  assert.equal(after.version, 2);
+  assert.equal(after.pending.current.request, undefined);
+  assert.equal('authority' in after.pending.current, false);
+  assert.equal('initiator' in after.pending.current, false);
+  assert.equal(after.pending.stale.request, true);
+  assert.equal('authority' in after.pending.stale, false);
+  assert.equal('initiator' in after.pending.stale, false);
+  assert.equal(after.pending.legacyReq.request, true);
 });

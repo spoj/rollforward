@@ -32,8 +32,8 @@ rf comment --mine [--json]
   server commits; read it with git log, show or diff, such as git diff HEAD -- working. Each run's end commits it too, in your
   name, and an approval and closing, in the name of whoever approved or closed.`,
   wake: `rf wake TARGET AT [--label LABEL] [--days DAYS] [--check PATH [--deadline ISO] [--max-stale MIN] [--backstop-hours H]] [TEXT] | rf wake --cancel ID
-  Schedules a later run of your own series, with who woke it and TEXT. Execution requires your series owner's autonomous consent
-  and a valid authority snapshot; otherwise it waits as a request for that owner. TARGET is a folder in your own series as you see
+  Schedules a later run of your own series, with who woke it and TEXT. Execution requires your series owner's autonomous consent;
+  otherwise it waits as a request for that owner. TARGET is a folder in your own series as you see
   it, by the names your run started with: an open instance, such as . for your own or ../<label>, which
   the wake continues; or your series, .., which it starts a new instance of, labelled LABEL, or continues
   the one it has by that label. Runs can only wake their own series (use rf comment to leave a read-only note elsewhere).

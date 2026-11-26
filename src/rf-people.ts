@@ -233,7 +233,7 @@ Usual work
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
   all.
 - Start an instance: rf new instance SERIES LABEL --wake, only as the series owner. Scheduled wakes need that owner's
-  autonomous opt-in and keep their authorized credential snapshot; collaborators' wakes become requests for the owner.
+  autonomous opt-in and use their current series credentials at fire time; collaborators' wakes become requests for the owner.
   A one-off: rf new task WORKSPACE --clear --comment TEXT --wake. Promotion with rf new series PATH NAME keeps its owner.
 - Tell a series something for its runs, or while no instance is open: rf comment SERIES TEXT, which starts no run.
   rf comment SERIES lists its notes; rf comment --mine lists your notes. Settle an informing note with
@@ -388,7 +388,7 @@ async function workspaceNamed(name: string) {
 const pathOf = async (id: string) => (await get('/api')).flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => `${w.name}/${s.name}/${i.label}`)))[0];
 // Explicit series-wide offer selection.
 const ticks = () => flags.clear ? [] : String(flags.creds ?? flags.set ?? '').split(',').map(o => o.trim()).filter(Boolean);
-const consent = (offers: string[]) => `, series-wide ceiling: ${offers.join(', ') || 'no credentials'}; you explicitly consent to agents acting as you`;
+const consent = (offers: string[]) => `, series credentials: ${offers.join(', ') || 'no credentials'}; you explicitly consent to agents acting as you`;
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
@@ -811,14 +811,18 @@ else if (cmd === 'comment' && args.length < 2) {
   const s = await seriesAt(args[1]);
   if (flags.set !== undefined || flags.clear) {
     if (!['true', 'false'].includes(String(flags.autonomous))) throw new Error('saving requires --autonomous true|false');
-    await post(`/api/series/${s.id}/credentials`, { logins: ticks(), autonomous: flags.autonomous === 'true' }, 'PUT');
+    const saved = await (await post(`/api/series/${s.id}/credentials`, { logins: ticks(), autonomous: flags.autonomous === 'true' }, 'PUT')).json();
     console.log(`saved ${args[1]}${consent(ticks())}; autonomous ${flags.autonomous}`);
+    if (flags.autonomous === 'true' && Array.isArray(saved?.schedules) && saved.schedules.length) {
+      console.log(`pending schedules that will run (${saved.schedules.length}):`);
+      for (const k of saved.schedules) console.log(`  ${k.id}  ${k.at}${k.days ? ` (${k.days.join(',')})` : ''}${k.label ? `  ${k.label}` : ''}${k.text ? `  ${k.text}` : ''}`);
+    }
   } else {
     if (flags.autonomous !== undefined) throw new Error('select credentials with --set OFFER,... or --clear');
     const mine = await get('/logins');
     const out = { owner: s.owner, consent: s.consent, yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
     if (flags.json) console.log(JSON.stringify(out, null, 1));
-    else console.log([`Series owner: ${out.owner ?? 'not selected'}`, out.consent ? `Series-wide ceiling: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent', 'your offers:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
+    else console.log([`Series owner: ${out.owner ?? 'not selected'}`, out.consent ? `Series credentials: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent', 'your offers:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
   }
 } else if (cmd === 'rename' && args.length === 2) {
   const [w, s, l] = args[0].replace(/\/+$/, '').split('/');
@@ -846,7 +850,7 @@ else if (cmd === 'comment' && args.length < 2) {
   if (flags.creds !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('instance credentials were removed: use rf series credentials SERIES');
   const series = await seriesAt(args[1]);
   const { id } = await (await post(`/api/series/${series.id}`, { label: args[2], quiet: !flags.wake })).json();
-  console.log(`made ${await pathOf(id)}; series owner and ceiling unchanged${series.owner ? `; ${series.owner} starts its runs` : ''}`);
+  console.log(`made ${await pathOf(id)}; series owner and credentials unchanged${series.owner ? `; ${series.owner} starts its runs` : ''}`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
   console.log(`made the series ${args[1].split('/')[0]}/${args[2]}`);
@@ -865,7 +869,7 @@ else if (cmd === 'comment' && args.length < 2) {
     if (flags.creds !== undefined || flags.clear) throw new Error('request credentials were removed: use rf series credentials SERIES');
     const r = await post(`/api/requests/${args[1]}`, { quiet: !flags.wake });
     const woke = r.headers.get('X-RF-Woke') === '1', { id } = await r.json();
-    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}; series owner and ceiling unchanged`);
+    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}; series owner and credentials unchanged`);
   }
 } else if (cmd === 'logins' && !args.length) {
   const all = await get('/logins');

@@ -1356,6 +1356,13 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (removed) await changeAuthority(id, next, by);
         else saveSeriesSettings(seriesDir(id), next);
       }
+      if (action === 'credentials') {
+        const targets = new Set([id, ...labels(id).map(l => l.id)]);
+        const schedules = Object.entries(wakes().pending)
+          .filter(([, k]) => targets.has(k.target) && !k.request)
+          .map(([wid, k]) => ({ id: wid, target: k.target, at: k.at, ...(k.label && { label: k.label }), ...(k.days && { days: k.days }), ...(k.text && { text: k.text }), ...(k.check && { check: k.check }) }));
+        return send(res, 200, { ok: true, schedules });
+      }
       return send(res, 200, 'ok');
     });
     if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners, or PUT owner or credentials');
@@ -1412,7 +1419,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method === 'POST') return inOrder(id, async () => {
       recheckRequest(req);
       mustUnarchived(by, id, me);
-      if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
+      if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credentials');
       return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
     });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
@@ -1454,7 +1461,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method === 'DELETE') {
       const owner = seriesSettings(seriesDir(sid)).owner;
       const mayCancel = run ? run.runner === owner && !!run.authority.autonomous : by === owner || canManage(me, t.workspaces[t.series[sid].workspace]);
-      const ownRequest = !wake!.authority && (run ? wake!.inst === run.inst.id : wake!.from === by);
+      const ownRequest = !!wake!.request && (run ? wake!.inst === run.inst.id : wake!.from === by);
       if (!mayCancel && !ownRequest) throw new HttpError(403, 'only the series owner, a workspace manager, or its authorized autonomous run cancels this schedule');
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
       if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
@@ -1507,7 +1514,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       mustUnarchived(by, r.series, me);
       const settings = seriesSettings(seriesDir(r.series));
       if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
-      if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
+      if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credentials separately');
       if (settings.owner !== by) throw new HttpError(403, 'only the current series owner starts requests');
       if (!settings.consent || settings.consent.by !== by || settings.consent.workspace !== tree().series[r.series].workspace) throw new HttpError(403, 'the owner must explicitly select series credentials first, including an empty selection');
       const quiet = !!payload.quiet, provenance = { from: r.from, text: r.text, inst: r.inst, note: true, quiet };

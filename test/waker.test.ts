@@ -502,7 +502,7 @@ test("a target has as many wakes as are set, the same twice being one, and a ser
   const s = setWake('s6', { at: at(7, 8), from: 'x', label: '2030-01-07' });
   assert.equal(setWake('s6', { at: at(7, 9), from: 'x', label: '2030-01-07' }).id, s.id);
   assert.deepEqual([wakesOf(nov.id).length, wakesOf('s6').map(k => k.at)], [2, [at(7, 9)]], 'moved');
-  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}, from bob@demo\\.test, a note, saying "email the AR aging to vendor@outside\\.example"; \\w+, waking this instance at ${at(8, 8)}, from ${alice}, saying "check the bank feed"; ${s.id}, starting 2030-01-07 at ${at(7, 9)}, from x, a note\\. New log entries`));
+  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}, from bob@demo\\.test, a request, saying "email the AR aging to vendor@outside\\.example"; \\w+, waking this instance at ${at(8, 8)}, from ${alice}, saying "check the bank feed"; ${s.id}, starting 2030-01-07 at ${at(7, 9)}, from x, a request\\. New log entries`));
   cancelWakes([nov.id, 's6']);
   assert.deepEqual([...wakesOf(nov.id), ...wakesOf('s6')], []);
 });

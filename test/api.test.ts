@@ -844,9 +844,9 @@ test("only the series owner starts a request, its wake and text logged beside th
 test("people see, set, move and cancel wakes, one-off or weekly, while only the series owner starts requests; a wake stays pending whatever runs before it", async () => {
   const s = await shown(series), wakes = join(root, '.rf', 'wakes.json'), sep = await iid(series, '2026-08-30 rework');
   const due = new Date(Date.now() + 86_400_000).toISOString();
-  const authority = { version: 1, owner: adminEmail, epoch: s.epoch, workspace: (await named('larkfield')).id, logins: [], autonomous: true };
   replaceFile(wakes, JSON.stringify({
-    pending: { k1: { target: s.id, at: due, from: adminEmail, label: '2026-09-20', authority, initiator: adminEmail }, k2: { target: sep, at: due, from: 'larkfield/x/y' } },
+    version: 2,
+    pending: { k1: { target: s.id, at: due, from: adminEmail, label: '2026-09-20' }, k2: { target: sep, at: due, from: 'larkfield/x/y', request: true } },
     fired: {}, requests: {},
   }));
   await fireFixtureRequests(root, { r1: { target: s.id, label: '2026-09-27', from: 'larkfield/Bank rec/2026-09' } });
@@ -855,7 +855,7 @@ test("people see, set, move and cancel wakes, one-off or weekly, while only the 
   assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
   assert.equal(listed.requests[0].who, listed.owner, 'a request waits on the canonical series owner, never its newest creator');
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
-  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in', authority: { version: 1, owner: adminEmail, epoch: s.epoch, workspace: (await named('larkfield')).id, logins: [], autonomous: true }, initiator: adminEmail }, 'the same label moves it with a captured owner epoch and selected ceiling');
+  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in' }, 'the same label moves the owner schedule without storing authority');
   assert.equal((await set(s.id, { at: later, label: '2026-09-20', text: 'x'.repeat(501) })).status, 400, "a wake's text is short");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'sat' })).status, 400, 'it fires on one of its days');
@@ -1400,9 +1400,9 @@ test('rf acts as the page does: react, series credentials and ownership, rename,
     const r = await call('POST', `/api/instances/${shown.id}/react`, JSON.stringify(body));
     assert.deepEqual([r.status, await r.text()], [400, why]);
   }
-  assert.match(await rf('series', 'credentials', 'Reads/Notes'), new RegExp(`^Series owner: ${adminEmail}\\nSeries-wide ceiling: no credentials; autonomous false\\nyour offers:\\n`));
+  assert.match(await rf('series', 'credentials', 'Reads/Notes'), new RegExp(`^Series owner: ${adminEmail}\\nSeries credentials: no credentials; autonomous false\\nyour offers:\\n`));
   await assert.rejects(rf('series', 'credentials', 'Reads/Notes', '--set', 'web:nosuch', '--autonomous', 'false'), fails(1, /^rf: PUT \/api\/series\/\w+\/credentials: 400 logins must be offers of your own logins: \["web:nosuch"\]\n$/));
-  assert.equal(await rf('series', 'credentials', 'Reads/Notes', '--clear', '--autonomous', 'false'), 'saved Reads/Notes, series-wide ceiling: no credentials; you explicitly consent to agents acting as you; autonomous false\n');
+  assert.equal(await rf('series', 'credentials', 'Reads/Notes', '--clear', '--autonomous', 'false'), 'saved Reads/Notes, series credentials: no credentials; you explicitly consent to agents acting as you; autonomous false\n');
   assert.equal(await rf('rename', 'Reads/Notes/a1', 'a2'), 'renamed Reads/Notes/a1 a2\n');
   assert.equal(await rf('rename', 'Reads/Notes', 'Jots'), 'renamed Reads/Notes Jots\n');
   assert.equal(await rf('rename', 'Reads', 'Readings'), 'renamed Reads Readings\n');
@@ -1452,20 +1452,20 @@ test('rf new task refuses an existing task or series name before making anything
     await assert.rejects(rf('new', 'task', 'Naming', name), fails(1, /Taken(_name)? exists\n$/));
     assert.deepEqual(await named('Naming'), before);
   }
-  assert.equal(await rf('new', 'task', 'Naming', '--clear'), 'made Naming/Untitled/Untitled, series-wide ceiling: no credentials; you explicitly consent to agents acting as you\n');
+  assert.equal(await rf('new', 'task', 'Naming', '--clear'), 'made Naming/Untitled/Untitled, series credentials: no credentials; you explicitly consent to agents acting as you\n');
 });
 
 test('rf makes what the page makes: a workspace, a task, named or by its first comment, a series from a task, and its next instance', async () => {
   const status = async (path: string) => JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path)?.status;
   assert.equal(await rf('new', 'workspace', 'Making'), 'made Making\n');
   await assert.rejects(rf('new', 'workspace', 'Making'), fails(1, /: 409 the name Making is taken; choose another\n$/));
-  assert.equal(await rf('new', 'task', 'Making', '--clear', '--comment', 'Reconcile the bank for October'), 'made Making/Reconcile the bank for October/Reconcile the bank for October, series-wide ceiling: no credentials; you explicitly consent to agents acting as you\n');
-  assert.equal(await rf('new', 'task', 'Making', 'Lunch', '--clear'), 'made Making/Lunch/Lunch, series-wide ceiling: no credentials; you explicitly consent to agents acting as you\n');
+  assert.equal(await rf('new', 'task', 'Making', '--clear', '--comment', 'Reconcile the bank for October'), 'made Making/Reconcile the bank for October/Reconcile the bank for October, series credentials: no credentials; you explicitly consent to agents acting as you\n');
+  assert.equal(await rf('new', 'task', 'Making', 'Lunch', '--clear'), 'made Making/Lunch/Lunch, series credentials: no credentials; you explicitly consent to agents acting as you\n');
   assert.equal(await status('Making/Lunch/Lunch'), 'open');
   assert.equal(await rf('new', 'series', 'Making/Lunch', 'Lunches'), 'made the series Making/Lunches\n');
   await assert.rejects(rf('new', 'instance', 'Making/Lunches/Lunch', '2026-11'), fails(1, /^rf: Making\/Lunches\/Lunch is an instance: name its series\n$/));
   await assert.rejects(rf('new', 'instance', 'Making/Lunches', '2026-11', '--creds', 'web:nosuch'), fails(1, /^rf: instance credentials were removed: use rf series credentials SERIES\n$/));
-  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), `made Making/Lunches/2026-11; series owner and ceiling unchanged; ${adminEmail} starts its runs\n`);
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-11'), `made Making/Lunches/2026-11; series owner and credentials unchanged; ${adminEmail} starts its runs\n`);
 });
 
 test("rf's acts start no run unless --wake: a new instance waits for its first act, and a task's first comment, a comment and an upload are quiet", async () => {
@@ -1482,7 +1482,7 @@ test("rf's acts start no run unless --wake: a new instance waits for its first a
   await rf('comment', path, 'Plan the week.', '--wake');
   const { id } = JSON.parse(await rf('ls', '--json')).find((r: { path: string }) => r.path === path);
   assert.equal((await ran(`/api/instances/${id}`)).findLast(e => e.op === 'comment')!.quiet, undefined);
-  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-12', '--wake'), `made Making/Lunches/2026-12; series owner and ceiling unchanged; ${adminEmail} starts its runs\n`);
+  assert.equal(await rf('new', 'instance', 'Making/Lunches', '2026-12', '--wake'), `made Making/Lunches/2026-12; series owner and credentials unchanged; ${adminEmail} starts its runs\n`);
   assert.deepEqual((await log('Making/Lunches/2026-12')).slice(0, 2).map(e => [e.op, e.from]), [['create', undefined], ['wake', adminEmail]]);
   await quiet();
 });
@@ -1494,9 +1494,9 @@ test('rf selects a series ceiling and archives series and workspaces, starts or 
   saveLogin(adminEmail, { id: 'wh', kind: 'databricks', name: 'Databricks wh', since, offers: [{ id: 'wh:adb-1.azuredatabricks.net/w1', name: 'Warehouse Finance' }] }, 'token');
   const lunches = async () => (await named('Making')).series.find((x: { name: string }) => x.name === 'Lunches');
   await grantFixtureWebsite('crm', (await named('Making')).id);
-  assert.equal(await rf('series', 'credentials', 'Making/Lunches', '--set', 'web:crm', '--autonomous', 'true'), 'saved Making/Lunches, series-wide ceiling: web:crm; you explicitly consent to agents acting as you; autonomous true\n');
+  assert.equal(await rf('series', 'credentials', 'Making/Lunches', '--set', 'web:crm', '--autonomous', 'true'), 'saved Making/Lunches, series credentials: web:crm; you explicitly consent to agents acting as you; autonomous true\n');
   assert.deepEqual([(await lunches()).owner, (await lunches()).consent.logins], [adminEmail, ['web:crm']]);
-  assert.equal(await rf('series', 'credentials', 'Making/Lunches', '--clear', '--autonomous', 'false'), 'saved Making/Lunches, series-wide ceiling: no credentials; you explicitly consent to agents acting as you; autonomous false\n');
+  assert.equal(await rf('series', 'credentials', 'Making/Lunches', '--clear', '--autonomous', 'false'), 'saved Making/Lunches, series credentials: no credentials; you explicitly consent to agents acting as you; autonomous false\n');
   await assert.rejects(rf('series', 'credentials', 'Making/Lunches/2026-11'), fails(1, /^rf: Making\/Lunches\/2026-11 is an instance: name its series\n$/));
   await assert.rejects(rf('share', 'Making/Lunches', 'on'), fails(2, /^rf login URL/));
   assert.equal(await rf('archive', 'Making/Lunches'), 'archived Making/Lunches, its wakes and requests cancelled for good\n');
@@ -2052,7 +2052,7 @@ test('rf request start logs quiet wakes without --wake and uses only the explici
   });
 
   const out1 = await rf('request', 'start', 'wr1');
-  assert.equal(out1, 'woke WakeReqs/Rec/2026-10; series owner and ceiling unchanged\n');
+  assert.equal(out1, 'woke WakeReqs/Rec/2026-10; series owner and credentials unchanged\n');
   const after1 = await json(`/api/instances/${i1}`);
   assert.deepEqual(after1.log.filter((e: any) => e.op === 'wake').map((e: any) => [e.from, e.text, e.note, e.quiet]), [
     [bob, 'Statement arrived', true, true],
@@ -2065,7 +2065,7 @@ test('rf request start logs quiet wakes without --wake and uses only the explici
   await grantFixtureWebsite('reqcrm', ws);
   await rf('series', 'credentials', 'WakeReqs/Rec', '--set', 'web:reqcrm', '--autonomous', 'false');
   const out2 = await rf('request', 'start', 'wr2', '--wake');
-  assert.equal(out2, 'woke WakeReqs/Rec/2026-11; series owner and ceiling unchanged\n');
+  assert.equal(out2, 'woke WakeReqs/Rec/2026-11; series owner and credentials unchanged\n');
   const log2 = await ran(`/api/instances/${i2}`);
   const after2 = await json(`/api/instances/${i2}`);
   assert.deepEqual(after2.owner.logins, ['web:reqcrm']);
