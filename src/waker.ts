@@ -3,7 +3,7 @@ import { freemem } from 'node:os';
 import { closeSync, existsSync, fstatSync, mkdirSync, readFileSync, readSync, realpathSync, rmSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { join, posix } from 'node:path';
-import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
+import { agentsFile, closedBefore, createInstance, HttpError, instance, instanceDir, instances, instancesBySeries, labels, newId, openFile, seriesDir, type Entry, type Instance } from './store.ts';
 import { pylib, startRun, type Run, type TurnEnd, type View } from './runner.ts';
 import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { prepare, type Snapshot } from './indexes.ts';
@@ -1166,10 +1166,42 @@ export function fire() {
     }
   }
   if (changed) saveWakes(w);
-  void sweepIdleUngrouped();
+  if (process.env.RF_UNGROUPED_GC === '1' || process.env.RF_UNGROUPED_GC_OWNERS) {
+    void sweepIdleUngrouped();
+  }
 }
 
 const sweeping = new Set<string>();
+
+function ungroupedGcOwners(): Set<string> | undefined {
+  const raw = process.env.RF_UNGROUPED_GC_OWNERS?.trim();
+  if (!raw) return undefined;
+  const set = new Set(raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+  return set.size ? set : undefined;
+}
+
+function isIdleUngroupedEligible(sid: string, inst: Instance, now: number, idleMs: number, allowedOwners?: Set<string>): boolean {
+  const t = tree();
+  const s = t.series[sid];
+  if (!s || !s.single || archived(t, sid) || busy(sid)) return false;
+  if (allowedOwners) {
+    const owner = ownerOf(sid).owner?.toLowerCase();
+    if (!owner || !allowedOwners.has(owner)) return false;
+  }
+  if (inst.hole || inst.closing || inst.doc.status !== 'open') return false;
+  if (debounce.has(inst.id) || waiting.has(inst)) return false;
+  const w = wakes();
+  for (const k of Object.values(w.pending)) {
+    if (k.target === inst.id || k.target === sid) return false;
+  }
+  for (const r of Object.values(w.requests)) {
+    if (r.series === sid || r.inst === inst.id) return false;
+  }
+  const last = inst.log.at(-1)?.at;
+  const lastMs = last ? Date.parse(last) : NaN;
+  if (!Number.isFinite(lastMs) || now - lastMs < idleMs) return false;
+  return true;
+}
 
 // Auto-abandon open Ungrouped (single: true) instances that have been idle for >= 24h;
 // recurring series stay on their existing MAX_OPEN cap.
@@ -1178,19 +1210,17 @@ export async function sweepIdleUngrouped(
   idleMs = Number(process.env.RF_UNGROUPED_IDLE_MS ?? UNGROUPED_IDLE_MS),
 ): Promise<string[]> {
   if (!Number.isFinite(idleMs) || idleMs <= 0) return [];
-  const t = tree(), pendingTargets = new Set(Object.values(wakes().pending).map(k => k.target)), abandoned: string[] = [];
+  const allowedOwners = ungroupedGcOwners();
+  const t = tree(), bySeries = instancesBySeries(), abandoned: string[] = [];
   for (const [sid, s] of Object.entries(t.series)) {
-    if (!s.single || busy(sid)) continue;
-    for (const inst of instances(sid)) {
-      if (inst.hole || inst.closing || inst.doc.status !== 'open') continue;
-      if (debounce.has(inst.id) || waiting.has(inst) || sweeping.has(inst.id)) continue;
-      if (pendingTargets.has(inst.id) || pendingTargets.has(sid)) continue;
-      const last = inst.log.at(-1)?.at;
-      const lastMs = last ? Date.parse(last) : NaN;
-      if (!Number.isFinite(lastMs) || now - lastMs < idleMs) continue;
+    if (!s.single || archived(t, sid) || busy(sid)) continue;
+    for (const inst of bySeries(sid)) {
+      if (sweeping.has(inst.id)) continue;
+      if (!isIdleUngroupedEligible(sid, inst, now, idleMs, allowedOwners)) continue;
       sweeping.add(inst.id);
       try {
-        await inst.abandon('server');
+        const ok = await inst.abandon('server', () => isIdleUngroupedEligible(sid, inst, Math.max(now, Date.now()), idleMs, allowedOwners));
+        if (!ok) continue;
         cancelWakes([inst.id]);
         changes.emit('change', inst.id);
         changes.emit('change', 'tree');

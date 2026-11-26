@@ -44,9 +44,9 @@ export function parseRetryAfterMs(header: string | string[] | null | undefined, 
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   const secs = Number(trimmed);
-  if (Number.isFinite(secs)) return Math.min(RETRY_429_MAX_DELAY_MS, Math.max(0, Math.ceil(secs * 1000)));
+  if (Number.isFinite(secs)) return Math.max(0, Math.ceil(secs * 1000));
   const at = Date.parse(trimmed);
-  if (Number.isFinite(at)) return Math.min(RETRY_429_MAX_DELAY_MS, Math.max(0, at - now));
+  if (Number.isFinite(at)) return Math.max(0, at - now);
   return undefined;
 }
 
@@ -59,7 +59,7 @@ export function retryDelayMs(
   if (attempt < 0 || attempt >= delays.length) return undefined;
   const maxDelay = opts.maxDelayMs ?? RETRY_429_MAX_DELAY_MS;
   const parsed = parseRetryAfterMs(retryAfter, opts.now);
-  if (parsed !== undefined) return Math.min(maxDelay, parsed);
+  if (parsed !== undefined) return parsed <= maxDelay ? parsed : undefined;
   const jitter = Math.floor((opts.random ?? Math.random)() * (opts.jitterMs ?? 1500));
   return Math.min(maxDelay, delays[attempt] + jitter);
 }

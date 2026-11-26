@@ -556,10 +556,20 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       set.add(fn);
       return () => set!.delete(fn);
     };
+    const verifyModelKey = () => {
+      if (a.stopped || !current()) throw new HttpError(409, 'run stopped');
+      if (s === openrouter) {
+        const now = logins(runner).find(l => l.id === 'openrouter');
+        const nowEnabled = !!now?.enabled;
+        if (mine ? (!nowEnabled || now!.since !== mine.since || loginGeneration(now) !== loginGeneration(mine) || now!.expired) : nowEnabled)
+          throw new HttpError(409, 'the selected model key changed before retrying; retry under current consent');
+      }
+    };
     try {
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
         auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
+        beforeRetry: s === openrouter ? verifyModelKey : undefined,
         location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
@@ -627,7 +637,7 @@ function maxKeepBytes(): number {
 
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
-  service?: boolean; retry429?: boolean; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
+  service?: boolean; retry429?: boolean; beforeRetry?: () => void; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
     // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
@@ -651,6 +661,15 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
     const canRetry429 = !!o.retry429 && (o.body !== undefined || ['GET', 'HEAD', 'OPTIONS'].includes(req.method!));
     const sendAttempt = (attempt: number) => {
       if (settled) return;
+      unregister?.();
+      unregister = undefined;
+      if (attempt > 0 && o.beforeRetry) {
+        try {
+          o.beforeRetry();
+        } catch (e) {
+          return die(e as Error);
+        }
+      }
       const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
         // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
         method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
@@ -660,17 +679,20 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
           if (delay !== undefined) {
             r.resume();
             unregister?.();
+            unregister = undefined;
             const cancelWait = () => {
               clearRetry();
               if (settled) return;
               res.destroy();
-              done({ status: 429, bytes: 0, type: '', text: '', events: [], headers: r.headers, cut: true });
+              done({ status: 429, bytes: 0, type: '', text: '', events: [], headers: r.headers });
             };
             if (o.service) unregister = o.registerAbort?.(cancelWait);
             res.once('close', cancelWait);
             retryTimer = setTimeout(() => {
               retryTimer = undefined;
               res.off('close', cancelWait);
+              unregister?.();
+              unregister = undefined;
               sendAttempt(attempt + 1);
             }, delay);
             return;

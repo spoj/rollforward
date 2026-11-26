@@ -6,9 +6,9 @@ Run with `npx` so you always stay on the latest version automatically:
 
     npx @rfany/rf@latest login https://rollforward.example.com
 
-Or use short-lived Entra ID tokens via Azure CLI (no static token saved to disk):
+Or use short-lived Entra ID tokens via Azure CLI (no static token saved to disk; requires HTTPS off loopback and an explicit `--resource api://<app-id>`, plus an initial browser sign-in to link your account and establish run-owner sign-in):
 
-    npx @rfany/rf@latest login https://rollforward.example.com --az
+    npx @rfany/rf@latest login https://rollforward.example.com --az --resource api://<app-id>
 
 rf opens the page, which asks you to allow it if it shows the same code as rf; or make a token on the page, under Tokens, and
 `npx @rfany/rf@latest login URL TOKEN`. `rf` alone lists the commands and `rf help COMMAND` gives one's usage; `rf help` is the guide for an agent, read before it first uses rf. Without saved config, help works offline; once signed in, it reads your current capabilities from the server.

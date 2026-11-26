@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { accessSync, constants, mkdtempSync, rmSync } from 'node:fs';
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
@@ -74,6 +75,92 @@ test('sweepIdleUngrouped skips single:true open instances that have a pending wa
     assert.deepEqual(abandoned, [idleInst.id]);
     assert.equal(instance(wakedInst.id).doc.status, 'open');
     assert.equal(instance(idleInst.id).doc.status, 'abandoned');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('sweepIdleUngrouped skips archived series/workspaces and respects abandon guard (P1 #7, #8)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-ungrouped-gc-arch-'));
+  try {
+    initSystem(root);
+    openStore(root);
+    const t = tree();
+    t.workspaces.w1 = { name: 'Main', owners: ['alice@example.com'], members: ['alice@example.com'] };
+    t.workspaces.w_arch = { name: 'Archived', owners: ['alice@example.com'], members: ['alice@example.com'], archived: '2026-11-01T00:00:00Z' };
+    t.series.s_arch = { name: 'Archived Task', workspace: 'w1', single: true, archived: '2026-11-01T00:00:00Z' };
+    t.series.s_warch = { name: 'In Archived WS', workspace: 'w_arch', single: true };
+    t.series.s_guard = { name: 'Guarded Task', workspace: 'w1', single: true };
+    saveTree(t);
+
+    const archInst = createInstance('s_arch', 'Archived Task', 'alice@example.com');
+    const warchInst = createInstance('s_warch', 'In Archived WS', 'alice@example.com');
+    const guardInst = createInstance('s_guard', 'Guarded Task', 'alice@example.com');
+
+    const now = Date.now();
+    const oldAt = new Date(now - UNGROUPED_IDLE_MS - 3_600_000).toISOString();
+    archInst.log.at(-1)!.at = oldAt;
+    warchInst.log.at(-1)!.at = oldAt;
+    guardInst.log.at(-1)!.at = oldAt;
+
+    // P1 #7: abandon guard returning false aborts abandonment
+    assert.equal(await guardInst.abandon('server', () => false), false);
+    assert.equal(instance(guardInst.id).doc.status, 'open');
+
+    // P1 #8: archived series and archived workspaces are skipped
+    const abandoned = await sweepIdleUngrouped(now);
+    assert.deepEqual(abandoned, [guardInst.id]);
+    assert.equal(instance(archInst.id).doc.status, 'open');
+    assert.equal(instance(warchInst.id).doc.status, 'open');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('run_subagent.sh enforces RF policy flags and scopes --resume to current run authority (P1 #11)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-subagent-policy-'));
+  try {
+    const fakeBin = join(root, 'bin');
+    mkdirSync(fakeBin, { recursive: true });
+    const argsFile = join(root, 'pi-args.txt');
+    const fakePi = join(fakeBin, 'pi');
+    writeFileSync(fakePi, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsFile}"\n`);
+    chmodSync(fakePi, 0o755);
+    const fakePrompt = join(root, 'prompt.md');
+    writeFileSync(fakePrompt, '# RF Policy\n');
+
+    const script = join(process.cwd(), 'skills', 'subagent', 'run_subagent.sh');
+    const env = {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      RF_INSTANCE: 'inst-1',
+      RF_TOKEN: 'run-token-A',
+      RF_SYSTEM_PROMPT: fakePrompt,
+    };
+    const out = execFileSync('bash', [script, '--prompt', 'hello'], { cwd: root, env, encoding: 'utf8' });
+    assert.match(out, /status: completed/);
+    const sessionLine = out.split('\n').find(l => l.startsWith('session: '))!;
+    const sessionPath = sessionLine.replace('session: ', '').trim();
+    writeFileSync(join(root, sessionPath), '{}\n');
+
+    const passedArgs = execFileSync('cat', [argsFile], { encoding: 'utf8' });
+    assert.match(passedArgs, /--no-extensions/);
+    assert.match(passedArgs, /--no-skills/);
+    assert.match(passedArgs, /--no-mcp/);
+    assert.match(passedArgs, /--system-prompt/);
+
+    // Same run authority can resume
+    execFileSync('bash', [script, '--resume', sessionPath, '--prompt', 'continue'], { cwd: root, env, encoding: 'utf8' });
+
+    // Different run authority (e.g. after owner transfer / new run) cannot resume
+    assert.throws(
+      () => execFileSync('bash', [script, '--resume', sessionPath, '--prompt', 'hijack'], {
+        cwd: root,
+        env: { ...env, RF_TOKEN: 'run-token-B' },
+        stdio: 'pipe',
+      }),
+      /outside this run's authority scope/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

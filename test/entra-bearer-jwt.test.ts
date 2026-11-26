@@ -87,22 +87,42 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
       proc.once('exit', code => fail(new Error(`server exited with ${code}`)));
     });
 
+    // Pre-enroll admin with oid and a group (RF_ADMINS cannot be claimed on first use via Bearer JWT).
+    writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({
+      'admin@demo.test': { role: 'admin', name: 'Admin User', oid: 't1/oid-admin', groups: ['g-finance'], epoch: 1 },
+      'unlinked@demo.test': { role: 'user', name: 'Unlinked', epoch: 1 },
+    }));
+
     const nowSec = Math.floor(Date.now() / 1000);
     const validApiAud = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, preferred_username: 'admin@demo.test', name: 'Admin User', tid: 't1', oid: 'oid-admin' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'admin@demo.test', name: 'Admin User', tid: 't1', oid: 'oid-admin', groups: ['g-finance', 'g-stale'] },
       privateKey,
     );
     const res1 = await fetch(`${base}/me`, { headers: { authorization: `Bearer ${validApiAud}` } });
     assert.equal(res1.status, 200);
-    const me1 = await res1.json() as { email: string; role: string };
+    const me1 = await res1.json() as { email: string; role: string; groups: string[] };
     assert.equal(me1.email, 'admin@demo.test');
     assert.equal(me1.role, 'admin');
+    // P1 #5: stale group in JWT cannot restore revoked group; only intersection with stored groups is active.
+    assert.deepEqual(me1.groups, ['g-finance']);
 
-    // Second request with raw clientId aud and upn claim should reuse cached JWKS.
+    // P1 #5: missing groups claim fails closed to [] without mutating users.json.
+    const noGroupsToken = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
+      privateKey,
+    );
+    const resNoGroups = await fetch(`${base}/me`, { headers: { authorization: `Bearer ${noGroupsToken}` } });
+    assert.equal(resNoGroups.status, 200);
+    assert.deepEqual(((await resNoGroups.json()) as { groups: string[] }).groups, []);
+    const storedUsers = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
+    assert.deepEqual(storedUsers['admin@demo.test'].groups, ['g-finance']);
+
+    // Second request with raw clientId aud, delegated scope, and upn claim should reuse cached JWKS.
     const validClientAud = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: issuer, aud: 'rf-test-app', exp: nowSec + 3600, upn: 'bob@demo.test', name: 'Bob', tid: 't1', oid: 'oid-bob' },
+      { iss: issuer, aud: 'rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', upn: 'bob@demo.test', name: 'Bob', tid: 't1', oid: 'oid-bob' },
       privateKey,
     );
     const res2 = await fetch(`${base}/me`, { headers: { authorization: `Bearer ${validClientAud}` } });
@@ -112,10 +132,40 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
     assert.equal(me2.role, 'user');
     assert.equal(jwksHits, 1, 'JWKS should be cached across requests');
 
+    // P1 #2: ID token (no scp) -> 401; app-only token -> 401; wrong scp -> 401
+    const idTokenNoScope = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'rf-test-app', exp: nowSec + 3600, iat: nowSec, preferred_username: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${idTokenNoScope}` } })).status, 401);
+
+    const appOnlyToken = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, idtyp: 'app', scp: 'access_as_user', preferred_username: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${appOnlyToken}` } })).status, 401);
+
+    // P1 #3: missing tid/oid -> 403; pre-provisioned unlinked account -> 403
+    const noOid = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'admin@demo.test' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${noOid}` } })).status, 403);
+
+    const unlinked = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'unlinked@demo.test', tid: 't1', oid: 'oid-unlinked' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${unlinked}` } })).status, 403);
+
     // Expired token -> 401
     const expired = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec - 60, email: 'admin@demo.test' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec - 60, iat: nowSec - 120, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
       privateKey,
     );
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${expired}` } })).status, 401);
@@ -123,7 +173,7 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
     // Wrong audience -> 401
     const wrongAud = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: issuer, aud: 'api://other-app', exp: nowSec + 3600, email: 'admin@demo.test' },
+      { iss: issuer, aud: 'api://other-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
       privateKey,
     );
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${wrongAud}` } })).status, 401);
@@ -131,7 +181,7 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
     // Wrong issuer -> 401
     const wrongIss = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: 'https://evil.example.com', aud: 'api://rf-test-app', exp: nowSec + 3600, email: 'admin@demo.test' },
+      { iss: 'https://evil.example.com', aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
       privateKey,
     );
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${wrongIss}` } })).status, 401);
@@ -139,16 +189,16 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
     // Wrong signing key -> 401
     const badSig = signJwt(
       { alg: 'RS256', typ: 'JWT', kid: 'k1' },
-      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, email: 'admin@demo.test' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' },
       otherKey.privateKey,
     );
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${badSig}` } })).status, 401);
 
     // alg: none -> 401
-    const algNone = `${b64u('{"alg":"none"}')}.${b64u(JSON.stringify({ iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, email: 'admin@demo.test' }))}.`;
+    const algNone = `${b64u('{"alg":"none"}')}.${b64u(JSON.stringify({ iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', email: 'admin@demo.test', tid: 't1', oid: 'oid-admin' }))}.`;
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${algNone}` } })).status, 401);
 
-    // CLI: rf login URL --az with mock az binary, zero static secret written to disk
+    // P1 #1 + P1 #6: built cli/rf.mjs rejects missing --resource and HTTP off loopback, succeeds with explicit --resource
     const mockAz = join(home, 'mock-az.sh');
     writeFileSync(mockAz, `#!/usr/bin/env bash
 if [[ "$*" != *"--resource api://rf-test-app"* ]]; then
@@ -159,9 +209,12 @@ printf '%s\\n' '${validApiAud}'
 `);
     chmodSync(mockAz, 0o755);
 
-    const rfPath = new URL('../src/rf-people.ts', import.meta.url).pathname;
+    const rfBuiltPath = new URL('../cli/rf.mjs', import.meta.url).pathname;
     const cliEnv = { ...process.env, HOME: home, RF_AZ_BIN: mockAz };
-    const loginOut = execFileSync(process.execPath, [rfPath, 'login', base, '--az'], { env: cliEnv, encoding: 'utf8' });
+    assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az'], { env: cliEnv, stdio: 'pipe' }), /--resource/);
+    assert.throws(() => execFileSync(process.execPath, [rfBuiltPath, 'login', 'http://example.com', '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, stdio: 'pipe' }), /https:\/\//);
+
+    const loginOut = execFileSync(process.execPath, [rfBuiltPath, 'login', base, '--az', '--resource', 'api://rf-test-app'], { env: cliEnv, encoding: 'utf8' });
     assert.match(loginOut, /signed in as admin@demo\.test \(az\)/);
 
     const savedCfg = JSON.parse(readFileSync(join(home, '.config', 'rollforward.json'), 'utf8'));
@@ -169,8 +222,15 @@ printf '%s\\n' '${validApiAud}'
     assert.equal('token' in savedCfg, false, 'no static token should be written to disk');
 
     // Subsequent rf command uses az on demand
-    const lsOut = execFileSync(process.execPath, [rfPath, 'ls', '--json'], { env: cliEnv, encoding: 'utf8' });
+    const lsOut = execFileSync(process.execPath, [rfBuiltPath, 'ls', '--json'], { env: cliEnv, encoding: 'utf8' });
     assert.deepEqual(JSON.parse(lsOut), []);
+
+    // P1 #4: local sign-out revokes previously issued JWT
+    const uAfter = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
+    uAfter['admin@demo.test'].epoch = (uAfter['admin@demo.test'].epoch ?? 0) + 1;
+    uAfter['admin@demo.test'].revoked_before = (nowSec + 5) * 1000;
+    writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(uAfter));
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${validApiAud}` } })).status, 401);
   } finally {
     proc.kill('SIGTERM');
     await once(proc, 'exit');

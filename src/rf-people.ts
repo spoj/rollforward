@@ -304,11 +304,33 @@ let { url, token, auth, resource } = cmd === 'login'
   ? { url: args[0]?.replace(/\/$/, ''), token: args[1], auth: flags.az ? 'az' : (typeof flags.auth === 'string' ? flags.auth : undefined), resource: typeof flags.resource === 'string' ? flags.resource : undefined }
   : JSON.parse(readFileSync(config, 'utf8'));
 
+function assertSafeAzUrl(rawUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`invalid server URL: ${rawUrl}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  if (parsed.protocol !== 'https:' && !isLoopback) {
+    throw new Error('--az requires https:// off loopback');
+  }
+}
+
+function assertValidAzResource(res: string) {
+  if (!res || res.startsWith('-') || /\s/.test(res)) {
+    throw new Error('invalid --resource for --az; pass an explicit Entra resource such as --resource api://<app-id>');
+  }
+}
+
 let cachedAzToken: string | undefined;
 function bearerToken(): string {
   if (auth === 'az') {
     if (cachedAzToken) return cachedAzToken;
-    if (!resource) throw new Error('missing resource for --az auth; run rf login URL --az again');
+    assertSafeAzUrl(url);
+    if (!resource) throw new Error('missing resource for --az auth; run rf login URL --az --resource api://<app-id>');
+    assertValidAzResource(resource);
     const azBin = process.env.RF_AZ_BIN || 'az';
     try {
       const out = execFileSync(azBin, ['account', 'get-access-token', '--resource', resource, '--query', 'accessToken', '-o', 'tsv'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -598,13 +620,10 @@ async function browserToken(): Promise<string> {
 
 if (cmd === 'login' && url) {
   if (auth === 'az') {
-    if (!resource) {
-      const infoRes = await fetch(url + '/auth/info');
-      if (!infoRes.ok) throw new Error(`GET /auth/info: ${infoRes.status} ${await infoRes.text()}`);
-      const info = await infoRes.json() as { resource?: string; clientId?: string };
-      resource = info.resource || (info.clientId ? `api://${info.clientId}` : '');
-    }
-    if (!resource) throw new Error('server did not advertise an Entra resource; pass --resource api://<app-id>');
+    assertSafeAzUrl(url);
+    resource ||= process.env.RF_AZ_RESOURCE;
+    if (!resource) throw new Error('--az requires an explicit trusted --resource api://<app-id> (or RF_AZ_RESOURCE)');
+    assertValidAzResource(resource);
     const me = await get('/me');
     mkdirSync(dirname(config), { recursive: true });
     writeFileSync(config, JSON.stringify({ url, auth: 'az', resource }), { mode: 0o600 });

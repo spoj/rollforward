@@ -528,7 +528,7 @@ export class Instance {
     this.save();
   }
 
-  async abandon(by: string) {
+  async abandon(by: string, guard?: () => boolean): Promise<boolean> {
     this.closing = true;
     try {
       await committed(this.dir);
@@ -536,6 +536,7 @@ export class Instance {
       this.closing = false;
     }
     if (this.hole) throw new HttpError(409, `${this.label} was deleted`);
+    if (guard && !guard()) return false;
     this.doc.status = 'abandoned';
     try {
       this.append(by, 'abandon');
@@ -544,6 +545,7 @@ export class Instance {
       throw e;
     }
     this.save();
+    return true;
   }
 
   // The tombstone precedes waiting for runs and commits: a restart finishes clearing the folder.

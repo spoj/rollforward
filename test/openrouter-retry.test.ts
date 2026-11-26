@@ -14,18 +14,21 @@ import {
 import { serverCall, upstreams } from '../src/connections.ts';
 import { initSystem } from '../src/system.ts';
 
-test('parseRetryAfterMs handles seconds, HTTP dates, clamping, and invalid values', () => {
+test('parseRetryAfterMs handles seconds, HTTP dates, and invalid values without shortening long cooldowns', () => {
   assert.equal(parseRetryAfterMs(undefined), undefined);
   assert.equal(parseRetryAfterMs(''), undefined);
   assert.equal(parseRetryAfterMs('not-a-date'), undefined);
   assert.equal(parseRetryAfterMs('0'), 0);
   assert.equal(parseRetryAfterMs('2.5'), 2500);
   assert.equal(parseRetryAfterMs('-5'), 0);
-  assert.equal(parseRetryAfterMs('999'), RETRY_429_MAX_DELAY_MS);
+  assert.equal(parseRetryAfterMs('999'), 999_000);
   const now = Date.parse('2026-11-26T00:00:00Z');
   assert.equal(parseRetryAfterMs('Thu, 26 Nov 2026 00:00:05 GMT', now), 5000);
-  assert.equal(parseRetryAfterMs('Thu, 26 Nov 2026 00:10:00 GMT', now), RETRY_429_MAX_DELAY_MS);
+  assert.equal(parseRetryAfterMs('Thu, 26 Nov 2026 00:10:00 GMT', now), 600_000);
   assert.equal(parseRetryAfterMs('Thu, 25 Nov 2026 23:59:55 GMT', now), 0);
+  // Long Retry-After exceeding maxDelayMs should not be shortened; retryDelayMs returns undefined.
+  assert.equal(retryDelayMs(0, '999'), undefined);
+  assert.equal(retryDelayMs(0, '60'), RETRY_429_MAX_DELAY_MS);
 });
 
 test('retryDelayMs follows exponential schedule, respects Retry-After, and caps attempts', () => {
