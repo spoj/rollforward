@@ -1050,8 +1050,22 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
 
 function startsHtml(s) {
   const mine = s.owner === me.email;
-  const schedules = [...(s.wakes ?? []), ...(s.instances ?? []).flatMap(i => i.wakes ?? [])].filter(k => !k.request);
-  const schedList = schedules.length ? `<div class="sub">Pending schedules that will run with autonomous on (${schedules.length}): ${schedules.map(k => `${esc(k.label ?? when(k.at))}${k.days ? ` (${esc(k.days.join(','))})` : ''}`).join(', ')}.</div>` : '';
+  const schedules = [
+    ...(s.wakes ?? []).map(k => ({ ...k, targetLabel: s.name })),
+    ...(s.instances ?? []).flatMap(i => (i.wakes ?? []).map(k => ({ ...k, targetLabel: i.label }))),
+  ].filter(k => k.request === false);
+  const fmtSched = k => {
+    const parts = [
+      `${esc(k.targetLabel)}${k.label ? ` (${esc(k.label)})` : ''}`,
+      `${esc(when(k.at))}${k.deadline ? ` · deadline ${esc(when(k.deadline))}` : ''}`,
+      ...(k.days ? [`${esc(k.days.join(','))}`] : []),
+      ...(k.from ? [`by ${esc(k.from)}`] : []),
+      ...(k.check ? [`check: ${esc(k.check)}`] : []),
+      ...(k.text ? [`"${esc(k.text)}"`] : []),
+    ];
+    return `<li>${parts.join(' · ')}</li>`;
+  };
+  const schedList = schedules.length ? `<div class="sub">Pending schedules that will run with autonomous on (${schedules.length}):<ul>${schedules.map(fmtSched).join('')}</ul></div>` : '';
   return ownershipHtml(cur.w, s) + `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. The owner's acts and answers to the agent's named asks start runs under the owner's current consent. Other collaborators' words are notes.</div>`
     + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
     + (mine ? `<h3>Series credentials</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing a credential stops live runs using it; schedules use the current selection when they fire.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label>${schedList}<div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
@@ -1731,7 +1745,8 @@ async function onAct(act, el) {
   }
   if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'series-credentials') {
-    await api(`${seriesPath(cur)}/credentials`, { method: 'PUT', body: JSON.stringify({ logins: ticked(), autonomous: $('#autonomous').checked }) });
+    const body = { logins: ticked(), autonomous: $('#autonomous').checked, expectedEpoch: cur.s.epoch };
+    await api(`${seriesPath(cur)}/credentials`, { method: 'PUT', body: JSON.stringify(body) });
     await refresh();
     await openSeriesSettings();
     saved();
@@ -1962,7 +1977,7 @@ async function onAct(act, el) {
     const people = (await api(`${path}/owners`)).filter(p => p !== s.owner).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
     if (!people.length) return ask({ title: 'Transfer whole series', text: 'No other enabled person can see this workspace.' });
     if (await ask({
-      title: `Transfer whole series: ${w.name} · ${s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and invalidates schedules. No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
+      title: `Transfer whole series: ${w.name} · ${s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and clears execution consent (pending schedules pause as requests until the new owner opts in). No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
       html: `<select id="ownerto"><option value="">Select the new series owner</option>${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Transfer whole series',
       act: () => api(`${path}/owner`, { method: 'PUT', body: JSON.stringify({ owner: $('#ownerto').value }) }),
     })) { await refresh(); if (pv?.settings?.kind === 'series') await openSeriesSettings(); }

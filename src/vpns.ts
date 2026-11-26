@@ -112,7 +112,7 @@ export function isVpnSignIn(email: string, id: string): boolean {
   return !!signing && signing.person === email && !!me && can(me, 'vpn');
 }
 
-export async function saveVpnSignIn(me: Me, id: string) {
+export async function saveVpnSignIn(me: Me, id: string, recheck?: () => void) {
   requireVpn(me);
   const signing = signIns.get(id);
   if (!signing || signing.person !== me.email) throw new HttpError(404, 'no such VPN sign-in');
@@ -120,6 +120,7 @@ export async function saveVpnSignIn(me: Me, id: string) {
   signing.saving = true;
   try {
     const { state } = await browserJson('DELETE', `/sessions/${id}`);
+    recheck?.();
     if (Date.now() >= signing.expires || state === null) throw new HttpError(410, 'This VPN sign-in expired; sign in again.');
     const definition = currentVpnSignIn(signing), host = new URL(`https://${definition.gateway}`).hostname;
     const cookie = state.cookies.find((c: { name: string; domain: string; value: string; expires: number }) => c.name === 'SVPNCOOKIE'
@@ -127,6 +128,7 @@ export async function saveVpnSignIn(me: Me, id: string) {
       && c.value && !/[\s;]/.test(c.value) && (c.expires <= 0 || c.expires > Date.now() / 1000));
     if (!cookie) throw new HttpError(409, 'The VPN gateway has no SVPNCOOKIE; sign in to the VPN first, then Connect.');
     await changeTunnel(async () => {
+      recheck?.();
       const definition = currentVpnSignIn(signing);
       const key = `${me.email} ${signing.vpn}`, before = tunnels.get(key);
       if (before) {
@@ -134,9 +136,10 @@ export async function saveVpnSignIn(me: Me, id: string) {
         tunnels.delete(key);
         changes.emit('change', 'tree');
       }
+      recheck?.();
       currentVpnSignIn(signing);
       const { id, token } = await tunnelJson('POST', '/tunnels', { ...definition, cookie: `SVPNCOOKIE=${cookie.value}` });
-      try { currentVpnSignIn(signing); } catch (e) { await tunnelJson('DELETE', `/tunnels/${id}`); throw e; }
+      try { recheck?.(); currentVpnSignIn(signing); } catch (e) { await tunnelJson('DELETE', `/tunnels/${id}`); throw e; }
       tunnels.set(key, { person: me.email, vpn: signing.vpn, id, token, since: new Date().toISOString() });
       act(me.email, { op: 'vpn-connect', name: signing.vpn });
       changes.emit('change', 'tree');

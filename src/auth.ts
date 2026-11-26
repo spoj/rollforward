@@ -15,7 +15,7 @@ import { themeLogo } from './theme.ts';
 // Admins manage people and skills, from rf, and grant users capabilities.
 export type Role = 'admin' | 'user';
 export const ROLES: Role[] = ['admin', 'user'];
-export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; revoked_before?: number; created?: string; last_login?: string };
+export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; revoked_before?: number; revoked_epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
@@ -159,6 +159,7 @@ export function signOutEverywhere(email: string) {
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
   all[email].epoch = (all[email].epoch ?? 0) + 1;
   all[email].revoked_before = Date.now();
+  all[email].revoked_epoch = all[email].epoch;
   recordRevocation(email, all[email].oid, all[email].revoked_before);
   writeJson('users.json', all);
 }
@@ -395,11 +396,25 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
   if (oidMatches.length > 1) throw new HttpError(403, 'ambiguous Microsoft account binding; sign in via the browser');
   if (oidMatches.length === 0) throw new HttpError(403, 'sign in via the browser first to link this Microsoft account');
   const email = oidMatches[0];
-  if (domains.length && !domains.includes(email.split('@')[1])) {
-    throw new HttpError(403, `${email} is not in an allowed domain`);
+  if (domains.length) {
+    if (!domains.includes(email.split('@')[1])) {
+      throw new HttpError(403, `${email} is not in an allowed domain`);
+    }
+    const tokenEmail = String(claims.preferred_username ?? claims.upn ?? claims.email ?? '').toLowerCase();
+    if (tokenEmail.includes('@') && !domains.includes(tokenEmail.split('@')[1])) {
+      throw new HttpError(403, `${tokenEmail} is not in an allowed domain`);
+    }
   }
 
   const known = all[email];
+  // Fence fresh JWT admission if an older server incremented `epoch` (e.g. sign-out during rollback) without recording `revoked_epoch`.
+  if ((known.epoch ?? 0) > (known.revoked_epoch ?? 0)) {
+    const floor = Math.max(known.revoked_before ?? 0, Date.now());
+    known.revoked_before = floor;
+    known.revoked_epoch = known.epoch ?? 0;
+    recordRevocation(email, known.oid, floor);
+    writeJson('users.json', all);
+  }
   const revokedBefore = Math.max(rev[oid] ?? 0, rev[email] ?? 0, known.revoked_before ?? 0);
   if (revokedBefore && claims.iat * 1000 < revokedBefore) {
     throw new HttpError(401, 'this token was revoked; sign in again');
@@ -461,6 +476,8 @@ function expired(req: IncomingMessage, res: ServerResponse) {
 async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refresh?: string) {
   const d = await discovery(), aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.iss !== d.issuer || !aud.includes(oidc.clientId) || !(claims.exp * 1000 > Date.now()) || claims.nonce !== p.nonce) return page(res, 401, 'The sign-in token did not check out.');
+  const reqTid = expectedTenantId(d.issuer);
+  if (reqTid && claims.tid && claims.tid !== reqTid) return page(res, 401, 'The sign-in token tenant does not match.');
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);

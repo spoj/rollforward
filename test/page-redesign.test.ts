@@ -685,7 +685,7 @@ test('series credential drafts use the series workspace and filter disabled valu
     await page.click('#pv [data-act=series-credentials]');
     await page.waitForSelector('#pv .saved:text-is("Saved")');
     assert.deepEqual(requests.find(r => r.path === '/api/series/s1/credentials' && r.method === 'PUT')!.body,
-      { logins: ['drop:AP/', 'web:approved'], autonomous: true });
+      { logins: ['drop:AP/', 'web:approved'], autonomous: true, expectedEpoch: 1 });
     Object.assign(series, { consent: { ...series.consent, logins: ['web:missing', 'web:pending', 'web:denied', 'web:revoked', 'web:approved', 'web:expired'], autonomous: true } });
     await page.evaluate(async () => { await refresh(); await openSeriesSettings(); });
     for (const site of ['missing', 'pending', 'denied', 'revoked', 'expired']) {
@@ -697,7 +697,7 @@ test('series credential drafts use the series workspace and filter disabled valu
     await page.click('#pv [data-act=series-credentials]');
     await page.waitForSelector('#pv .saved:text-is("Saved")');
     const saves = requests.filter(r => r.path === '/api/series/s1/credentials' && r.method === 'PUT');
-    assert.deepEqual(saves.at(-1)!.body, { logins: ['m365:mail', 'web:approved'], autonomous: true });
+    assert.deepEqual(saves.at(-1)!.body, { logins: ['m365:mail', 'web:approved'], autonomous: true, expectedEpoch: 1 });
     Object.assign(series, { consent: { ...series.consent, logins: ['m365:mail', 'web:approved'], autonomous: true } });
     await page.evaluate(async () => { await refresh(); await openSeriesSettings(); });
     await missing.locator('[data-act=info]').click();

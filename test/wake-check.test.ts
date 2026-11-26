@@ -234,7 +234,7 @@ time.sleep(30)  # The test waits only 15 seconds for Pi: the check must be inter
   const consent = await call('PUT', `/api/series/${sid}/credentials`, { logins: [mailbox.id], autonomous: true });
   assert.equal(consent.status, 200, await consent.text());
   const wake = await json(`/api/wakes/${iid}`, 'PUT', { at: iso(1200), check });
-  assert.equal(wake.request, undefined);
+  assert.equal(wake.request, false);
   const data = await until('Pi run after index revocation', async () => {
     const d = await info(iid);
     return (d.wakeCheck || d.log.some(e => e.op === 'done')) && d;

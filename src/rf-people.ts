@@ -61,7 +61,7 @@ rf series owner SERIES [EMAIL] [--json]   the whole series' owner; EMAIL transfe
                                   clearing consent; only its current owner or a workspace manager may transfer it
 rf series credentials SERIES [--set OFFER,...|--clear] [--autonomous true|false] [--json]
                                   credentials for every instance; only the owner saves consent, explicitly including [] with
-                                  --clear; saving requires --autonomous true|false; no credentials or schedules transfer
+                                  --clear; saving requires --autonomous true|false; no credentials transfer (schedules pause until opted in)
 rf rename PATH NAME               an instance, a series or a workspace, by its path
 rf new task WORKSPACE [LABEL] [--creds OFFER,...|--clear] [--autonomous true|false] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
                                   first comment names it; --wake starts its run on the comment; without --creds or --clear,
@@ -319,23 +319,40 @@ function assertSafeAzUrl(rawUrl: string) {
 }
 
 function assertValidAzResource(res: string) {
-  if (!res || res.startsWith('-') || /\s/.test(res)) {
+  if (!res || res.startsWith('-') || !/^[A-Za-z0-9:/._-]+$/.test(res)) {
     throw new Error('invalid --resource for --az; pass an explicit Entra resource such as --resource api://<app-id>');
   }
 }
 
-let cachedAzToken: string | undefined;
+function jwtExpMs(tok: string): number {
+  try {
+    const parts = tok.split('.');
+    if (parts.length !== 3) return 0;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload?.exp === 'number' ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let cachedAzToken: { token: string; expMs: number } | undefined;
 function bearerToken(): string {
   if (auth === 'az') {
-    if (cachedAzToken) return cachedAzToken;
+    if (cachedAzToken && (cachedAzToken.expMs === 0 || cachedAzToken.expMs - Date.now() > 300_000)) {
+      return cachedAzToken.token;
+    }
     assertSafeAzUrl(url);
     if (!resource) throw new Error('missing resource for --az auth; run rf login URL --az --resource api://<app-id>');
     assertValidAzResource(resource);
     const azBin = process.env.RF_AZ_BIN || 'az';
+    const azArgs = ['account', 'get-access-token', '--resource', resource, '--query', 'accessToken', '-o', 'tsv'];
     try {
-      const out = execFileSync(azBin, ['account', 'get-access-token', '--resource', resource, '--query', 'accessToken', '-o', 'tsv'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      const out = (process.platform === 'win32'
+        ? execFileSync('cmd.exe', ['/d', '/s', '/c', azBin, ...azArgs], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        : execFileSync(azBin, azArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).trim();
       if (!out) throw new Error('empty access token returned by az');
-      return (cachedAzToken = out);
+      cachedAzToken = { token: out, expMs: jwtExpMs(out) };
+      return out;
     } catch (e: any) {
       const stderr = String(e?.stderr ?? '').trim();
       throw new Error(`az account get-access-token failed: ${stderr || e.message}`);
@@ -809,20 +826,39 @@ else if (cmd === 'comment' && args.length < 2) {
   else console.log(`${args[1]}: series owner ${s.owner ?? 'not selected'}`);
 } else if (cmd === 'series' && args[0] === 'credentials' && args.length === 2) {
   const s = await seriesAt(args[1]);
+  const fmtSched = (k: any) => `  ${k.id}  ${k.targetLabel ?? k.target}  ${k.at}${k.deadline ? ` (deadline ${k.deadline})` : ''}${k.days ? ` (${k.days.join(',')})` : ''}${k.label ? `  ${k.label}` : ''}${k.from ? `  by ${k.from}` : ''}${k.check ? `  check=${k.check}` : ''}${k.text ? `  ${k.text}` : ''}`;
   if (flags.set !== undefined || flags.clear) {
     if (!['true', 'false'].includes(String(flags.autonomous))) throw new Error('saving requires --autonomous true|false');
-    const saved = await (await post(`/api/series/${s.id}/credentials`, { logins: ticks(), autonomous: flags.autonomous === 'true' }, 'PUT')).json();
+    const preview = await api(`/api/series/${s.id}/credentials`, {}, [404, 405]).then(async r => r.ok ? r.json() : null).catch(() => null);
+    if (flags.autonomous === 'true' && Array.isArray(preview?.schedules) && preview.schedules.length) {
+      console.log(`pending schedules to be adopted (${preview.schedules.length}):`);
+      for (const k of preview.schedules) console.log(fmtSched(k));
+    }
+    const body: Record<string, unknown> = { logins: ticks(), autonomous: flags.autonomous === 'true' };
+    if (preview?.epoch !== undefined) body.expectedEpoch = preview.epoch;
+    if (preview?.scheduleRevision) body.expectedSchedules = preview.scheduleRevision;
+    const putRes = await post(`/api/series/${s.id}/credentials`, body, 'PUT');
+    const rawText = await putRes.text();
+    let saved: any = null;
+    try { saved = JSON.parse(rawText); } catch {}
     console.log(`saved ${args[1]}${consent(ticks())}; autonomous ${flags.autonomous}`);
-    if (flags.autonomous === 'true' && Array.isArray(saved?.schedules) && saved.schedules.length) {
+    if (!preview && flags.autonomous === 'true' && Array.isArray(saved?.schedules) && saved.schedules.length) {
       console.log(`pending schedules that will run (${saved.schedules.length}):`);
-      for (const k of saved.schedules) console.log(`  ${k.id}  ${k.at}${k.days ? ` (${k.days.join(',')})` : ''}${k.label ? `  ${k.label}` : ''}${k.text ? `  ${k.text}` : ''}`);
+      for (const k of saved.schedules) console.log(fmtSched(k));
     }
   } else {
     if (flags.autonomous !== undefined) throw new Error('select credentials with --set OFFER,... or --clear');
     const mine = await get('/logins');
-    const out = { owner: s.owner, consent: s.consent, yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
+    const detail = await api(`/api/series/${s.id}/credentials`, {}, [404, 405]).then(async r => r.ok ? r.json() : null).catch(() => null);
+    const out = { owner: s.owner, consent: s.consent, schedules: detail?.schedules ?? [], yours: mine.flatMap((l: any) => l.offers.map((o: any) => ({ ...o, ...(l.expired && { expired: true }) }))) };
     if (flags.json) console.log(JSON.stringify(out, null, 1));
-    else console.log([`Series owner: ${out.owner ?? 'not selected'}`, out.consent ? `Series credentials: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent', 'your offers:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
+    else console.log([
+      `Series owner: ${out.owner ?? 'not selected'}`,
+      out.consent ? `Series credentials: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent',
+      ...(out.schedules.length ? [`pending schedules (${out.schedules.length}):`, ...out.schedules.map(fmtSched)] : []),
+      'your offers:',
+      ...out.yours.map((o: any) => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`),
+    ].join('\n'));
   }
 } else if (cmd === 'rename' && args.length === 2) {
   const [w, s, l] = args[0].replace(/\/+$/, '').split('/');

@@ -855,7 +855,7 @@ test("people see, set, move and cancel wakes, one-off or weekly, while only the 
   assert.deepEqual(listed.instances.find((i: { id: string }) => i.id === sep).wakes.map((k: { at: string }) => k.at), [due]);
   assert.equal(listed.requests[0].who, listed.owner, 'a request waits on the canonical series owner, never its newest creator');
   const later = new Date(Date.now() + 2 * 86_400_000).toISOString(), set = (target: string, body: object) => call('PUT', `/api/wakes/${target}`, JSON.stringify(body));
-  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in' }, 'the same label moves the owner schedule without storing authority');
+  assert.deepEqual(await (await set(s.id, { at: later, label: '2026-09-20', text: '  the bank file is in  ' })).json(), { id: 'k1', target: s.id, at: later, from: adminEmail, label: '2026-09-20', text: 'the bank file is in', request: false }, 'the same label moves the owner schedule without storing authority');
   assert.equal((await set(s.id, { at: later, label: '2026-09-20', text: 'x'.repeat(501) })).status, 400, "a wake's text is short");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-05', days: 'mon-fri' })).status, 400, "a weekly wake's label holds the day it fires or the one before that it fires on");
   assert.equal((await set(s.id, { at: '2030-01-07T08:00', label: '2030-01-04', days: 'sat' })).status, 400, 'it fires on one of its days');

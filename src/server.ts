@@ -1337,6 +1337,21 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const p = asPerson(email);
       return p && canSee(p, t.workspaces[s.workspace]);
     }));
+    if (action === 'credentials' && req.method === 'GET') {
+      const settings = seriesSettings(seriesDir(id));
+      const instById = new Map(labels(id).map(l => [l.id, l.label]));
+      const targets = new Set([id, ...instById.keys()]);
+      const schedules = Object.entries(wakes().pending)
+        .filter(([, k]) => targets.has(k.target) && k.request === false)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([wid, k]) => ({
+          id: wid, target: k.target, targetLabel: instById.get(k.target) ?? s.name,
+          at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
+          ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
+        }));
+      const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+      return send(res, 200, { owner: settings.owner, epoch: settings.epoch, consent: settings.consent, schedules, scheduleRevision });
+    }
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
       recheckRequest(req);
       const { ws, who } = mustUnarchived(by, id, me), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
@@ -1347,25 +1362,36 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (!p || !canSee(p, ws)) throw new HttpError(400, 'the owner must be enabled and see the workspace');
         if (to === settings.owner) throw new HttpError(409, `${to} already owns this series`);
         await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at }, by);
+        return send(res, 200, 'ok');
       } else {
         if (settings.owner !== by) throw new HttpError(403, 'only the series owner selects credentials');
         if (!Array.isArray(payload.logins) || typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'select logins explicitly, including [], and an autonomous boolean');
+        const instById = new Map(labels(id).map(l => [l.id, l.label]));
+        const targets = new Set([id, ...instById.keys()]);
+        const schedules = Object.entries(wakes().pending)
+          .filter(([, k]) => targets.has(k.target) && k.request === false)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([wid, k]) => ({
+            id: wid, target: k.target, targetLabel: instById.get(k.target) ?? tree().series[id].name,
+            at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
+            ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
+          }));
+        const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+        if (payload.expectedEpoch !== undefined && payload.expectedEpoch !== settings.epoch) {
+          return send(res, 409, { error: 'series ownership or settings changed; review updated schedules and save again', epoch: settings.epoch, schedules, scheduleRevision });
+        }
+        if (payload.autonomous && payload.expectedSchedules !== undefined && payload.expectedSchedules !== scheduleRevision) {
+          return send(res, 409, { error: 'pending schedules changed since you reviewed them; review updated schedules and save again', epoch: settings.epoch, schedules, scheduleRevision });
+        }
         const ticks = checkTicks(by, payload.logins, tree().series[id].workspace), was = settings.consent;
         const removed = !!was && (was.logins.some(l => !ticks.includes(l)) || (was.autonomous && !payload.autonomous));
         const next = { ...settings, epoch: settings.epoch + (removed ? 1 : 0), since: removed ? at : settings.since, consent: { by, at, workspace: tree().series[id].workspace, logins: ticks, autonomous: payload.autonomous } };
         if (removed) await changeAuthority(id, next, by);
         else saveSeriesSettings(seriesDir(id), next);
+        return send(res, 200, { ok: true, epoch: next.epoch, schedules, scheduleRevision });
       }
-      if (action === 'credentials') {
-        const targets = new Set([id, ...labels(id).map(l => l.id)]);
-        const schedules = Object.entries(wakes().pending)
-          .filter(([, k]) => targets.has(k.target) && !k.request)
-          .map(([wid, k]) => ({ id: wid, target: k.target, at: k.at, ...(k.label && { label: k.label }), ...(k.days && { days: k.days }), ...(k.text && { text: k.text }), ...(k.check && { check: k.check }) }));
-        return send(res, 200, { ok: true, schedules });
-      }
-      return send(res, 200, 'ok');
     });
-    if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners, or PUT owner or credentials');
+    if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners or credentials, or PUT owner or credentials');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -2123,7 +2149,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
       const change = await json(req);
-      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email);
+      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req));
       if (change.via !== undefined || change.internal !== undefined) await closeUnlent();
       send(res, 200, 'ok');
     }
@@ -2144,12 +2170,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       await closeUnlent();
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email, () => recheckRequest(req)), 'ok'));
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
       const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();
       if (websitesOf(me.email)[site]?.via && !can(me, 'vpn')) throw new HttpError(403, 'vpn capability required to open a VPN-routed website sign-in');
-      const id = await startSignIn(me.email, site, header, me);
+      const id = await startSignIn(me.email, site, header, me, () => recheckRequest(req));
       send(res, 200, { id, expires: new Date(since + Number(process.env.RF_SIGNIN_S ?? 600) * 1000).toISOString() });
     }
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
@@ -2176,12 +2202,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'POST') {
       const id = url.pathname.slice(9);
       if (can(me, 'vpn') && isVpnSignIn(me.email, id)) {
-        try { await saveVpnSignIn(me, id); } finally { await closeUnlent(); }
+        try { await saveVpnSignIn(me, id, () => recheckRequest(req)); } finally { await closeUnlent(); }
         send(res, 200, 'ok');
       } else {
         const { keepalive } = await json(req);
         if (keepalive !== undefined && !can(me, 'keepalive')) throw new HttpError(403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin');
-        send(res, 200, (await endSignIn(me.email, id, true, keepalive), 'ok'));
+        send(res, 200, (await endSignIn(me.email, id, true, keepalive, () => recheckRequest(req)), 'ok'));
       }
     }
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'DELETE') {
@@ -2198,6 +2224,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { key, enabled } = await json(req), was = logins(me.email).find(l => l.id === 'openrouter'), k = String(key ?? '').trim();
       if (!k && !was) throw new HttpError(400, 'your OpenRouter key: paste it to save it');
       if (k && !(await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/key`, { headers: { authorization: `Bearer ${k}` } })).ok) throw new HttpError(400, 'OpenRouter refused this key');
+      recheckRequest(req);
       saveLogin(me.email, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: k ? new Date().toISOString() : was!.since, offers: [], enabled: !!enabled, ...(!k && enabled && was!.expired && { expired: true }) }, k || undefined);
       send(res, 200, 'saved');
     }

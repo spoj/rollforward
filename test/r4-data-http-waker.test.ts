@@ -183,7 +183,7 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
   const snapshot = (p: typeof moved) => {
     const s = JSON.parse(readFileSync(join(root, 'series', p.target.id, 'series.json'), 'utf8'));
-    return { initiator: BOB, authority: { version: 1, owner: BOB, epoch: s.epoch, workspace: p.wsA.id, logins: [], autonomous: true } };
+    return { request: false, initiator: BOB, authority: { version: 1, owner: BOB, epoch: s.epoch, workspace: p.wsA.id, logins: [], autonomous: true } };
   };
   w.pending['wk_moved'] = { target: moved.target.id, at: dueSoon, from: 'Source-moved/Feeder/one', inst: moved.inst.id, label: '2026-11-15', days, text: 'from moved', ...snapshot(moved) };
   w.pending['wk_moved_del'] = { target: movedDeleted.target.id, at: dueSoon, from: 'Source-moved-del/Feeder/one', inst: movedDeleted.inst.id, label: '2026-11-15', days, text: 'from moved deleted', ...snapshot(movedDeleted) };

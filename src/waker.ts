@@ -796,7 +796,7 @@ export function setWake(target: string, wake: Omit<Wake, 'target'>, caller?: Me)
     : wake.from === s.owner;
   if (wake.check && (!owned || immediate || !can(effectiveOwner, 'wake-check')))
     throw new HttpError(403, 'a wake check needs a scheduled wake of your own series and the wake-check capability');
-  const k: Wake = { ...wake, target, immediate: immediate || undefined, ...(!owned && { request: true }), ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
+  const k: Wake = { ...wake, target, immediate: immediate || undefined, request: !owned, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
   if (!k.days && !k.immediate) k.at = new Date(Math.min(k.deadline ? Date.parse(k.deadline) : Infinity, Math.max(Date.parse(k.at), Date.parse(w.fired[target] ?? '1970-01-01') + SPACING_MS))).toISOString();
   const [id = newId(), was] = Object.entries(w.pending).find(([, p]) => p.target === target && p.label === k.label
@@ -1125,7 +1125,7 @@ export function fire() {
       continue;
     }
     const s = seriesSettings(seriesDir(targetSeries)), owner = s.owner && asPerson(s.owner);
-    const authorized = !wake.request && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId
+    const authorized = wake.request === false && !!s.consent && s.consent.by === s.owner && s.consent.workspace === wsId
       && !!owner && canSee(owner, ws)
       && (s.consent.autonomous || (!!wake.immediate && !wake.inst && wake.from === s.owner));
     if (!authorized) {
@@ -1176,7 +1176,7 @@ export function fire() {
   }
   if (changed) saveWakes(w);
   if (ungroupedGcConfig().enabled) {
-    void sweepIdleUngrouped();
+    void sweepIdleUngrouped().catch(e => console.error('ungrouped gc sweep failed', e));
   }
 }
 
@@ -1266,8 +1266,9 @@ export async function sweepIdleUngrouped(
 // Either way its instance is woken to carry on.
 export const CUT = { restart: 'a restart cut the run', authority: 'its series authority ended', moved: 'its series moved', runner: 'its series owner can no longer execute it', reach: 'its reach narrowed', deleted: 'its instance was deleted', gone: 'an instance in its reach was deleted' };
 
-// Conservative one-off migration for legacy wakes.json entries that stored authority/initiator snapshots:
-// stale or unauthorized wakes become request: true so they are never silently adopted under prior consent.
+// Conservative migration for legacy or rollback-written wakes.json entries:
+// every v2 wake carries an explicit boolean `request` marker; unmarked, stale,
+// unauthorized, or credential-broadening legacy wakes become `request: true`.
 export function migrateWakes() {
   const w = wakes(), t = tree();
   let changed = false;
@@ -1275,17 +1276,28 @@ export function migrateWakes() {
   for (const [id, raw] of Object.entries(w.pending)) {
     const k = raw as Wake & { authority?: Authority; initiator?: string };
     const hasLegacyKeys = 'authority' in k || 'initiator' in k;
-    if (!legacy && !hasLegacyKeys) continue;
+    const unmarked = typeof k.request !== 'boolean';
+    if (!legacy && !hasLegacyKeys && !unmarked) continue;
     const target = k.deadlineTarget ?? k.target;
     let sid: string | undefined;
     try { sid = t.series[target] ? target : instance(target).seriesId; } catch {}
     const ws = sid ? t.series[sid]?.workspace : undefined;
     const s = sid ? seriesSettings(seriesDir(sid)) : undefined;
-    const valid = !!(k.authority && s && ws && k.authority.owner === s.owner && k.authority.epoch === s.epoch && k.authority.workspace === ws);
-    if (!valid && !k.request) {
-      k.request = true;
-      if (k.authority) console.log(`migrated stale wake ${id} on ${sid ? named(t, sid) : target} (was ${k.authority.owner}, epoch ${k.authority.epoch}) to a request`);
-      changed = true;
+    const legacyLogins = Array.isArray(k.authority?.logins) ? k.authority.logins : [];
+    const currentLogins = s?.consent?.logins ?? [];
+    const noBroadening = !!s?.consent && s.consent.by === s.owner && s.consent.workspace === ws
+      && currentLogins.every(l => legacyLogins.includes(l))
+      && (!s.consent.autonomous || k.authority?.autonomous === true);
+    const valid = !!(k.authority && s && ws && k.authority.owner === s.owner && k.authority.epoch === s.epoch && k.authority.workspace === ws && noBroadening);
+    if (unmarked || hasLegacyKeys || legacy) {
+      const nextRequest = k.request === true ? true : !valid;
+      if (k.request !== nextRequest) {
+        k.request = nextRequest;
+        if (nextRequest && k.authority) {
+          console.log(`migrated stale or narrower wake ${id} on ${sid ? named(t, sid) : target} (was ${k.authority.owner}, epoch ${k.authority.epoch}) to a request`);
+        }
+        changed = true;
+      }
     }
     if (hasLegacyKeys) {
       delete k.authority;

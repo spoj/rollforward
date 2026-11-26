@@ -124,6 +124,16 @@ Run the image under podman, as a systemd service. The image is the agent image, 
 
   Then `systemctl --user enable --now rollforward-update.timer`; `journalctl --user -u rollforward-update` shows what it did. It restarts the server as above; `OnCalendar=*-*-* 02:00` in place of the two lines above updates at night only.
 
+## Going back past v0.9.0
+
+v0.9.0 migrates `.rf/wakes.json` to `version: 2` (storing an explicit per-wake `request: true | false` flag and stripping legacy `authority`/`initiator` snapshots), after backing up `.rf/` on startup. Rolling back to v0.8.13 is degraded, not seamless:
+
+- v0.8.13 treats migrated owner-side schedules (which no longer carry `authority`) as unauthorized, so each due occurrence becomes a request and one-offs are consumed.
+- v0.8.13's `DELETE /api/wakes/:id` allows the original setter (`from === by`) to cancel a migrated owner-side schedule because `!wake.authority`.
+- Wakes created during a rollback window on v0.8.13 lack the per-wake `request` boolean; on re-upgrade to v0.9.0+, `migrateWakes()` fails closed and converts unmarked or credential-broadening wakes to `request: true`.
+- If a user is signed out on v0.8.13 during a rollback (which bumps `epoch` without writing `revoked_epoch`), re-upgrading to v0.9.0+ fences fresh Entra Bearer JWT admission for that user at the reactivation timestamp so pre-rollback JWTs cannot be replayed.
+- To restore pre-upgrade schedule state cleanly, stop the server and restore the pre-upgrade `.rf/` backup before starting v0.8.13.
+
 ## Updating to v0.8.0
 
 This is a `Manual:` release: the message store changes on disk. Do not point v0.8.0 at the old data, or v0.7.x at converted data. Keep the old checkout and a recoverable backup of the complete original data root and both keys, including keys supplied by systemd. From the reviewed release, run `node scripts/migrate-skills.ts --check "$ORIGINAL"` as the service user to list retired verbs and preview the exact file diffs without writing. The native preflight puts this report in its root-only `skills-plan.log`. Review it on the host before running `--execute`; the diffs may contain skill content. The converter rewrites supported run commands as new live skill versions by `rf v0.8.0 migration`. Fix unresolved usages through the normal skill publication process before cutover. Review dynamically assembled commands separately; the check does not run skill code. v0.7.9 does not accept `rf ask --sign-off`: for approval, change it to `rf propose` on v0.7.9, which migrates to `rf comment . --propose`; for a question, use `rf ask`, which migrates to `rf comment . --ask`. The converter does not make that choice. Historical versions and instance `working/process.md` are not rewritten. Agents update their process files using the old commands' replacement hints.

@@ -147,7 +147,7 @@ test('a collaborator schedule request cannot overwrite an owner-side schedule', 
   const owner = setWake('empty', { at: '2099-01-01', from: alice, label: 'Next' });
   const request = setWake('empty', { at: '2099-02-01', from: bob, label: 'Next' });
   assert.notEqual(request.id, owner.id);
-  assert.equal(wakes().pending[owner.id].request, undefined);
+  assert.equal(wakes().pending[owner.id].request, false);
   assert.equal(wakes().pending[request.id].request, true);
   assert.equal(wakes().pending[owner.id].at, owner.at);
 });
@@ -160,7 +160,7 @@ test('a weekly schedule is reused by a one-off for the same label, and resolves 
   consent([], true, 'empty');
   const next = setWake('empty', { at: '2099-01-02', from: bob, label: 'Next' });
   assert.equal(next.id, old.id);
-  assert.equal(next.request, undefined);
+  assert.equal(next.request, false);
   assert.deepEqual(next.days, ['mon']);
 });
 
@@ -170,7 +170,7 @@ test('schedules resolve credentials at fire time: additions reach schedules, mis
   consent(['m365:x'], true, 'empty');
   const existing = setWake(inst.id, { at: '2000-01-01', from: alice });
   const next = setWake('empty', { at: '2000-01-01', from: alice, label: 'Next' });
-  assert.equal(next.request, undefined);
+  assert.equal(next.request, false);
   consent(['m365:x', 'm365:y'], true);
   consent(['m365:x', 'm365:y'], true, 'empty');
   fire();
@@ -227,7 +227,7 @@ test('confirm ABA cannot authorize a delayed start, and retirement blocks replac
     const old = active.get('s'), record = inst.log.find(e => e.op === 'run');
     saveSeriesSettings(inst.series(), { version: 1, owner: alice, epoch: 3, since: '', consent: { by: alice, at: '', workspace: 'w', logins: ['m365:x'], autonomous: true } });
     const continuation = setWake(inst.id, { at: '2099-01-01', from: 'W/S/First', inst: inst.id });
-    assert.equal(continuation.request, undefined, 'same-series live run sets an owner-side schedule resolved at fire time');
+    assert.equal(continuation.request, false, 'same-series live run sets an owner-side schedule resolved at fire time');
     let browsersCut = 0;
     old.browsers = { cut: () => { browsersCut++; }, end: async () => {} };
     set(bob, 4);
@@ -278,7 +278,7 @@ test('only immediate personal owner wakes can execute without autonomy', t => {
   consent();
   const now = new Date().toISOString();
   const immediate = setWake(inst.id, { from: alice, at: now });
-  assert.equal(immediate.request, undefined);
+  assert.equal(immediate.request, false);
   assert.equal(immediate.immediate, true);
   fire();
   assert.deepEqual(standing(inst, inst.log.findLast(e => e.op === 'wake')!), { word: 'runner', starts: true });
@@ -331,7 +331,7 @@ for (const autonomous of [false, true]) test(`an immediate weekly wake clears im
   fire();
   assert.equal(inst.log.some(e => e.op === 'wake'), true);
   assert.equal(wakes().pending[id].immediate, undefined);
-  assert.equal(wakes().pending[id].request, undefined);
+  assert.equal(wakes().pending[id].request, false);
   const w = wakes();
   delete w.fired[inst.id];
   w.pending[id].at = '2000-01-01T00:00:00.000Z';
@@ -507,11 +507,34 @@ test('migrateWakes conservatively converts stale snapshots and legacy requests t
   migrateWakes();
   const after = wakes();
   assert.equal(after.version, 2);
-  assert.equal(after.pending.current.request, undefined);
+  assert.equal(after.pending.current.request, false);
   assert.equal('authority' in after.pending.current, false);
   assert.equal('initiator' in after.pending.current, false);
   assert.equal(after.pending.stale.request, true);
   assert.equal('authority' in after.pending.stale, false);
   assert.equal('initiator' in after.pending.stale, false);
   assert.equal(after.pending.legacyReq.request, true);
+});
+
+test('migrateWakes fails closed on unmarked v2 rollback wakes (P1-1/F1) and credential-broadening legacy wakes (P1-2)', t => {
+  const inst = fixture(t);
+  consent(['m365:x', 'm365:y'], true);
+  const currentAuth = authority(inst);
+  const narrowerAuth = { ...currentAuth, logins: ['m365:x'] };
+  writeJson('wakes.json', {
+    version: 2,
+    pending: {
+      rollbackColleague: { target: inst.id, at: '2099-01-01T08:00:00.000Z', from: bob, text: 'colleague wake written on v0.8.13' },
+      narrowerLegacy: { target: inst.id, at: '2099-01-02T08:00:00.000Z', from: alice, authority: narrowerAuth, initiator: alice },
+      validOwner: { target: inst.id, at: '2099-01-03T08:00:00.000Z', from: alice, request: false },
+    },
+    fired: {},
+    requests: {},
+  });
+  migrateWakes();
+  const after = wakes();
+  assert.equal(after.pending.rollbackColleague.request, true);
+  assert.equal(after.pending.narrowerLegacy.request, true);
+  assert.equal('authority' in after.pending.narrowerLegacy, false);
+  assert.equal(after.pending.validOwner.request, false);
 });
