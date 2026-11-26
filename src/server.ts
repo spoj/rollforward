@@ -30,7 +30,7 @@ import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './serie
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, LEGACY_CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -190,10 +190,6 @@ async function agent(req: IncomingMessage, res: ServerResponse, url: URL) {
       return send(res, 200, check.inst ? check.inst.doc : { rev: 1, status: 'open', items: [], ...(check.label && { label: check.label }) });
     if (req.method === 'GET' && url.pathname === '/api/resolve') {
       const id = resolveFor(check, url.searchParams.get('path') ?? '');
-      if (!tree().series[id]) {
-        const targetInst = instance(id);
-        if (targetInst.hole) throw new HttpError(404, `${targetInst.label} was deleted`);
-      }
       return send(res, 200, { id, kind: tree().series[id] ? 'series' : 'instance' });
     }
     throw new HttpError(403, 'a wake check is read-only');
@@ -405,7 +401,7 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       const cause = slice.find(e => e.seq === (r.provenance as { cause?: number } | undefined)?.cause);
       // A run with no done is going only if it's the one going here; any other ended unlogged, cut, as its last entry tells.
       const going = !d && runningHere && a.n === r.run, end = d ?? (going ? undefined : slice.findLast(e => e.run === r.run) ?? r);
-      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
+      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : (Object.values(CUT).includes(error) || (LEGACY_CUT as readonly string[]).includes(error)) ? 'cut' : 'failed';
       const estimated = d ? d.estimated === true : going && !!a.estimated;
       const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
       const calls = r.key === 'own' ? [] : slice.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
@@ -1183,7 +1179,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const target = resolveFor(run, url.searchParams.get('path') ?? '');
     if (!t.series[target]) {
       const targetInst = instance(target);
-      if (targetInst.hole) throw new HttpError(404, `${targetInst.label} was deleted`);
+      if (targetInst.doc.status === 'deleted') throw new HttpError(404, `${targetInst.label} was deleted`);
     }
     return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
   }
@@ -1205,7 +1201,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     })));
   }
   // A workspace's managers let another workspace they see read it, and its managers or the other's take that off. What its agents
-  // read, that one's people see, whoever they are; taking it off takes effect on the next run (an operator can still interrupt a live run).
+  // read, that one's people see, whoever they are; taking a link off does not immediately stop in-flight reading runs — the narrowed
+  // view takes effect on their next run (the reading run's series owner, its workspace's managers, or admins can still manually interrupt it).
   if (kind === 'workspaces' && action === 'readers') {
     const w = t.workspaces[id], o = t.workspaces[other];
     if (req.method === 'PUT') {

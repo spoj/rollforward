@@ -21,9 +21,9 @@ for (const action of ['remove', 'lease', 'lease-calls']) for (const result of ['
       const root = ${JSON.stringify(root)}, action = ${JSON.stringify(action)}, result = ${JSON.stringify(result)}, alice = 'alice@demo.test';
       initSystem(root);
       openStore(root);
-      saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] }, w2: { name: 'Elsewhere', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' }, other: { name: 'Other', workspace: 'w' } } });
+      saveTree({ workspaces: { w: { name: 'Work', owners: [alice], members: [] }, w2: { name: 'Elsewhere', owners: [alice], members: [] } }, series: { s: { name: 'Series', workspace: 'w' } } });
       writeJson('users.json', { [alice]: { role: 'user' } });
-      for (const id of ['s', 'other']) { mkdirSync(root + '/series/' + id, { recursive: true }); ownSeries(id, alice); }
+      mkdirSync(root + '/series/s', { recursive: true }); ownSeries('s', alice);
       const starting = Promise.withResolvers(), startup = Promise.withResolvers(), stopping = Promise.withResolvers(), stopped = Promise.withResolvers(), charged = Promise.withResolvers();
       let turns = 0, steers = 0, stops = 0, calls = action === 'lease-calls';
       const run = { turn: async () => { turns++; }, steer: async () => { steers++; }, stop: async () => { stops++; stopping.resolve(); await stopped.promise; } };
@@ -31,9 +31,9 @@ for (const action of ['remove', 'lease', 'lease-calls']) for (const result of ['
       mock.module('./src/entra.ts', { namedExports: { ...entra, confirm: async () => {} } });
       mock.module('./src/connections.ts', { namedExports: { ...connections, hasCalls: () => calls, abortCalls: () => {}, drainCalls: () => charged.promise } });
       const { active, byToken, drain, drained, kick, remove, updating } = await import('./src/waker.ts');
-      const inst = createInstance('s', 'Starting', alice), target = inst;
-      mkdirSync(target.dir + '/working', { recursive: true });
-      const marker = target.dir + '/working/kept';
+      const inst = createInstance('s', 'Starting', alice);
+      mkdirSync(inst.dir + '/working', { recursive: true });
+      const marker = inst.dir + '/working/kept';
       writeFileSync(marker, 'kept until every sandbox stops');
       inst.append(alice, 'comment', { text: 'Work.' });
       kick(inst);
@@ -43,7 +43,7 @@ for (const action of ['remove', 'lease', 'lease-calls']) for (const result of ['
       assert.ok(a.ready && existsSync(index));
       drain();
       let deleted = false;
-      const deletion = action.startsWith('remove') ? remove(target, alice, () => ({ cost: 0, runs: [] })).then(() => { deleted = true; }) : undefined;
+      const deletion = action === 'remove' ? remove(inst, alice, () => ({ cost: 0, runs: [] })).then(() => { deleted = true; }) : undefined;
       if (action.startsWith('lease')) {
         const t = tree();
         t.series.s.workspace = 'w2';
