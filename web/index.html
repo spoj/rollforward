@@ -447,11 +447,11 @@ function renderBar() {
 
 function owner() {
   const r = data.owner, mine = r.by === me.email;
-  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. The owner closes instances. Their acts and answers to the agent's named asks start runs. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Selected ceiling: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
+  return `<span class="owner" tabindex="0">${mine ? 'Your series' : r.by ? person(r.by) : 'No series owner'}<span class="about">Series owner for every instance. The owner closes instances. Their acts and answers to the agent's named asks start runs. Credentials are selected for the whole series, not this instance.${r.since ? `<br>Since ${when(r.since)}.` : ''}<br>${!r.consent ? 'No execution consent.' : r.ticked.length ? `Series credentials: ${esc(r.ticked.join(', '))}` : 'Explicit credentialless consent.'}</span></span>`
     + (mine && !archived() ? `<button class="creds" data-act="ticks">Series credentials: ${r.consent ? credentials(r) : 'consent needed'}</button>` : '');
 }
 
-// The selected series ceiling at a glance, by kind, such as "Mail · 2 folders".
+// The selected series credentials at a glance, by kind, such as "Mail · 2 folders".
 function credentials(r) {
   const n = {}, say = { mail: ['Mail', 'mailboxes'], site: ['1 site', 'sites'], folder: ['1 folder', 'folders'], file: ['1 file', 'files'], website: ['1 website', 'websites'], warehouse: ['1 warehouse', 'warehouses'] };
   r.logins.forEach((id, k) => {
@@ -727,10 +727,29 @@ const cref = (seq, text, inst = cur.i.id) => {
 // code's text stays as it is.
 const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![\w/.#=&;!:?-])c(\d+)\b(?![\w-]|\.\w)/g, (m, skip, n) => skip || data.log[n - 1]?.op !== 'comment' ? m : cref(+n, m));
 // A file in the agent's markdown, by its path in the instance, or ../<label>/… in another of its series: [name](working/x.csv) links it,
-// opening the preview, and an image, ![name](working/x.png), shows as a thread's file does; a path may hold spaces and one level of
-// parentheses, as in TB (final).csv, and a link's an &, which the text holds escaped and data-file decodes. [name](#cN) links a comment, and
-// [name](../<label>#cN) one of another instance, last, so what its title quotes of the comment is left as it is.
-const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (_, alt, f) => `<img class="md" src="${fileUrl(f)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" data-file="${f}">`)
+// opening the preview, and an image, ![name](working/x.png) or relative to a markdown file, shows as a thread's file does (external,
+// absolute, or escaping paths stay literal); a path may hold spaces and one level of parentheses, as in TB (final).csv, and a link's an &,
+// which the text holds escaped and data-file decodes. [name](#cN) links a comment, and [name](../<label>#cN) one of another instance, last,
+// so what its title quotes of the comment is left as it is.
+const inline = (s, base, inst) => s.replace(/!\[([^\]]*)\]\(((?:[^()]|\([^()]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
+  const raw = f.replace(/&(amp|quot|#39|lt|gt);/g, (_, k) => ({ amp: '&', quot: '"', '#39': "'", lt: '<', gt: '>' }[k]));
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(raw)) return m;
+  const cross = raw.match(/^(\.\.\/(?!\.\.\/)[^/]+\/)(?=(?:upload|working)\/)/)?.[1];
+  const prefix = cross ?? base?.match(/^(\.\.\/[^/]+\/)/)?.[1] ?? '';
+  const rooted = cross || /^(?:upload|working)\//.test(raw);
+  const rel = !rooted && base ? (prefix ? base.slice(prefix.length) : base) : '';
+  const parts = rel ? rel.split('/').slice(0, -1) : [];
+  for (const seg of (cross ? raw.slice(cross.length) : raw).split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') { if (!parts.length) return m; parts.pop(); }
+    else parts.push(seg);
+  }
+  if (!parts.length) return m;
+  const r = prefix + parts.join('/');
+  const target = inst && !r.startsWith('../') ? { inst, path: r } : r;
+  const attr = typeof target === 'string' ? `data-file="${esc(target)}"` : `data-pin="${esc(JSON.stringify(target))}"`;
+  return `<img class="md" src="${fileUrl(target)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" ${attr}>`;
+})
   .replace(/\[([^\]]+)\]\(((?:\.\.\/[^/)]+\/)?(?:upload|working)\/(?:[^()]|\([^()]*\))+)\)/g, (_, name, f) => `<a data-act="preview" data-file="${f}">${name}</a>`)
   .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>')
   .replace(/\[([^\]]+)\]\((?:\.\.\/([^/)#]+))?#c(\d+)\)/g, (_, name, label, n) => {
@@ -740,14 +759,14 @@ const inline = s => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|j
 
 // With an item's threads, each line but a heading or a table's is a point to comment on where it stands: a
 // thread there names it by its opening words, its ref, and marks it.
-function md(text, threads) {
+function md(text, threads, base, inst) {
   let h = '', rows = [];
-  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
+  const table = () => { if (rows.length) h += `<table>${rows.map(r => `<tr>${r.map(c => `<td>${inline(c, base, inst)}</td>`).join('')}</tr>`).join('')}</table>`; rows = []; };
   for (const raw of text.split('\n')) {
     const l = esc(raw);
     if (l.trim().startsWith('|')) { if (!/^[\s|:-]+$/.test(l)) rows.push(l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())); continue; }
     table();
-    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>')), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
+    const line = inline(l.replace(/^(\s*)[-*] /, '$1\u2022 ').replace(/^#+ (.*)/, '<b>$1</b>'), base, inst), point = threads && !/^\s*(#|$)/.test(raw) && raw.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').replace(/\*\*|`/g, '').trim();
     if (!point) { h += line + '\n'; continue; }
     const ref = point.length > 60 ? point.slice(0, 60).replace(/\s+\S*$/, '') + '\u2026' : point, on = threads.filter(t => t.ref && point.startsWith(t.ref.replace(/\u2026$/, '')));
     h += `<span class="pt ${on.length ? 'noted' : ''} ${on.some(t => t.waits) ? 'q' : ''}" data-act="cell" data-ref="${esc(ref)}"${on.length ? ` data-thread="${esc(on[0].id)}" data-note="${esc(on.map(t => t.posts.map(p => `${nameOf(p.by)}: ${p.text}`).join('\n')).join('\n\n'))}"` : ''}>${line}</span>\n`;
@@ -866,7 +885,8 @@ function conversationHtml() {
   h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + `<textarea id="newcomment" rows="3" placeholder="${first ? 'What should the agent do? Drop files here too' : data.starts ? 'The agent replies in the thread' : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`}"></textarea><input type="file" id="newfiles" multiple><div class="row2"><button class="btn primary" data-act="comment">Comment</button>${mine ? '' : '<label class="note-request"><input type="checkbox" id="comment-request"> Request a proposal</label>'}</div></div>`;
+    + (!data.starts ? `<div class="sub">${mine ? 'Save series credentials to start runs' : `Owned by ${esc(nameOf(data.owner.by))} — comments here are notes and won't start a run`}</div>` : '')
+    + `<textarea id="newcomment" rows="3" placeholder="${!data.starts ? (mine ? "Comment (won't start a run until you save series credentials)" : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`) : first ? 'What should the agent do? Drop files here too' : 'The agent replies in the thread'}"></textarea><input type="file" id="newfiles" multiple><div class="row2"><button class="btn primary" data-act="comment">${!mine && !data.starts ? 'Leave note' : 'Comment'}</button>${mine ? '' : '<label class="note-request"><input type="checkbox" id="comment-request"> Request a proposal</label>'}</div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -1012,10 +1032,10 @@ function renderPv() {
     h += '</div>';
   }
   // Drawn again as it is, as live updates redraw Waiting on you, the dialog stays scrolled where its reader left it.
-  const key = `${pv.title}\n${pv.settings?.kind ?? ''}\n${pv.path ?? ''}`, tops = d.open && d.dataset.key === key ? [...d.querySelectorAll('.pvb')].map(b => b.scrollTop) : [];
+  const key = `${pv.title}\n${pv.settings?.kind ?? ''}\n${pv.path ?? ''}`, scrolls = d.open && d.dataset.key === key ? [...d.querySelectorAll('.pvb')].map(b => [b.scrollTop, b.scrollLeft]) : [];
   d.innerHTML = h + `<div class="pvn${pv.signin ? ' err' : ''}" id="pvn"${pv.signin ? ' role="alert"' : ''}></div>`;
   d.dataset.key = key;
-  d.querySelectorAll('.pvb').forEach((b, i) => { if (tops[i]) b.scrollTop = tops[i]; });
+  d.querySelectorAll('.pvb').forEach((b, i) => { if (scrolls[i]) [b.scrollTop, b.scrollLeft] = scrolls[i]; });
   if (pv.settings?.kind === 'workspace' ? cur.w.archived : pv.settings?.kind === 'series' && archived()) {
     d.querySelector('.pvb').insertAdjacentHTML('afterbegin', '<div class="sub">Archived · read-only</div>');
     for (const el of d.querySelectorAll('.pvb input, .pvb textarea, .pvb select')) el.disabled = true;
@@ -1050,10 +1070,26 @@ function grantHtml(g, cls = 'website', showCheckError = true) {
 
 function startsHtml(s) {
   const mine = s.owner === me.email;
+  const schedules = [
+    ...(s.wakes ?? []).map(k => ({ ...k, targetLabel: s.name })),
+    ...(s.instances ?? []).flatMap(i => (i.wakes ?? []).map(k => ({ ...k, targetLabel: i.label }))),
+  ].filter(k => k.request === false);
+  const fmtSched = k => {
+    const parts = [
+      `${esc(k.targetLabel)}${k.label ? ` (${esc(k.label)})` : ''}`,
+      `${esc(when(k.at))}${k.deadline ? ` · deadline ${esc(when(k.deadline))}` : ''}`,
+      ...(k.days ? [`${esc(k.days.join(','))}`] : []),
+      ...(k.from ? [`by ${esc(k.from)}`] : []),
+      ...(k.check ? [`check: ${esc(k.check)}`] : []),
+      ...(k.text ? [`"${esc(k.text)}"`] : []),
+    ];
+    return `<li>${parts.join(' · ')}</li>`;
+  };
+  const schedList = schedules.length ? `<div class="sub">Pending schedules that will run with autonomous on (${schedules.length}):<ul>${schedules.map(fmtSched).join('')}</ul></div>` : '';
   return ownershipHtml(cur.w, s) + `<div>Series owner: ${s.owner ? person(s.owner) : 'not selected'}. The owner's acts and answers to the agent's named asks start runs under the owner's current consent. Other collaborators' words are notes.</div>`
     + ((mine || cur.w.manage) ? '<div class="row2"><button class="btn" data-act="series-owner">Transfer whole series…</button></div>' : '')
-    + (mine ? `<h3>Series credential ceiling</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing authority stops existing runs and invalidates old schedules.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
-      : `<div class="sub">${s.consent ? `Selected ceiling: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
+    + (mine ? `<h3>Series credentials</h3><div class="sub">Every instance may use the selected credentials. New logins are never added automatically. Saving an empty selection explicitly allows work with no credentials. Removing a credential stops live runs using it; schedules use the current selection when they fire.</div>${ticksHtml(s.logins, pv.on ?? s.consent?.logins ?? [], cur.w)}<label><input type="checkbox" id="autonomous" ${(pv.autonomous ?? s.consent?.autonomous) ? 'checked' : ''}> Allow scheduled and autonomous runs</label>${schedList}<div class="consent">Save explicitly consents to this series-wide selection. Scheduled and autonomous runs are opt-in.</div><button class="btn primary" data-act="series-credentials">Save series credentials</button>`
+      : `<div class="sub">${s.consent ? `Series credentials: ${s.consent.logins.length} credentials; autonomous runs ${s.consent.autonomous ? 'allowed' : 'not allowed'}.` : 'No execution consent: the owner must explicitly select credentials, including none.'}</div>`);
 }
 
 // A series' notes, for its runs: the open ones, then those settled, folded, with who settled them, how and why; and a box to tell it
@@ -1091,8 +1127,8 @@ function wakesHtml(target, list, series) {
     + (series ? `<input type="text" class="wlabel" placeholder="Label it starts" value="${esc(k.label ?? '')}">` : '')
     + `<input type="text" class="wtext" maxlength="500" placeholder="Message for the run (optional)" value="${esc(k.text ?? '')}">`
     + '<div class="row2">' + WEEK.map(d => `<label class="sub"><input type="checkbox" value="${d}" ${k.days?.includes(d) ? 'checked' : ''}>${d[0].toUpperCase() + d.slice(1)}</label>`).join('')
-    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && (k.initiator ?? k.from) !== cur.s.owner ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
-  const existing = list.map(k => !k.check && (owns || (!k.authority && k.from === me.email)) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''}${k.check ? ` · check ${esc(k.check)}${k.deadline ? ` · deadline ${when(k.deadline)}` : ''} (set with rf)` : ''} · ${k.authority ? 'Captured owner schedule' : 'Wake request'}${owns || cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
+    + `<button class="btn" data-act="wake-save">${k.id ? 'Save' : 'Add'}</button>${k.id ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>${k.id && owns && cur.s.consent?.autonomous && k.request ? '<div class="sub">Each occurrence asks the owner to start it.</div>' : ''}</div>`;
+  const existing = list.map(k => !k.check && (owns || (k.request && k.from === me.email)) ? row(k) : `<div class="wakerow" data-id="${k.id}" data-target="${target}">${when(k.at)}${k.label ? ` · ${esc(k.label)}` : ''}${k.text ? ` · ${esc(k.text)}` : ''}${k.check ? ` · check ${esc(k.check)}${k.deadline ? ` · deadline ${when(k.deadline)}` : ''} (set with rf)` : ''} · ${k.request ? `Request from ${person(k.from)}` : 'Schedule'}${owns || cur.w.manage ? '<button class="quiet" data-act="wake-delete">Delete</button>' : ''}</div>`).join('');
   return `<div class="sub">${series ? 'Each starts the instance it names, or continues it if the series has it.' : 'Each continues this instance.'} Tick days to repeat it weekly at its time.${owns && cur.s.consent?.autonomous ? '' : ' Each occurrence asks the owner to start it.'}</div>${existing}${row()}`;
 }
 
@@ -1205,7 +1241,7 @@ function loginsHtml(s) {
     ...s.logins.filter(l => l.missing.length && !l.expired).map(l => line(l.name, `<span class="q">runs can't send or save</span>: Microsoft hasn't granted it ${esc(l.missing.join(', '))}, which this server now asks for`, connect(l))),
     ...(k?.enabled && k.expired ? [line('Model key', '<span class="q">your key is out of credits</span>: save another, or stop using it', '<button class="btn primary" data-act="logins-show" data-id="key">Change</button>')] : []),
   ];
-  let h = `<div class="sub">Every login is yours alone. A run acts as its series owner, using only the explicitly selected series credential ceiling. Nothing here is a password: you sign in to each system yourself.</div>`
+  let h = `<div class="sub">Every login is yours alone. A run acts as its series owner, using only the explicitly selected series credentials. Nothing here is a password: you sign in to each system yourself.</div>`
     + (needs.length ? `<h3>Needs you</h3>${needs.join('')}<h3>All</h3>` : '');
   for (const c of entra) {
     const l = mine(c.login.id);
@@ -1262,7 +1298,7 @@ function loginsHtml(s) {
   return h;
 }
 
-// The owner's explicitly selected series-wide credential ceiling, by kind:
+// The owner's explicitly selected series credentials, by kind:
 // Microsoft 365's sources fold under a tick of its own, unless some are ticked and some not, and an expired login is flagged, its
 // ticks off. Website ticks need an approved grant in workspace w; asking belongs under Logins, Websites.
 function ticksHtml(logins, on = [], w, scope = 'pv') {
@@ -1285,7 +1321,7 @@ const ticked = () => [...document.querySelectorAll('#pv input.tick:checked:enabl
 
 function startHtml(s) {
   return (s.label !== undefined ? `<h3>Label</h3><input type="text" id="slabel" value="${esc(s.label)}" placeholder="such as a date">` : '')
-    + `<h3>Series credential ceiling</h3><div class="sub">You own this task's whole series. Every instance may use these selected credentials. Nothing is selected by default; an empty selection explicitly permits work without credentials.</div>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
+    + `<h3>Series credentials</h3><div class="sub">You own this task's whole series. Every instance may use these selected credentials. Nothing is selected by default; an empty selection explicitly permits work without credentials.</div>` + ticksHtml(s.logins, s.on, tree.find(w => w.id === s.ws))
     + `<label><input type="checkbox" id="autonomous" ${s.autonomous ? 'checked' : ''}> Allow scheduled and autonomous runs</label><div class="consent">By clicking ${esc(s.go)}, you explicitly consent to this series-wide selection.</div>`
     + (s.warn ? `<div class="warn">${esc(s.warn)}</div>` : '') + `<div><button class="btn primary" data-act="start-go">${esc(s.go)}</button></div>`;
 }
@@ -1453,7 +1489,7 @@ function previewBody(p) {
   if (p.doc) return `<div class="pvb doc">${p.doc.map(b => b.h ? `<h${b.h}>${esc(b.text)}</h${b.h}>` : b.table ? `<table>${b.table.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>`
     : b.li !== undefined ? `<p class="li" style="margin-left:${18 + b.level * 18}px">${esc(b.li)}</p>` : `<p>${esc(b.p)}</p>`).join('')}</div>`;
   if (p.pdf) return `<div class="pvb pages">${Array.from({ length: p.pdf.pages }, (_, k) => `<img data-page="${k + 1}" alt="Page ${k + 1}"${p.pdf.shown[k + 1] ? ` src="${esc(p.pdf.shown[k + 1])}"` : ''}>`).join('')}</div>`;
-  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item))}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
+  if (p.text !== undefined) return `<div class="pvb">${p.md ? `<div class="say">${md(p.text, p.item && talkOn(p.item), p.path, p.inst)}</div>` : `<pre>${esc(p.text)}</pre>`}</div>`;
   return `<div class="pvb"><div class="empty">${p.loading ? 'Loading…' : p.error ? esc(p.error) : 'No preview for this kind of file. Download it instead.'}</div></div>`;
 }
 // A PDF's pages, each fetched as it scrolls into view and kept apart from those the preview came with, so a card drawn again on each
@@ -1474,9 +1510,9 @@ const MAIL = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Sec
 
 // A preview of a file, an item's or not, before what it shows is fetched (load), for the dialog or an item's card.
 function previewOf(file, item) {
-  const pinned = typeof file !== 'string', path = pinned ? file.path : file, download = fileUrl(file);
+  const pinned = typeof file !== 'string', path = pinned ? file.path : file, inst = pinned ? file.inst : undefined, download = fileUrl(file);
   return {
-    title: fname(path), path, pinned, download, src: fileUrl(file, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && download,
+    title: fname(path), path, inst, pinned, download, src: fileUrl(file, 'preview'), item: item?.id, threads: item ? talkOn(item.id) : [], sheet: 0, image: /\.(png|jpe?g|gif|webp|svg)$/i.test(path) && download,
     was: item && data.log.findLast(e => e.op === 'point' && e.item === item.id && e.file === path)?.was, md: /\.md$/i.test(path), loading: pinned || /\.(xlsx|xlsm|xls|csv|eml|msg|pdf|docx|md|txt|json|py|sql|log)$/i.test(path),
   };
 }
@@ -1729,7 +1765,15 @@ async function onAct(act, el) {
   }
   if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'series-credentials') {
-    await api(`${seriesPath(cur)}/credentials`, { method: 'PUT', body: JSON.stringify({ logins: ticked(), autonomous: $('#autonomous').checked }) });
+    const s = pv?.settings?.kind === 'series' ? pv.settings : cur.s;
+    const body = { logins: ticked(), autonomous: $('#autonomous').checked, expectedEpoch: s.epoch, ...(s.scheduleRevision !== undefined && { expectedSchedules: s.scheduleRevision }) };
+    try {
+      await api(`/api/series/${s.id}/credentials`, { method: 'PUT', body: JSON.stringify(body) });
+    } catch (e) {
+      await refresh();
+      if (pv?.settings?.kind === 'series') await openSeriesSettings();
+      throw e;
+    }
     await refresh();
     await openSeriesSettings();
     saved();
@@ -1925,7 +1969,7 @@ async function onAct(act, el) {
   if (act === 'new-instance') {
     let made;
     if (await ask({
-      title: 'New instance', text: 'Uses the existing series owner and selected series credential ceiling. Creating it changes neither.', value: '', placeholder: 'Label', ok: 'Make',
+      title: 'New instance', text: 'Uses the existing series owner and selected series credentials. Creating it changes neither.', value: '', placeholder: 'Label', ok: 'Make',
       act: async label => (made = await api(seriesPath(cur), { method: 'POST', body: JSON.stringify({ label, quiet: true }) })),
     })) go(made.id);
   }
@@ -1960,7 +2004,7 @@ async function onAct(act, el) {
     const people = (await api(`${path}/owners`)).filter(p => p !== s.owner).sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
     if (!people.length) return ask({ title: 'Transfer whole series', text: 'No other enabled person can see this workspace.' });
     if (await ask({
-      title: `Transfer whole series: ${w.name} · ${s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and invalidates schedules. No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
+      title: `Transfer whole series: ${w.name} · ${s.name}`, text: 'Changes the owner of every instance, not just this one. Stops old runs and clears execution consent (pending schedules pause as requests until the new owner opts in). No credentials transfer: the incoming owner must explicitly consent before any run. This starts no run.',
       html: `<select id="ownerto"><option value="">Select the new series owner</option>${people.map(p => `<option value="${esc(p)}">${esc(me.names[p] ? `${called(p)} <${p}>` : p)}</option>`).join('')}</select>`, ok: 'Transfer whole series',
       act: () => api(`${path}/owner`, { method: 'PUT', body: JSON.stringify({ owner: $('#ownerto').value }) }),
     })) { await refresh(); if (pv?.settings?.kind === 'series') await openSeriesSettings(); }

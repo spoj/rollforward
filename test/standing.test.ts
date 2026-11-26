@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInstance, instances, openStore, type Entry, type Instance } from '../src/store.ts';
+import { saveSeriesSettings, seriesSettings } from '../src/series.ts';
 import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
 import { ownSeries } from './owner-fixture.ts';
 import { idp } from './idp.ts';
@@ -125,7 +126,7 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     assert.ok(await started(i));
   });
 
-  test('a transfer makes read context history, unread context notes, and old schedules requests', async () => {
+  test('a transfer makes read context history, unread context notes, and old schedules requests until new owner consents', async () => {
     const i = make(autonomous, bob), read = i.append(bob, 'comment', { text: 'Use HSBC.', quiet: true });
     i.append('server', 'run', { run: 1, runner: bob, initiator: bob, authority: authority(i) });
     i.append('server', 'done', { run: 1, seen: read.seq, cost: 0 });
@@ -133,14 +134,16 @@ for (const autonomous of [false, true]) describe(`standing with autonomous conse
     const colleague = i.append(carol, 'comment', { text: 'The rate moved.', quiet: true });
     const asked = i.append('agent', 'comment', { thread: 'c7', text: 'Which statement?', ask: 'question', to: carol });
     setWake(i.id, { at: new Date().toISOString(), from: bob });
+    saveSeriesSettings(i.series(), { version: 1, owner: alice, epoch: authority(i).epoch + 1, since: new Date().toISOString() });
+    i.append('server', 'authority', { owner: alice, epoch: seriesSettings(i.series()).epoch, workspace: 'w', actor: bob });
+    fire();
+    assert.ok(Object.values(wakes().requests).some(r => r.target === i.id && r.from === bob), 'without new-owner consent, schedule becomes a request');
     ownSeries(i.seriesId, alice, [], autonomous);
     i.append('server', 'authority', { owner: alice, epoch: authority(i).epoch, workspace: 'w', actor: bob });
     assert.equal(standing(i, { ...read, quiet: undefined }), undefined);
     for (const e of [before, colleague]) assert.deepEqual(standing(i, { ...e, quiet: undefined }), { word: 'note', starts: false });
     assert.deepEqual(standing(i, i.append(carol, 'comment', { thread: 'c7', parent: asked.seq, text: 'HSBC.' })), { word: 'answer', starts: true });
     assert.match(message(i, 2, i.log, true), /"text":"Cut off at the 25th\.".*"note":true/);
-    fire();
-    assert.ok(Object.values(wakes().requests).some(r => r.target === i.id && r.from === bob));
     kick(i);
     for (let k = 0; k < 40 && runs(i) < 2; k++) await new Promise(r => setTimeout(r, 50));
     assert.equal(runs(i), 2);
@@ -176,12 +179,12 @@ for (const status of ['closed', 'abandoned'] as const) for (const hadRun of [fal
   assert.equal(JSON.stringify(i.log), bytes);
 });
 
-test('A→B→A never revives an old owner schedule', () => {
+test('A→B→A resumes an owner-side schedule once A re-consents (D1)', () => {
   const i = make(true);
   setWake(i.id, { at: new Date(Date.now() + 3600e3).toISOString(), from: alice });
   ownSeries(i.seriesId, carol, [], true);
   ownSeries(i.seriesId, alice, [], true);
-  assert.match(message(i, 1, [], true), /from alice@demo\.test, a note/);
+  assert.doesNotMatch(message(i, 1, [], true), /from alice@demo\.test, a request/);
 });
 
 test('withdrawn, answered, plain and pre-copy asks do not grant answer standing', () => {

@@ -153,7 +153,7 @@ function currentSignIn(s: SignIn) {
   return w;
 }
 
-export async function startSignIn(email: string, site: string, given: string): Promise<string> {
+export async function startSignIn(email: string, site: string, given: string, caller?: Me, recheck?: () => void): Promise<string> {
   const w = website(email, site), kept = `web:${site}.header`, key = `${email} ${site}`;
   const websiteGeneration = websiteGenerations.get(key), loginSince = logins(email).find(l => l.id === `web:${site}`)?.since;
   let token;
@@ -168,12 +168,15 @@ export async function startSignIn(email: string, site: string, given: string): P
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
   await checkHost(new URL(w.url).hostname, !!w.via);
-  const via = await vpnVia(email, w);
+  const via = await vpnVia(email, w, caller);
+  recheck?.();
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
+  recheck?.();
+  currentSignIn(signing);
   const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
-  try { currentSignIn(signing); } catch (e) { await close(id); throw e; }
+  try { recheck?.(); currentSignIn(signing); } catch (e) { await close(id); throw e; }
   signIns.set(id, signing);
   return id;
 }
@@ -206,7 +209,7 @@ export async function addSite(email: string, name: string, url: string, header =
 // Its person changes the header its sign-in needs, its keepalive page and how often, and whether runs write its state back; admins
 // alone let it reach internal addresses, by exact hosts, as an intranet's need, anyone's: its hosts at internal addresses, its
 // address's among them, every person's websites reach from then on, with no admin again, until an admin sets one at them false.
-export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email) {
+export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email, recheck?: () => void) {
   const keys = ['header', 'keepalive', 'every', 'writeback', 'internal', 'via'], other = Object.keys(change).filter(k => !keys.includes(k));
   if (other.length) throw new HttpError(400, `${other.join(', ')}: a website's settings are ${keys.join(', ')}; its hosts are allowed one by one`);
   // Taking a VPN off a website, as one left with it once the VPN is gone, needs no capability, and an admin may on anyone's.
@@ -235,6 +238,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const next = website(person, name), let_ = change.internal === true || change.internal === 'true';
   const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
   const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
+  recheck?.();
   setLetIn(hosts, by.email, let_);
   if (!let_) await revokeInternalHosts(hosts);
   else if (hosts.some(h => next.checks?.[h]?.verdict === 'internal')) {
@@ -320,10 +324,11 @@ export function removeSite(email: string, name: string) {
 }
 
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
-export async function allowHost(by: Me, site: string, host: string, email = by.email) {
+export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
   const before = website(email, site), h = host.trim().toLowerCase(), routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
   await checkHost(h, routed || inside);
+  recheck?.();
   const w = website(email, site);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
   if (inside && !letIn()[h]) {
@@ -357,7 +362,7 @@ export const viewPage = async (id: string) => (await call('GET', `/sessions/${id
 // `keepalive` if given, at most 7 days ahead (keepAlive). Signing in takes requests the person makes in control of the browser, so
 // with none there is nothing to save yet. What its browser did is one line of the server's output, its addresses as their hosts
 // alone, as a path or a query may hold codes or tokens.
-export async function endSignIn(email: string, id: string, save: boolean, keepalive?: unknown) {
+export async function endSignIn(email: string, id: string, save: boolean, keepalive?: unknown, recheck?: () => void) {
   if (!isSignIn(email, id)) throw new HttpError(404, 'no such sign-in');
   const until = keepalive === undefined ? undefined : Date.parse(String(keepalive));
   if (until !== undefined && !(until > Date.now() && until <= Date.now() + 7 * 86_400_000)) throw new HttpError(400, 'keepalive: a time within the next 7 days, until which your login is kept alive');
@@ -401,6 +406,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   try {
     if (save && expired) throw new HttpError(410, 'This sign-in expired; sign in again.');
     if (!save) return;
+    recheck?.();
     const w = currentSignIn(signing), allowed = allowedHosts(w), hosts = Object.keys(requests).filter(h => allowed.some(p => covers(p, h))), s = state as { cookies: { domain: string }[]; origins: { origin: string }[] };
     const trimmed = s && { ...s, cookies: s.cookies.filter(c => hosts.some(h => c.domain === h || (c.domain.startsWith('.') && (h === c.domain.slice(1) || h.endsWith(c.domain))))),
       origins: s.origins.filter(o => hosts.includes(new URL(o.origin).hostname)) };
@@ -562,7 +568,9 @@ export async function checkWebsite(email: string, site: string, given?: Trace, s
       if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
       const res = await serverCall('openrouter', '/api/v1/chat/completions', {
         model, response_format: { type: 'json_object' }, messages, ...(exa && { tools, tool_choice: queries.length < 5 ? 'auto' : 'none' }),
-      }, cause, 120_000);
+      }, cause, 120_000, () => {
+        if (!current()) throw new HttpError(409, `${site} was removed, replaced or signed out while it was checked`);
+      });
       checkCost += res.cost;
       if (res.estimated) checkEstimated = true;
       if (!res.ok) throw new Error(`OpenRouter answered ${res.status}`);

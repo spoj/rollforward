@@ -35,6 +35,45 @@ export function generationId(headers: IncomingHttpHeaders | Record<string, strin
 }
 
 // Fallback when neither the answer's usage nor /api/v1/generation yielded a charged cost.
+export const RETRY_429_DELAYS_MS = [3000, 6000, 12000, 20000, 30000];
+export const RETRY_429_MAX_DELAY_MS = 60_000;
+
+export function parseRetryAfterMs(header: string | string[] | null | undefined, now = Date.now()): number | undefined {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const secs = Number(trimmed);
+  if (Number.isFinite(secs)) return Math.max(0, Math.ceil(secs * 1000));
+  const at = Date.parse(trimmed);
+  if (Number.isFinite(at)) return Math.max(0, at - now);
+  return undefined;
+}
+
+export function retryDelayMs(
+  attempt: number,
+  retryAfter?: string | string[] | null,
+  opts: { delaysMs?: readonly number[]; maxDelayMs?: number; jitterMs?: number; random?: () => number; now?: number } = {},
+): number | undefined {
+  const delays = opts.delaysMs ?? RETRY_429_DELAYS_MS;
+  if (attempt < 0 || attempt >= delays.length) return undefined;
+  const maxDelay = opts.maxDelayMs ?? RETRY_429_MAX_DELAY_MS;
+  const parsed = parseRetryAfterMs(retryAfter, opts.now);
+  if (parsed !== undefined) return parsed <= maxDelay ? parsed : undefined;
+  const jitter = Math.floor((opts.random ?? Math.random)() * (opts.jitterMs ?? 1500));
+  return Math.min(maxDelay, delays[attempt] + jitter);
+}
+
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false);
+  if (ms <= 0) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const onAbort = () => { clearTimeout(t); resolve(false); };
+    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(true); }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export function estimate(path: string, reqJson: any, events: any[], bytes: number): number {
   const slug = typeof reqJson?.model === 'string' ? reqJson.model : model;
   if (path.endsWith('/embeddings')) {

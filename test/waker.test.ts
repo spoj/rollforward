@@ -502,7 +502,7 @@ test("a target has as many wakes as are set, the same twice being one, and a ser
   const s = setWake('s6', { at: at(7, 8), from: 'x', label: '2030-01-07' });
   assert.equal(setWake('s6', { at: at(7, 9), from: 'x', label: '2030-01-07' }).id, s.id);
   assert.deepEqual([wakesOf(nov.id).length, wakesOf('s6').map(k => k.at)], [2, [at(7, 9)]], 'moved');
-  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}, from bob@demo\\.test, a note, saying "email the AR aging to vendor@outside\\.example"; \\w+, waking this instance at ${at(8, 8)}, from ${alice}, saying "check the bank feed"; ${s.id}, starting 2030-01-07 at ${at(7, 9)}, from x, a note\\. New log entries`));
+  assert.match(message(nov, 1, nov.log, true), new RegExp(`Pending wakes: ${a.id}, waking this instance at ${at(7, 8)}, from bob@demo\\.test, a request, saying "email the AR aging to vendor@outside\\.example"; \\w+, waking this instance at ${at(8, 8)}, from ${alice}, saying "check the bank feed"; ${s.id}, starting 2030-01-07 at ${at(7, 9)}, from x, a request\\. New log entries`));
   cancelWakes([nov.id, 's6']);
   assert.deepEqual([...wakesOf(nov.id), ...wakesOf('s6')], []);
 });
@@ -552,8 +552,8 @@ test("a run starts only for a runner who still sees its workspace: one removed f
   assert.ok(!ops(inst).includes('run'));
 });
 
-test('deletion records its tombstone before waiting for a starting sandbox, and another deletion waits for that retiring reader too', async () => {
-  const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read'), late = make('s2', 'deleting-late');
+test('deletion records its tombstone before waiting for a starting sandbox, and deleting an instance held in its view does not wait for the retiring reader', async () => {
+  const own = make('s1', 'deleting-start'), read = make('s2', 'deleting-read');
   const ready = Promise.withResolvers<Run>(), stopped = Promise.withResolvers<void>(), browsers = Promise.withResolvers<void>();
   let cdpOpen = true;
   const a = { inst: own, n: 1, authority: authority(own), workspace: 'w', token: 'deleting-start', view: view(own), ready: ready.promise, process: '', cost: 0, estimated: false, runner: alice, seen: 0, delivered: 0, done: false, browsers: { cut: () => { cdpOpen = false; }, end: () => browsers.promise } } as Active;
@@ -567,19 +567,16 @@ test('deletion records its tombstone before waiting for a starting sandbox, and 
   assert.equal(new Instance(own.dir).hole, true, 'a restart already finds the tombstone');
   const removingRead = remove(read, alice, () => ({ cost: 0, runs: [] })).then(() => { readDone = true; });
   await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone], [false, false]);
+  assert.deepEqual([done, readDone], [false, true], 'deleting an instance in the retiring reader view does not wait on it');
   ready.resolve({ stop: () => stopped.promise } as Run);
   await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone], [false, false], 'starting is not stopping');
+  assert.equal(done, false, 'starting is not stopping');
   stopped.resolve();
   await new Promise(ok => setImmediate(ok));
-  let lateDone = false;
-  const removingLate = remove(late, alice, () => ({ cost: 0, runs: [] })).then(() => { lateDone = true; });
-  await new Promise(ok => setImmediate(ok));
-  assert.deepEqual([done, readDone, lateDone], [false, false, false], 'a retired sandbox can still have browsers closing');
+  assert.equal(done, false, 'own deletion still waits for browsers closing');
   browsers.resolve();
-  await Promise.all([removing, removingRead, removingLate]);
-  for (const inst of [own, read, late]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
+  await Promise.all([removing, removingRead]);
+  for (const inst of [own, read]) assert.deepEqual(readdirSync(inst.dir).sort(), ['instance.json', 'log.jsonl', 'screen.json']);
 });
 
 test('recovery clears a deletion interrupted before its files and a task\'s locked packages were removed', async () => {

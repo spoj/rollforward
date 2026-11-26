@@ -112,7 +112,7 @@ export function isVpnSignIn(email: string, id: string): boolean {
   return !!signing && signing.person === email && !!me && can(me, 'vpn');
 }
 
-export async function saveVpnSignIn(me: Me, id: string) {
+export async function saveVpnSignIn(me: Me, id: string, recheck?: () => void) {
   requireVpn(me);
   const signing = signIns.get(id);
   if (!signing || signing.person !== me.email) throw new HttpError(404, 'no such VPN sign-in');
@@ -120,6 +120,7 @@ export async function saveVpnSignIn(me: Me, id: string) {
   signing.saving = true;
   try {
     const { state } = await browserJson('DELETE', `/sessions/${id}`);
+    recheck?.();
     if (Date.now() >= signing.expires || state === null) throw new HttpError(410, 'This VPN sign-in expired; sign in again.');
     const definition = currentVpnSignIn(signing), host = new URL(`https://${definition.gateway}`).hostname;
     const cookie = state.cookies.find((c: { name: string; domain: string; value: string; expires: number }) => c.name === 'SVPNCOOKIE'
@@ -127,6 +128,7 @@ export async function saveVpnSignIn(me: Me, id: string) {
       && c.value && !/[\s;]/.test(c.value) && (c.expires <= 0 || c.expires > Date.now() / 1000));
     if (!cookie) throw new HttpError(409, 'The VPN gateway has no SVPNCOOKIE; sign in to the VPN first, then Connect.');
     await changeTunnel(async () => {
+      recheck?.();
       const definition = currentVpnSignIn(signing);
       const key = `${me.email} ${signing.vpn}`, before = tunnels.get(key);
       if (before) {
@@ -134,9 +136,10 @@ export async function saveVpnSignIn(me: Me, id: string) {
         tunnels.delete(key);
         changes.emit('change', 'tree');
       }
+      recheck?.();
       currentVpnSignIn(signing);
       const { id, token } = await tunnelJson('POST', '/tunnels', { ...definition, cookie: `SVPNCOOKIE=${cookie.value}` });
-      try { currentVpnSignIn(signing); } catch (e) { await tunnelJson('DELETE', `/tunnels/${id}`); throw e; }
+      try { recheck?.(); currentVpnSignIn(signing); } catch (e) { await tunnelJson('DELETE', `/tunnels/${id}`); throw e; }
       tunnels.set(key, { person: me.email, vpn: signing.vpn, id, token, since: new Date().toISOString() });
       act(me.email, { op: 'vpn-connect', name: signing.vpn });
       changes.emit('change', 'tree');
@@ -214,13 +217,14 @@ export function vpnHosts(url: string): string[] {
   return domain ? [domain, `*.${domain}`] : [host];
 }
 
-export async function vpnVia(email: string, website: { url: string; via?: string }): Promise<Via | undefined> {
+export async function vpnVia(email: string, website: { url: string; via?: string }, caller?: Me): Promise<Via | undefined> {
   if (!website.via) return;
-  const me = asPerson(email), key = `${email} ${website.via}`, own = tunnels.get(key);
+  const effective = (p: Me | null) => (p && caller ? { ...p, groups: p.groups.filter(g => caller.groups.includes(g)) } : p);
+  const me = effective(asPerson(email)), key = `${email} ${website.via}`, own = tunnels.get(key);
   if (!me || !can(me, 'vpn') || !vpnDefinitions()[website.via] || !own)
     throw Object.assign(new HttpError(409, `connect VPN ${website.via} first on the Logins page, as ${email}; this run goes on without the website`), { refused: true });
   const remote = (await tunnelJson('GET', '/tunnels').catch(e => { throw Object.assign(e, { refused: true }); }) as { id: string; up: boolean }[]).find(t => t.id === own.id);
-  const current = asPerson(email);
+  const current = effective(asPerson(email));
   if (!remote?.up || tunnels.get(key) !== own || !current || !can(current, 'vpn') || !vpnDefinitions()[website.via])
     throw Object.assign(new HttpError(409, `VPN ${website.via} ${remote ? 'is down' : 'ended'}; connect it again on the Logins page`), { refused: true });
   const url = process.env.RF_TUNNEL_PROXY;

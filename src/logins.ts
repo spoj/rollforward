@@ -12,7 +12,7 @@ import service from './connections/service.ts';
 // or their own OpenRouter key, which, `enabled`, their runs use in place of the server's (connections.ts), kept in .rf/people/<id>/. logins.json
 // lists them, each with what it offers a run, such as a mailbox, a site or a SQL warehouse; each login's secret (Microsoft's refresh
 // token, a website's saved browser state) is sealed in <login id>.sealed with AES-256-GCM, its person and id as authenticated data,
-// so a record copied into another person's folder won't open. Runs use their captured owner's explicitly selected series ceiling.
+// so a record copied into another person's folder won't open. Runs use their captured owner's explicitly selected series credentials.
 export type Offer = { id: string; name: string };
 // Sign-in evidence contains hosts, never URLs. Older saved traces have no request kinds.
 export type Trace = { requests: Record<string, Record<number, number>>; blocked: string[]; seconds: number; kinds?: Record<string, { dest: string[]; from: string[] }> };
@@ -169,7 +169,7 @@ changes.on('change', (id: string) => {
 // The login a run may use for an offer: its lender's, if selected for the run and still offered.
 export function use(inst: Instance, run: number, offer: string): { email: string; login: Login } {
   const { by, logins: ticked } = lender(inst, run);
-  if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is outside this run's selected series credentials; only its owner, ${by}, changes the ceiling for future runs`);
+  if (!ticked.includes(offer)) throw new HttpError(403, `${offer} is outside this run's selected series credentials; only its owner, ${by}, changes series credentials for future runs`);
   const login = logins(by).find(l => l.offers.some(o => o.id === offer));
   if (!login) throw Object.assign(new HttpError(409, `${by} no longer has a login offering ${offer}: they sign in again on the Logins page, and the instance carries on`), { login: offer.startsWith('web:') ? offer : offer.split(':')[0] });
   return { email: by, login };

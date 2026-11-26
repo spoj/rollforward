@@ -232,7 +232,7 @@ async function resolveCost(
 
 export async function serverCall(
   serviceName: 'openrouter' | 'exa', path: string, json: Record<string, any>,
-  cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000,
+  cause: { kind: 'website-check' | 'try'; site?: string; person: string }, timeoutMs = 120_000, checkpoint?: () => void,
 ): Promise<{ ok: boolean; status: number; data: any; cost: number; estimated: boolean }> {
   const s = serviceName === 'openrouter' ? openrouter : exa;
   const apiKey = s === openrouter ? serverKey() : process.env[s.key] ?? '';
@@ -240,22 +240,42 @@ export async function serverCall(
   const out = s.check({ method: 'POST', url, headers: { 'content-type': 'application/json' }, json, body: raw }) ?? json;
   const target = `${upstreams[s.host] ?? `https://${s.host}`}${url.pathname}${url.search}`;
   const redact = (msg: string) => apiKey ? msg.replaceAll(apiKey, '[redacted]') : msg;
-  let r: Response | undefined, text = '', failed: Error | undefined;
+  let r: Response | undefined, text = '', failed: Error | undefined, abortedBetweenAttempts = false;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
-    r = await fetch(target, {
-      method: 'POST', signal: AbortSignal.timeout(timeoutMs),
-      headers: { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'content-type': 'application/json' },
-      body: JSON.stringify(out),
-    });
+    for (let attempt = 0; ; attempt++) {
+      checkpoint?.();
+      r = await fetch(target, {
+        method: 'POST', signal,
+        headers: { authorization: `Bearer ${apiKey}`, 'x-api-key': apiKey, 'content-type': 'application/json' },
+        body: JSON.stringify(out),
+      });
+      if (s === openrouter && r.status === 429) {
+        const delay = openrouter.retryDelayMs(attempt, r.headers.get('retry-after'));
+        if (delay !== undefined) {
+          await r.body?.cancel().catch(() => {});
+          if (await openrouter.sleepAbortable(delay, signal)) {
+            checkpoint?.();
+            continue;
+          }
+          abortedBetweenAttempts = true;
+          signal.throwIfAborted();
+        }
+      }
+      break;
+    }
     text = await providerText(r);
   } catch (e) {
+    if (e instanceof HttpError) throw e;
     failed = new Error(redact((e as Error).message));
   }
   const type = r?.headers.get('content-type') ?? '', events = parseEvents(text);
   const headers: Record<string, string> = {};
   r?.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
   if (s === openrouter && r && !failed) keyOut(apiKey, r.status, events.at(-1), 'POST');
-  const { cost, estimated } = await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
+  const { cost, estimated } = abortedBetweenAttempts
+    ? { cost: 0, estimated: false }
+    : await resolveCost(s, 'POST', url.pathname, json, r?.status ?? 502, headers, type, events, Buffer.byteLength(text), !!failed, apiKey);
   if ((!failed && r!.status < 400) || cost > 0 || estimated) {
     recordCost({
       at: new Date().toISOString(), by: 'server', service: serviceName, kind: cause.kind,
@@ -544,10 +564,20 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       set.add(fn);
       return () => set!.delete(fn);
     };
+    const verifyModelKey = () => {
+      if (a.stopped || !current()) throw new HttpError(409, 'run stopped');
+      if (s === openrouter) {
+        const now = logins(runner).find(l => l.id === 'openrouter');
+        const nowEnabled = !!now?.enabled;
+        if (mine ? (!nowEnabled || now!.since !== mine.since || loginGeneration(now) !== loginGeneration(mine) || now!.expired) : nowEnabled)
+          throw new HttpError(409, 'the selected model key changed before retrying; retry under current consent');
+      }
+    };
     try {
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
-        auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, registerAbort,
+        auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
+        beforeRetry: s === openrouter ? verifyModelKey : undefined,
         location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
       });
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
@@ -615,29 +645,68 @@ function maxKeepBytes(): number {
 
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
-  service?: boolean; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
+  service?: boolean; retry429?: boolean; beforeRetry?: () => void; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
     // X-RF- headers are the server's, X_RF_ too, which some servers read as the same.
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => k !== 'authorization' && k !== 'host' && !HOP.includes(k) && !/^x[-_]rf[-_]/.test(k)));
-    let settled = false, unregister: (() => void) | undefined;
+    let settled = false, unregister: (() => void) | undefined, retryTimer: NodeJS.Timeout | undefined;
+    const clearRetry = () => { if (retryTimer) { clearTimeout(retryTimer); retryTimer = undefined; } };
     const done = (v: { status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }) => {
       if (settled) return;
       settled = true;
+      clearRetry();
       unregister?.();
       ok(v);
     };
     const die = (e: Error) => {
       if (settled) return;
       settled = true;
+      clearRetry();
       unregister?.();
       fail(e);
     };
-    const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
-      // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
-      method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
-    }, r => {
-      if (r.headers.location) o.location(r.headers.location);
+    const canRetry429 = !!o.retry429 && (o.body !== undefined || ['GET', 'HEAD', 'OPTIONS'].includes(req.method!));
+    const sendAttempt = (attempt: number) => {
+      if (settled) return;
+      unregister?.();
+      unregister = undefined;
+      if (attempt > 0 && o.beforeRetry) {
+        try {
+          o.beforeRetry();
+        } catch (e) {
+          return die(e as Error);
+        }
+      }
+      const up = (target.startsWith('https:') ? httpsRequest : httpRequest)(target, {
+        // A chunked body goes on chunked: Node sends a GET's, DELETE's or OPTIONS' otherwise unframed, as a request of its own.
+        method: req.method, headers: { ...headers, ...(o.body ? { 'content-length': String(o.body.length) } : req.headers['transfer-encoding'] && { 'transfer-encoding': 'chunked' }), ...o.auth },
+      }, r => {
+        if (canRetry429 && r.statusCode === 429 && !res.destroyed && !res.closed) {
+          const delay = openrouter.retryDelayMs(attempt, r.headers['retry-after']);
+          if (delay !== undefined) {
+            r.resume();
+            unregister?.();
+            unregister = undefined;
+            const cancelWait = () => {
+              clearRetry();
+              if (settled) return;
+              res.destroy();
+              done({ status: 429, bytes: 0, type: '', text: '', events: [], headers: r.headers });
+            };
+            if (o.service) unregister = o.registerAbort?.(cancelWait);
+            res.once('close', cancelWait);
+            retryTimer = setTimeout(() => {
+              retryTimer = undefined;
+              res.off('close', cancelWait);
+              unregister?.();
+              unregister = undefined;
+              sendAttempt(attempt + 1);
+            }, delay);
+            return;
+          }
+        }
+        if (r.headers.location) o.location(r.headers.location);
       // A status Node won't send on, such as 099, fails the request, as an unreadable answer does below.
       try {
         res.writeHead(r.statusCode!, Object.fromEntries(Object.entries(r.headers).filter(([k]) => !HOP.includes(k))));
@@ -788,20 +857,22 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
         } else die(e);
       });
     });
-    if (o.service) unregister = o.registerAbort?.(() => up.destroy(new Error('run stopped')));
-    up.on('error', e => {
-      if (settled) return;
-      if (!o.service) return die(e);
-      if (res.headersSent) res.destroy();
-      else res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('provider request failed\n');
-      done({ status: 502, bytes: 0, type: '', text: '', events: [], headers: {}, cut: true });
-    });
-    if (o.body) up.end(o.body);
-    else {
-      if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });
-      req.on('error', e => up.destroy(e));
-      if (o.digest) up.once('close', () => req.resume());
-      req.pipe(up);
-    }
+      if (o.service) unregister = o.registerAbort?.(() => up.destroy(new Error('run stopped')));
+      up.on('error', e => {
+        if (settled) return;
+        if (!o.service) return die(e);
+        if (res.headersSent) res.destroy();
+        else res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' }).end('provider request failed\n');
+        done({ status: 502, bytes: 0, type: '', text: '', events: [], headers: {}, cut: true });
+      });
+      if (o.body) up.end(o.body);
+      else {
+        if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });
+        req.on('error', e => up.destroy(e));
+        if (o.digest) up.once('close', () => req.resume());
+        req.pipe(up);
+      }
+    };
+    sendAttempt(0);
   });
 }

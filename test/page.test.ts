@@ -1253,7 +1253,7 @@ test("Logins shows what needs you first, then a line for each kind, Microsoft 36
   assert.deepEqual((await ticks()).slice(0, 3), ['all:true', 'm365:onedrive:true', 'm365:site:s1:true'], "the group's tick ticks its sources");
   await page.click('#pv details.tgroup input[value="m365:onedrive"]');
   assert.deepEqual((await ticks()).slice(0, 3), ['all:false', 'm365:onedrive:false', 'm365:site:s1:true'], 'and follows them');
-  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Series credential ceiling'], 'By clicking Start, you explicitly consent to this series-wide selection.']);
+  assert.deepEqual([await page.locator('#pv h3').allTextContents(), await page.textContent('#pv .consent')], [['Label', 'Series credentials'], 'By clicking Start, you explicitly consent to this series-wide selection.']);
   await page.mouse.click(5, 5);
   rmSync(join(rf, 'connections.json'));
   rmSync(join(mine, 'logins.json'));
@@ -2851,5 +2851,64 @@ test('Enter respects aria-busy, row settings do not hang when location.hash alre
   await page.waitForFunction(() => tree.some((w: any) => w.name === 'FastGearRenamed'));
   await page.evaluate(() => renderPv());
   assert.equal(await page.inputValue('#wname'), 'FastGearRenamed');
+  await page.click('#pv [data-act=unpv]');
+});
+
+test('composer shows distinct hints, placeholders, and buttons for non-owner and owner without execution consent', async () => {
+  const { id: ws } = await page.evaluate(async () => (await fetch('/api/workspaces', { method: 'POST', body: JSON.stringify({ name: 'ComposerHintWs' }) })).json());
+  // Series without consent (omitting logins): owner sees Save series credentials hint + Comment button.
+  const { id: s } = await page.evaluate(async ws => (await fetch('/api/series', { method: 'POST', body: JSON.stringify({ workspace: ws, name: 'NoConsent' }) })).json(), ws);
+  const { id: inst } = await page.evaluate(async s => (await fetch(`/api/series/${s}`, { method: 'POST', body: JSON.stringify({ label: 'ComposerHintTest', quiet: true }) })).json(), s);
+  await page.goto(`${page.url().split('#')[0]}#/${inst}`);
+  await page.waitForFunction((id: string) => cur?.i?.id === id, inst);
+  await page.waitForSelector('.compose .sub');
+  assert.equal(await page.textContent('.compose .sub'), 'Save series credentials to start runs');
+  assert.equal(await page.getAttribute('#newcomment', 'placeholder'), "Comment (won't start a run until you save series credentials)");
+  assert.equal(await page.textContent('.compose [data-act=comment]'), 'Comment');
+
+  // Non-owner view of the same instance: sees Owned by ... hint, note placeholder, Leave note button, and Request a proposal checkbox.
+  await page.evaluate(() => {
+    const orig = { owner: data.owner, starts: data.starts };
+    data.owner = { ...data.owner, by: 'bob@demo.test' };
+    data.starts = false;
+    render();
+    (window as any).__origCompose = orig;
+  });
+  assert.match((await page.textContent('.compose .sub')) ?? '', /^Owned by .+ — comments here are notes and won't start a run$/);
+  assert.match((await page.getAttribute('#newcomment', 'placeholder')) ?? '', /^A note for /);
+  assert.equal(await page.textContent('.compose [data-act=comment]'), 'Leave note');
+  assert.ok(await page.$('#comment-request'));
+  await page.evaluate(() => {
+    const orig = (window as any).__origCompose;
+    data.owner = orig.owner;
+    data.starts = orig.starts;
+    delete (window as any).__origCompose;
+    render();
+  });
+});
+
+test('markdown preview resolves relative image paths and dialog preserves scrollLeft on redraw', async () => {
+  await page.evaluate(() => {
+    pv = { title: 'notes.md', path: 'working/sub/notes.md', md: true, text: '![c](chart.png)\n![amp](a&b.png)\n![u](../../upload/x.png)\n![esc](../../../etc/passwd.png)\n![trav](working/../../x.png)\n![ext](https://evil.test/a.png)' };
+    renderPv();
+  });
+  const imgs = await page.evaluate(() => [...document.querySelectorAll('#pv img.md')].map(i => ({ file: i.getAttribute('data-file'), src: i.getAttribute('src') })));
+  const id = await page.evaluate(() => cur.i.id);
+  assert.deepEqual(imgs, [
+    { file: 'working/sub/chart.png', src: `/files/${id}/working/sub/chart.png` },
+    { file: 'working/sub/a&b.png', src: `/files/${id}/working/sub/a%26b.png` },
+    { file: 'upload/x.png', src: `/files/${id}/upload/x.png` },
+  ]);
+
+  // Dialog .pvb preserves scrollLeft across a live redraw.
+  await page.evaluate(() => {
+    pv = { title: 'wide.xlsx', path: 'working/wide.xlsx', sheets: [{ name: 'S1', rows: [Array.from({ length: 40 }, (_, i) => `column_${i}_value`)] }], sheet: 0 };
+    renderPv();
+    const b = document.querySelector('#pv .pvb') as HTMLElement;
+    b.scrollLeft = 120;
+    renderPv();
+  });
+  const left = await page.evaluate(() => (document.querySelector('#pv .pvb') as HTMLElement).scrollLeft);
+  assert.ok(left > 0, `expected scrollLeft > 0 after redraw, got ${left}`);
   await page.click('#pv [data-act=unpv]');
 });

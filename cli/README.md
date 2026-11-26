@@ -2,13 +2,18 @@
 
 People's command line for [rollforward](https://github.com/spoj/rollforward): what its page does, from a shell or a desktop agent, as you.
 
-    npm i -g @rfany/rf
-    rf login https://rollforward.example.com
+Run with `npx` so you always stay on the latest version automatically:
+
+    npx @rfany/rf@latest login https://rollforward.example.com
+
+Or use short-lived Entra ID tokens via Azure CLI (no static token saved to disk; requires HTTPS off loopback and an explicit `--resource api://<app-id>`, plus an initial browser sign-in to link your account and establish run-owner sign-in):
+
+    npx @rfany/rf@latest login https://rollforward.example.com --az --resource api://<app-id>
 
 rf opens the page, which asks you to allow it if it shows the same code as rf; or make a token on the page, under Tokens, and
-`rf login URL TOKEN`. `rf` alone lists the commands and `rf help COMMAND` gives one's usage; `rf help` is the guide for an agent, read before it first uses rf. Without saved config, help works offline; once signed in, it reads your current capabilities from the server.
+`npx @rfany/rf@latest login URL TOKEN`. `rf` alone lists the commands and `rf help COMMAND` gives one's usage; `rf help` is the guide for an agent, read before it first uses rf. Without saved config, help works offline; once signed in, it reads your current capabilities from the server.
 
-`rf series owner WORKSPACE/SERIES EMAIL` explicitly transfers the whole series, not one instance; only its current owner or a workspace manager may do it. Old runs stop and execution consent is cleared. The incoming owner selects a series-wide ceiling with `rf series credentials WORKSPACE/SERIES --set OFFER,... --autonomous false`, or `--clear` for an explicit empty selection. The owner's acts and answers by whom the agent's ask named start runs under current consent. Other collaborators' words stay notes. Scheduled/autonomous execution needs `--autonomous true`. `rf new instance` never changes credentials; `rf new task` without `--creds` or `--clear` establishes no execution consent.
+`rf series owner WORKSPACE/SERIES EMAIL` explicitly transfers the whole series, not one instance; only its current owner or a workspace manager may do it. Old runs stop and execution consent is cleared. The incoming owner selects series credentials with `rf series credentials WORKSPACE/SERIES --set OFFER,... --autonomous false`, or `--clear` for an explicit empty selection. The owner's acts and answers by whom the agent's ask named start runs under current consent. Other collaborators' words stay notes. Scheduled/autonomous execution needs `--autonomous true`. `rf new instance` never changes credentials; `rf new task` without `--creds` or `--clear` establishes no execution consent.
 
 `rf site ask NAME WORKSPACE REASON` asks its owners to use your login there, or approves it at once where you may. `rf grants` describes the system and what runs may do; general platforms and high-risk or failed checks need an admin. Only admins allow hosts, with `rf logins allow SITE HOST --person EMAIL`; you remove one with `rf logins disallow SITE HOST`.
 

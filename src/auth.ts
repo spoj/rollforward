@@ -1,9 +1,9 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, randomBytes, randomUUID, timingSafeEqual, verify, type JsonWebKey } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HttpError } from './store.ts';
-import { forgetPerson, isIn, key, readJson, rfDir, writeJson } from './system.ts';
+import { everyone, forgetPerson, isIn, key, readJson, rfDir, tree, writeJson } from './system.ts';
 import { forgetLogins, logins, saveLogin, type Offer } from './logins.ts';
 import { keepSignIn } from './entra.ts';
 import { themeLogo } from './theme.ts';
@@ -15,7 +15,7 @@ import { themeLogo } from './theme.ts';
 // Admins manage people and skills, from rf, and grant users capabilities.
 export type Role = 'admin' | 'user';
 export const ROLES: Role[] = ['admin', 'user'];
-export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; created?: string; last_login?: string };
+export type User = { name?: string; role: Role; disabled?: boolean; sub?: string; oid?: string; groups?: string[]; epoch?: number; revoked_before?: number; revoked_epoch?: number; created?: string; last_login?: string };
 export type Me = { email: string; name: string; role: Role; groups: string[] };
 // Capabilities beyond what every user has, each granted by admins to people and Entra groups: publish, pushing skills, which every
 // run loads; create, making workspaces; and keepalive, keeping one's website logins alive (browsers.ts), which loads the website
@@ -54,6 +54,7 @@ const entraScope = (scope: string[]) => ['openid', 'email', 'offline_access', ..
 export type EntraLogin = { id: string; kind: string; name: string; scope: string[]; offers?: Offer[] };
 const admins = new Set((env.RF_ADMINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 const domains = (env.RF_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const apiScope = (env.RF_API_SCOPE ?? 'access_as_user').trim();
 const SESSION_MS = Number(env.RF_SESSION_HOURS ?? 12) * 3_600_000;
 const secure = oidc.publicUrl.startsWith('https:');
 
@@ -61,13 +62,25 @@ export function users(): Record<string, User> {
   return readJson<Record<string, User>>('users.json', {});
 }
 
+const revokedPrincipals = () => readJson<Record<string, number>>('revoked-principals.json', {});
+function recordRevocation(email: string, oid?: string, at = Date.now()) {
+  const rev = revokedPrincipals();
+  rev[email] = Math.max(rev[email] ?? 0, at);
+  if (oid) rev[oid] = Math.max(rev[oid] ?? 0, at);
+  writeJson('revoked-principals.json', rev);
+}
+
 export function upsertUser(email: string, change: Partial<User>): User {
   const all = users(), id = email.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+$/.test(id)) throw new HttpError(400, `not an email address: ${email}`);
   // A new person's epoch is the time, so a cookie from someone of that address removed before is not theirs.
   all[id] = { role: 'user', created: new Date().toISOString(), ...(!all[id] && { epoch: Date.now() }), ...all[id], ...change };
-  // Disabling: a new epoch makes every cookie signed for the old one stop working.
-  if (change.disabled) all[id].epoch = (all[id].epoch ?? 0) + 1;
+  // Disabling: a new epoch makes every cookie signed for the old one stop working, and revoked_before invalidates prior JWTs.
+  if (change.disabled) {
+    all[id].epoch = (all[id].epoch ?? 0) + 1;
+    all[id].revoked_before = Date.now();
+    recordRevocation(id, all[id].oid, all[id].revoked_before);
+  }
   writeJson('users.json', all);
   return all[id];
 }
@@ -75,6 +88,7 @@ export function upsertUser(email: string, change: Partial<User>): User {
 export function removeUser(email: string) {
   const all = users();
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
+  recordRevocation(email, all[email].oid, Date.now());
   delete all[email];
   writeJson('users.json', all);
   forgetPerson(email);
@@ -116,13 +130,25 @@ function bearer(req: IncomingMessage, url: URL, record = true): Me | null {
   return asPerson(t.email, u);
 }
 
-const admitted = new WeakMap<IncomingMessage, { me: Me; url: URL; caps: string[] }>();
+const admitted = new WeakMap<IncomingMessage, { me: Me; url: URL; caps: string[]; entraJwt?: { email: string; oid: string; epoch: number; exp: number; groups: string[] } }>();
 
 // Revalidate the credential, not just its person; pre-body permission checks cannot survive changed authority.
 export function recheckRequest(req: IncomingMessage) {
   const before = admitted.get(req);
   if (!before) return; // Sandbox requests authenticate by their run, not a person's credential.
-  const now = bearer(req, before.url, false) ?? session(req), { me, caps } = before;
+  let now: Me | null;
+  if (before.entraJwt) {
+    const j = before.entraJwt;
+    const u = j.exp > Date.now() ? users()[j.email] : undefined;
+    if (!u || u.disabled || u.oid !== j.oid || (u.epoch ?? 0) !== j.epoch) now = null;
+    else {
+      const p = asPerson(j.email, u);
+      now = p ? { ...p, groups: p.groups.filter(g => j.groups.includes(g)) } : null;
+    }
+  } else {
+    now = bearer(req, before.url, false) ?? session(req);
+  }
+  const { me, caps } = before;
   if (!now) throw new HttpError(401, 'sign in first');
   if (now.email !== me.email || now.role !== me.role || now.groups.length !== me.groups.length || now.groups.some(g => !me.groups.includes(g)) || caps.some(c => !can(now, c)))
     throw new HttpError(403, 'permissions changed during the request; try again');
@@ -132,6 +158,9 @@ export function signOutEverywhere(email: string) {
   const all = users();
   if (!all[email]) throw new HttpError(404, `no user ${email}`);
   all[email].epoch = (all[email].epoch ?? 0) + 1;
+  all[email].revoked_before = Date.now();
+  all[email].revoked_epoch = all[email].epoch;
+  recordRevocation(email, all[email].oid, all[email].revoked_before);
   writeJson('users.json', all);
 }
 
@@ -253,7 +282,155 @@ export async function cli(req: IncomingMessage, res: ServerResponse, url: URL) {
 <form method="post" action="/cli"><input type="hidden" name="code" value="${esc(a.code)}"><button class="ms" name="allow" value="yes">Allow</button><p></p><button class="ms" name="allow" value="no">Deny</button></form>`);
 }
 
-let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; end_session_endpoint?: string } | undefined;
+let discovered: { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri?: string; end_session_endpoint?: string } | undefined;
+
+type Jwk = JsonWebKey & { kid?: string; use?: string; alg?: string };
+let jwksCache: { keys: Jwk[]; fetchedAt: number; uri: string } | undefined;
+const JWKS_TTL_MS = 3_600_000;
+const JWKS_MIN_REFRESH_MS = 60_000;
+const JWT_ALGS: Record<string, string> = { RS256: 'RSA-SHA256', RS384: 'RSA-SHA384', RS512: 'RSA-SHA512' };
+
+async function fetchJwks(uri: string, force = false): Promise<Jwk[]> {
+  if (!/^https:/.test(uri) && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(uri)) throw new HttpError(502, 'the jwks_uri must use https');
+  const now = Date.now();
+  if (!force && jwksCache && jwksCache.uri === uri && now - jwksCache.fetchedAt < JWKS_TTL_MS) return jwksCache.keys;
+  if (force && jwksCache && jwksCache.uri === uri && now - jwksCache.fetchedAt < JWKS_MIN_REFRESH_MS) return jwksCache.keys;
+  const r = await fetch(uri, { signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new HttpError(502, `Microsoft's signing keys did not load (${r.status})`);
+  const body = await r.json().catch(() => ({})) as { keys?: Jwk[] };
+  if (!Array.isArray(body.keys)) throw new HttpError(502, 'invalid JWKS response');
+  jwksCache = { keys: body.keys, fetchedAt: now, uri };
+  return body.keys;
+}
+
+function expectedTenantId(issuerUrl: string): string | undefined {
+  const tid = /^https:\/\/(?:login\.microsoftonline\.com|sts\.windows\.net)\/([^/]+)/i.exec(issuerUrl)?.[1];
+  if (!tid || ['common', 'organizations', 'consumers'].includes(tid.toLowerCase())) return undefined;
+  return tid;
+}
+
+function issuerMatches(iss: unknown, expected: string, ver?: unknown): boolean {
+  if (typeof iss !== 'string') return false;
+  const norm = (s: string) => s.replace(/\/$/, '');
+  const nIss = norm(iss), nExp = norm(expected);
+  const tid = expectedTenantId(expected);
+  if (!tid) return nIss === nExp;
+  if (ver === '2.0') return nIss === `https://login.microsoftonline.com/${tid}/v2.0`;
+  if (ver === '1.0') return nIss === `https://sts.windows.net/${tid}`;
+  return nIss === nExp;
+}
+
+function isSigningRsaJwk(k: Jwk, alg: string): boolean {
+  if (k.kty !== 'RSA') return false;
+  if (k.use && k.use !== 'sig') return false;
+  if (Array.isArray(k.key_ops) && !k.key_ops.includes('verify')) return false;
+  if (k.alg && k.alg !== alg) return false;
+  return true;
+}
+
+export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: number; oid: string; epoch: number; jwtGroups: string[] }> {
+  const parts = token.split('.');
+  if (parts.length !== 3) throw new HttpError(401, 'invalid bearer token');
+  const [headerB64, payloadB64, sigB64] = parts;
+  let header: Record<string, any>, claims: Record<string, any>;
+  try {
+    header = JSON.parse(unb64(headerB64));
+    claims = JSON.parse(unb64(payloadB64));
+  } catch {
+    throw new HttpError(401, 'invalid bearer token');
+  }
+  if (!header || typeof header !== 'object' || Array.isArray(header) || !claims || typeof claims !== 'object' || Array.isArray(claims)) {
+    throw new HttpError(401, 'invalid bearer token');
+  }
+  const nodeAlg = typeof header.alg === 'string' ? JWT_ALGS[header.alg] : undefined;
+  if (!nodeAlg) throw new HttpError(401, 'unsupported bearer token algorithm');
+
+  const d = await discovery();
+  if (!d.jwks_uri) throw new HttpError(502, 'OIDC discovery has no jwks_uri');
+  let keys = await fetchJwks(d.jwks_uri);
+  const matchKey = (k: Jwk) => isSigningRsaJwk(k, header.alg) && (!header.kid || k.kid === header.kid);
+  let candidates = keys.filter(matchKey);
+  if (!candidates.length && header.kid) {
+    keys = await fetchJwks(d.jwks_uri, true);
+    candidates = keys.filter(matchKey);
+  }
+  const signed = Buffer.from(`${headerB64}.${payloadB64}`);
+  const sig = Buffer.from(sigB64, 'base64url');
+  const verified = candidates.some(jwk => {
+    try {
+      return verify(nodeAlg, signed, createPublicKey({ key: jwk, format: 'jwk' }), sig);
+    } catch {
+      return false;
+    }
+  });
+  if (!verified) throw new HttpError(401, 'invalid bearer token signature');
+
+  const now = Date.now();
+  if (typeof claims.exp !== 'number' || !(claims.exp * 1000 > now)) throw new HttpError(401, 'bearer token has expired');
+  if (typeof claims.nbf === 'number' && claims.nbf * 1000 > now + 60_000) throw new HttpError(401, 'bearer token is not yet valid');
+  if (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat)) throw new HttpError(401, 'bearer token missing iat');
+
+  // Reject ID tokens and app-only tokens; require the delegated RF API scope.
+  if (claims.nonce !== undefined || claims.idtyp === 'app') throw new HttpError(401, 'bearer token is not a delegated API access token');
+  const scopes = typeof claims.scp === 'string' ? claims.scp.trim().split(/\s+/).filter(Boolean) : [];
+  if (!apiScope || !scopes.includes(apiScope)) throw new HttpError(401, 'bearer token lacks required delegated scope');
+  if (claims.ver !== undefined && claims.ver !== '1.0' && claims.ver !== '2.0') throw new HttpError(401, 'unsupported bearer token version');
+
+  const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!oidc.clientId || (!aud.includes(oidc.clientId) && !aud.includes(`api://${oidc.clientId}`))) throw new HttpError(401, 'bearer token audience does not match');
+  if (!issuerMatches(claims.iss, d.issuer, claims.ver)) throw new HttpError(401, 'bearer token issuer does not match');
+
+  if (typeof claims.tid !== 'string' || !claims.tid || typeof claims.oid !== 'string' || !claims.oid) {
+    throw new HttpError(403, 'bearer token missing stable tenant/object identifier');
+  }
+  const reqTid = expectedTenantId(d.issuer);
+  if (reqTid && claims.tid !== reqTid) throw new HttpError(401, 'bearer token tenant does not match');
+
+  const oid = `${claims.tid}/${claims.oid}`;
+  const all = users();
+  const rev = revokedPrincipals();
+  if (rev[oid] && claims.iat * 1000 < rev[oid]) {
+    throw new HttpError(401, 'this token was revoked; sign in again');
+  }
+  const oidMatches = Object.entries(all).filter(([, u]) => u.oid === oid).map(([k]) => k);
+  if (oidMatches.length > 1) throw new HttpError(403, 'ambiguous Microsoft account binding; sign in via the browser');
+  if (oidMatches.length === 0) throw new HttpError(403, 'sign in via the browser first to link this Microsoft account');
+  const email = oidMatches[0];
+  if (domains.length) {
+    if (!domains.includes(email.split('@')[1])) {
+      throw new HttpError(403, `${email} is not in an allowed domain`);
+    }
+    const tokenEmail = String(claims.preferred_username ?? claims.upn ?? claims.email ?? '').toLowerCase();
+    if (!tokenEmail.includes('@') || !domains.includes(tokenEmail.split('@')[1])) {
+      throw new HttpError(403, `${tokenEmail || 'bearer token'} is not in an allowed domain`);
+    }
+  }
+
+  const known = all[email];
+  // Fence fresh JWT admission if an older server incremented `epoch` (e.g. sign-out during rollback) without updating `revoked_epoch`.
+  if (known.revoked_epoch === undefined) {
+    known.revoked_epoch = known.epoch ?? 0;
+    writeJson('users.json', all);
+  } else if ((known.epoch ?? 0) > known.revoked_epoch) {
+    const floor = Math.max(known.revoked_before ?? 0, Date.now());
+    known.revoked_before = floor;
+    known.revoked_epoch = known.epoch ?? 0;
+    recordRevocation(email, known.oid, floor);
+    writeJson('users.json', all);
+  }
+  const revokedBefore = Math.max(rev[oid] ?? 0, rev[email] ?? 0, known.revoked_before ?? 0);
+  if (revokedBefore && claims.iat * 1000 < revokedBefore) {
+    throw new HttpError(401, 'this token was revoked; sign in again');
+  }
+  if (known.disabled) throw new HttpError(403, `${email} is disabled`);
+
+  // Never auto-provision or mutate stored users/groups from replayable bearer JWTs; fail closed when groups claim is absent.
+  const jwtGroups = Array.isArray(claims.groups) ? claims.groups.map(String) : [];
+  const baseMe = asPerson(email, known);
+  if (!baseMe) throw new HttpError(403, `${email} is disabled`);
+  const me: Me = { ...baseMe, groups: baseMe.groups.filter(g => jwtGroups.includes(g)) };
+  return { me, exp: claims.exp * 1000, oid, epoch: known.epoch ?? 0, jwtGroups };
+}
 
 async function discovery() {
   if (discovered) return discovered;
@@ -302,6 +479,9 @@ function expired(req: IncomingMessage, res: ServerResponse) {
 async function finishSignIn(res: ServerResponse, claims: any, p: Pending, refresh?: string) {
   const d = await discovery(), aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (claims.iss !== d.issuer || !aud.includes(oidc.clientId) || !(claims.exp * 1000 > Date.now()) || claims.nonce !== p.nonce) return page(res, 401, 'The sign-in token did not check out.');
+  const reqTid = expectedTenantId(d.issuer);
+  if (reqTid && claims.tid && claims.tid !== reqTid) return page(res, 401, 'The sign-in token tenant does not match.');
+  if (claims.xms_edov === false) return page(res, 403, 'Your email address is not verified by your directory.');
   const email = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').toLowerCase();
   if (!email.includes('@')) return page(res, 403, 'Your account has no email address.');
   if (domains.length && !domains.includes(email.split('@')[1])) return page(res, 403, `${email} is not in an allowed domain.`);
@@ -380,14 +560,25 @@ export async function authenticate(req: IncomingMessage, res: ServerResponse, ur
     await callback(req, res, url);
   } else if (url.pathname === '/auth/cli' && req.method === 'POST') await ask(req, res);
   else if (url.pathname === '/auth/cli/poll' && req.method === 'POST') await collect(req, res);
-  else if (url.pathname === '/auth/logout' && req.method === 'POST') {
+  else if (url.pathname === '/auth/info' && req.method === 'GET') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ clientId: oidc.clientId, resource: oidc.clientId ? `api://${oidc.clientId}` : '', scope: oidc.clientId ? `api://${oidc.clientId}/${apiScope}` : '' }));
+  } else if (url.pathname === '/auth/logout' && req.method === 'POST') {
     const end = (await discovery().catch(() => undefined))?.end_session_endpoint;
     res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': cookie('rf_session', '', 0) });
     res.end(JSON.stringify({ next: end ? `${end}?post_logout_redirect_uri=${encodeURIComponent(oidc.publicUrl + '/')}` : '/' }));
   } else {
-    const me = bearer(req, url, record) ?? session(req);
+    const jwtMatch = /^Bearer ([^\s.]+\.[^\s.]+\.[^\s.]+)$/.exec(req.headers.authorization ?? '');
+    let me = bearer(req, url, record);
+    let entraJwt: { email: string; oid: string; epoch: number; exp: number; groups: string[] } | undefined;
+    if (!me && jwtMatch && record) {
+      const verified = await verifyEntraJwt(jwtMatch[1]);
+      me = verified.me;
+      entraJwt = { email: verified.me.email, oid: verified.oid, epoch: verified.epoch, exp: verified.exp, groups: verified.jwtGroups };
+    }
+    me ??= session(req);
     if (me) {
-      admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)) });
+      admitted.set(req, { me, url, caps: CAPS.filter(c => can(me, c)), ...(entraJwt && { entraJwt }) });
       return me;
     }
     if (!['/', '/cli'].includes(url.pathname) || req.method !== 'GET') throw new HttpError(401, 'sign in first');

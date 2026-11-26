@@ -2,7 +2,7 @@
 // Published to npm as @rfany/rf, from cli/. PATH is workspace/series/label, as `rf ls` prints it.
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { homedir, hostname } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -14,7 +14,7 @@ process.on('uncaughtException', e => {
 });
 
 const usage = (c?: string, vpn = false, admin = false) => {
-  const all = `rf login URL [TOKEN]                without a TOKEN, through the browser: type rf's code on the page, and allow it
+  const all = `rf login URL [TOKEN] [--az [--resource URI]]   without a TOKEN, through the browser; with --az, short-lived Entra tokens via Azure CLI (no token on disk); run via npx @rfany/rf@latest
 rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, owner, asks waiting and wakes;
                                   --mine, only open instances of series you own
 rf waiting [--json]               what waits on you: asks, proposals, requests and expired logins; also note notices (FYI).
@@ -61,7 +61,7 @@ rf series owner SERIES [EMAIL] [--json]   the whole series' owner; EMAIL transfe
                                   clearing consent; only its current owner or a workspace manager may transfer it
 rf series credentials SERIES [--set OFFER,...|--clear] [--autonomous true|false] [--json]
                                   credentials for every instance; only the owner saves consent, explicitly including [] with
-                                  --clear; saving requires --autonomous true|false; no credentials or schedules transfer
+                                  --clear; saving requires --autonomous true|false; no credentials transfer (schedules pause until opted in)
 rf rename PATH NAME               an instance, a series or a workspace, by its path
 rf new task WORKSPACE [LABEL] [--creds OFFER,...|--clear] [--autonomous true|false] [--comment TEXT [--wake]]   a one-off task, Untitled until LABEL or its
                                   first comment names it; --wake starts its run on the comment; without --creds or --clear,
@@ -233,7 +233,7 @@ Usual work
 - Give an input or a corrected output: rf upload PATH FILE [--onto ITEM] [--output], with --wake on the last for a run on them
   all.
 - Start an instance: rf new instance SERIES LABEL --wake, only as the series owner. Scheduled wakes need that owner's
-  autonomous opt-in and keep their authorized credential snapshot; collaborators' wakes become requests for the owner.
+  autonomous opt-in and use their current series credentials at fire time; collaborators' wakes become requests for the owner.
   A one-off: rf new task WORKSPACE --clear --comment TEXT --wake. Promotion with rf new series PATH NAME keeps its owner.
 - Tell a series something for its runs, or while no instance is open: rf comment SERIES TEXT, which starts no run.
   rf comment SERIES lists its notes; rf comment --mine lists your notes. Settle an informing note with
@@ -285,7 +285,7 @@ if (cmd === 'comment' || cmd === 'settle') {
 } else for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i] === '-d' ? 'delay' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all', 'az'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -300,10 +300,69 @@ if ((!cmd || cmd === 'help') && !existsSync(config)) {
   process.exit();
 }
 if (cmd !== 'login' && !existsSync(config)) throw new Error('sign in first: rf login URL');
-let { url, token } = cmd === 'login' ? { url: args[0]?.replace(/\/$/, ''), token: args[1] } : JSON.parse(readFileSync(config, 'utf8'));
+let { url, token, auth, resource } = cmd === 'login'
+  ? { url: args[0]?.replace(/\/$/, ''), token: args[1], auth: flags.az ? 'az' : (typeof flags.auth === 'string' ? flags.auth : undefined), resource: typeof flags.resource === 'string' ? flags.resource : undefined }
+  : JSON.parse(readFileSync(config, 'utf8'));
+
+function assertSafeAzUrl(rawUrl: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`invalid server URL: ${rawUrl}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  if (parsed.protocol !== 'https:' && !isLoopback) {
+    throw new Error('--az requires https:// off loopback');
+  }
+}
+
+function assertValidAzResource(res: string) {
+  if (!res || res.startsWith('-') || !/^[A-Za-z0-9:/._-]+$/.test(res)) {
+    throw new Error('invalid --resource for --az; pass an explicit Entra resource such as --resource api://<app-id>');
+  }
+}
+
+function jwtExpMs(tok: string): number {
+  try {
+    const parts = tok.split('.');
+    if (parts.length !== 3) return 0;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload?.exp === 'number' ? payload.exp * 1000 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+let cachedAzToken: { token: string; expMs: number } | undefined;
+function bearerToken(): string {
+  if (auth === 'az') {
+    if (cachedAzToken && (cachedAzToken.expMs === 0 || cachedAzToken.expMs - Date.now() > 300_000)) {
+      return cachedAzToken.token;
+    }
+    assertSafeAzUrl(url);
+    if (!resource) throw new Error('missing resource for --az auth; run rf login URL --az --resource api://<app-id>');
+    assertValidAzResource(resource);
+    const azBin = process.env.RF_AZ_BIN || 'az';
+    const azArgs = ['account', 'get-access-token', '--resource', resource, '--query', 'accessToken', '-o', 'tsv'];
+    try {
+      const out = (process.platform === 'win32'
+        ? execFileSync('cmd.exe', ['/d', '/s', '/c', azBin, ...azArgs], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+        : execFileSync(azBin, azArgs, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })).trim();
+      if (!out) throw new Error('empty access token returned by az');
+      cachedAzToken = { token: out, expMs: jwtExpMs(out) };
+      return out;
+    } catch (e: any) {
+      const stderr = String(e?.stderr ?? '').trim();
+      throw new Error(`az account get-access-token failed: ${stderr || e.message}`);
+    }
+  }
+  return token;
+}
 
 async function api(path: string, init: RequestInit = {}, accept: number[] = []) {
-  const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${token}` } });
+  const r = await fetch(url + path, { ...init, headers: { authorization: `Bearer ${bearerToken()}` } });
   if (!r.ok && !accept.includes(r.status)) throw new Error(`${init.method ?? 'GET'} ${path}: ${r.status} ${await r.text()}`);
   return r;
 }
@@ -346,7 +405,7 @@ async function workspaceNamed(name: string) {
 const pathOf = async (id: string) => (await get('/api')).flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => `${w.name}/${s.name}/${i.label}`)))[0];
 // Explicit series-wide offer selection.
 const ticks = () => flags.clear ? [] : String(flags.creds ?? flags.set ?? '').split(',').map(o => o.trim()).filter(Boolean);
-const consent = (offers: string[]) => `, series-wide ceiling: ${offers.join(', ') || 'no credentials'}; you explicitly consent to agents acting as you`;
+const consent = (offers: string[]) => `, series credentials: ${offers.join(', ') || 'no credentials'}; you explicitly consent to agents acting as you`;
 
 // Times as this machine's clock reads them, and lengths of time and costs, for the views.
 const when = (iso: string) => new Date(iso).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' });
@@ -577,11 +636,22 @@ async function browserToken(): Promise<string> {
 }
 
 if (cmd === 'login' && url) {
-  token ??= await browserToken();
-  const me = await get('/me');
-  mkdirSync(dirname(config), { recursive: true });
-  writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
-  console.log(`signed in as ${me.email}`);
+  if (auth === 'az') {
+    assertSafeAzUrl(url);
+    resource ||= process.env.RF_AZ_RESOURCE;
+    if (!resource) throw new Error('--az requires an explicit trusted --resource api://<app-id> (or RF_AZ_RESOURCE)');
+    assertValidAzResource(resource);
+    const me = await get('/me');
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(config, JSON.stringify({ url, auth: 'az', resource }), { mode: 0o600 });
+    console.log(`signed in as ${me.email} (az)`);
+  } else {
+    token ??= await browserToken();
+    const me = await get('/me');
+    mkdirSync(dirname(config), { recursive: true });
+    writeFileSync(config, JSON.stringify({ url, token }), { mode: 0o600 });
+    console.log(`signed in as ${me.email}`);
+  }
 } else if (cmd === 'ls' && !args.length) {
   // --mine: open instances of series you own.
   const me = flags.mine && await get('/me'), rows = (await get('/api')).flatMap(w => w.series.flatMap(s => [
@@ -756,16 +826,43 @@ else if (cmd === 'comment' && args.length < 2) {
   else console.log(`${args[1]}: series owner ${s.owner ?? 'not selected'}`);
 } else if (cmd === 'series' && args[0] === 'credentials' && args.length === 2) {
   const s = await seriesAt(args[1]);
+  const fmtSched = (k: any) => `  ${k.id}  ${k.targetLabel ?? k.target}  ${k.at}${k.deadline ? ` (deadline ${k.deadline})` : ''}${k.days ? ` (${k.days.join(',')})` : ''}${k.label ? `  ${k.label}` : ''}${k.from ? `  by ${k.from}` : ''}${k.check ? `  check=${k.check}` : ''}${k.text ? `  ${k.text}` : ''}`;
   if (flags.set !== undefined || flags.clear) {
     if (!['true', 'false'].includes(String(flags.autonomous))) throw new Error('saving requires --autonomous true|false');
-    await post(`/api/series/${s.id}/credentials`, { logins: ticks(), autonomous: flags.autonomous === 'true' }, 'PUT');
+    const previewRes = await api(`/api/series/${s.id}/credentials`, {}, flags.autonomous === 'true' ? [] : [404, 405]);
+    const preview = previewRes.ok ? await previewRes.json() : null;
+    if (flags.autonomous === 'true' && !preview) {
+      throw new Error('could not load pending schedules to review before enabling autonomous runs');
+    }
+    if (flags.autonomous === 'true' && Array.isArray(preview?.schedules) && preview.schedules.length) {
+      console.log(`pending schedules to be adopted (${preview.schedules.length}):`);
+      for (const k of preview.schedules) console.log(fmtSched(k));
+    }
+    const body: Record<string, unknown> = { logins: ticks(), autonomous: flags.autonomous === 'true' };
+    if (preview?.epoch !== undefined) body.expectedEpoch = preview.epoch;
+    if (preview?.scheduleRevision) body.expectedSchedules = preview.scheduleRevision;
+    const putRes = await post(`/api/series/${s.id}/credentials`, body, 'PUT');
+    const rawText = await putRes.text();
+    let saved: any = null;
+    try { saved = JSON.parse(rawText); } catch {}
     console.log(`saved ${args[1]}${consent(ticks())}; autonomous ${flags.autonomous}`);
+    if (!preview && flags.autonomous === 'true' && Array.isArray(saved?.schedules) && saved.schedules.length) {
+      console.log(`pending schedules that will run (${saved.schedules.length}):`);
+      for (const k of saved.schedules) console.log(fmtSched(k));
+    }
   } else {
     if (flags.autonomous !== undefined) throw new Error('select credentials with --set OFFER,... or --clear');
     const mine = await get('/logins');
-    const out = { owner: s.owner, consent: s.consent, yours: mine.flatMap(l => l.offers.map(o => ({ ...o, ...(l.expired && { expired: true }) }))) };
+    const detail = await api(`/api/series/${s.id}/credentials`, {}, [404, 405]).then(async r => r.ok ? r.json() : null).catch(() => null);
+    const out = { owner: s.owner, consent: s.consent, schedules: detail?.schedules ?? [], yours: mine.flatMap((l: any) => l.offers.map((o: any) => ({ ...o, ...(l.expired && { expired: true }) }))) };
     if (flags.json) console.log(JSON.stringify(out, null, 1));
-    else console.log([`Series owner: ${out.owner ?? 'not selected'}`, out.consent ? `Series-wide ceiling: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent', 'your offers:', ...out.yours.map(o => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`)].join('\n'));
+    else console.log([
+      `Series owner: ${out.owner ?? 'not selected'}`,
+      out.consent ? `Series credentials: ${out.consent.logins.join(', ') || 'no credentials'}; autonomous ${out.consent.autonomous}` : 'No execution consent',
+      ...(out.schedules.length ? [`pending schedules (${out.schedules.length}):`, ...out.schedules.map(fmtSched)] : []),
+      'your offers:',
+      ...out.yours.map((o: any) => `  ${o.id}  ${o.name}${o.expired ? '  expired' : ''}`),
+    ].join('\n'));
   }
 } else if (cmd === 'rename' && args.length === 2) {
   const [w, s, l] = args[0].replace(/\/+$/, '').split('/');
@@ -793,7 +890,7 @@ else if (cmd === 'comment' && args.length < 2) {
   if (flags.creds !== undefined || flags.clear || flags.autonomous !== undefined) throw new Error('instance credentials were removed: use rf series credentials SERIES');
   const series = await seriesAt(args[1]);
   const { id } = await (await post(`/api/series/${series.id}`, { label: args[2], quiet: !flags.wake })).json();
-  console.log(`made ${await pathOf(id)}; series owner and ceiling unchanged${series.owner ? `; ${series.owner} starts its runs` : ''}`);
+  console.log(`made ${await pathOf(id)}; series owner and credentials unchanged${series.owner ? `; ${series.owner} starts its runs` : ''}`);
 } else if (cmd === 'new' && args[0] === 'series' && args.length === 3) {
   await post(`/api/series/${(await find(args[1])).series.id}/promote`, { name: args[2] });
   console.log(`made the series ${args[1].split('/')[0]}/${args[2]}`);
@@ -812,7 +909,7 @@ else if (cmd === 'comment' && args.length < 2) {
     if (flags.creds !== undefined || flags.clear) throw new Error('request credentials were removed: use rf series credentials SERIES');
     const r = await post(`/api/requests/${args[1]}`, { quiet: !flags.wake });
     const woke = r.headers.get('X-RF-Woke') === '1', { id } = await r.json();
-    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}; series owner and ceiling unchanged`);
+    console.log(`${woke ? 'woke' : 'made'} ${await pathOf(id)}; series owner and credentials unchanged`);
   }
 } else if (cmd === 'logins' && !args.length) {
   const all = await get('/logins');

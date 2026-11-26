@@ -30,7 +30,7 @@ import { saveSeriesSettings, seriesSettings, type SeriesSettings } from './serie
 import { openSkills, pushed, pushSkill, skills, versionFiles, versionsOf } from './skills.ts';
 import { commentAt, currentMessage, isPerson, notices, openNotes, post, waitsOn, type ScopedNote } from './messages.ts';
 import { appendMessage } from './message-store.ts';
-import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, type Active, type Request } from './waker.ts';
+import { active, archived, byToken, cancelPendingOom, cancelWake, cancelWakes, correct, drain, drained, dropRequest, held, interruptRun, kick, named, noted, queued, remove, retireSeries, resolveFor, seriesWakeChecks, setWake, standing, startWaking, startWith, stop, updating, wakes, wakesByTarget, seriesConversation, wakeWith, weekly, wakeCheckStatus, wakeCheckView, reads, CUT, LEGACY_CUT, type Active, type Request } from './waker.ts';
 
 const root = resolve(process.argv[2]);
 const app = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -214,11 +214,12 @@ function mustKeepNotes(sid: string, s = tree().series[sid]) {
   if (s.single && instances(sid).some(i => i.doc.status === 'deleted')) throw new HttpError(409, `${s.name} was deleted`);
 }
 
-function mustUnarchived(by: string, sid: string, run?: Me) {
+function mustUnarchived(by: string, sid: string, effective: Me, isRun = false) {
   const now = tree(), s = now.series[sid], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
-  const who = run ?? asPerson(by);
+  const fresh = isRun && effective ? effective : asPerson(by);
+  const who = fresh ? (effective && !isRun ? { ...fresh, groups: fresh.groups.filter(g => effective.groups.includes(g)) } : fresh) : null;
   if (!who) throw new HttpError(401, 'sign in');
-  if (!run) mustSee(who, ws);
+  if (!isRun) mustSee(who, ws);
   if (shut) throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
   return { ws, who };
 }
@@ -335,14 +336,31 @@ const proposals = (t: Tree) => Object.entries(t.workspaces).filter(([, w]) => {
   return { id, into: p.to, kind: p.kind, from: w.name, to: t.workspaces[p.to].name, series: p.series ? t.series[p.series].name : null, by: p.by, at: p.at };
 });
 
+function seriesOwnerSchedules(sid: string, seriesName: string, w8 = wakes()) {
+  const instById = new Map(labels(sid).map(l => [l.id, l.label]));
+  const targets = new Set([sid, ...instById.keys()]);
+  const schedules = Object.entries(w8.pending)
+    .filter(([, k]) => targets.has(k.target) && k.request === false)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([wid, k]) => ({
+      id: wid, target: k.target, targetLabel: instById.get(k.target) ?? seriesName,
+      at: k.at, ...(k.deadline && { deadline: k.deadline }), ...(k.label && { label: k.label }),
+      ...(k.days && { days: k.days }), from: k.from, ...(k.text && { text: k.text }), ...(k.check && { check: k.check }),
+    }));
+  const scheduleRevision = createHash('sha256').update(JSON.stringify(schedules)).digest('hex').slice(0, 16);
+  return { schedules, scheduleRevision };
+}
+
 function listing(me: Me) {
   const t = tree(), w8 = wakes(), wakesFor = wakesByTarget(w8), us = users(), instancesOf = instancesBySeries(), open = proposals(t), granted = visible(me).filter(g => ['pending', 'approved'].includes(g.state)), byName = (a: [string, { name: string }], b: [string, { name: string }]) => a[1].name.localeCompare(b[1].name);
   return Object.entries(t.workspaces).filter(([, w]) => canSee(me, w)).sort(byName).map(([id, w]) => {
     const series = Object.entries(t.series).filter(([, s]) => s.workspace === id).sort(byName).map(([sid, s]) => {
       const settings = seriesSettings(seriesDir(sid)), { owner, consent, epoch, since } = settings, person = owner && asPerson(owner, us[owner]);
       const periods = instancesOf(sid), discussion = seriesConversation(sid, periods, epoch);
+      const { scheduleRevision } = seriesOwnerSchedules(sid, s.name, w8);
       return {
         id: sid, name: s.name, archived: !!s.archived, single: !!s.single, owner: owner ?? null, ownerUnavailable: !person || !canSee(person, w), epoch, since, consent: consent ?? null,
+        scheduleRevision,
         wakes: wakesFor(sid), fired: w8.fired[sid] ?? null, notes: openNotes(discussion.notes).length,
         noteNotices: s.archived || w.archived ? [] : notices(discussion.notes, discussion.dismissed, me.email, owner, s.name),
         requests: Object.entries(w8.requests).filter(([, r]) => r.series === sid).map(([id, r]) => ({ id, ...r, who: asked(r) })),
@@ -383,7 +401,7 @@ function cachedRunsOf(i: Instance): CachedRun[] {
       const cause = slice.find(e => e.seq === (r.provenance as { cause?: number } | undefined)?.cause);
       // A run with no done is going only if it's the one going here; any other ended unlogged, cut, as its last entry tells.
       const going = !d && runningHere && a.n === r.run, end = d ?? (going ? undefined : slice.findLast(e => e.run === r.run) ?? r);
-      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : Object.values(CUT).includes(error) ? 'cut' : 'failed';
+      const error = d?.error as string | undefined, outcome = going ? 'running' : !d ? 'cut' : !error ? (d.aborted ? 'interrupted' : 'done') : (Object.values(CUT).includes(error) || LEGACY_CUT.includes(error)) ? 'cut' : 'failed';
       const estimated = d ? d.estimated === true : going && !!a.estimated;
       const exaCost = +slice.reduce((t, e) => t + (e.op === 'call' && e.run === r.run && e.name === 'exa' ? (e.cost as number | undefined) ?? 0 : 0), 0).toFixed(6);
       const calls = r.key === 'own' ? [] : slice.filter(e => e.op === 'call' && e.run === r.run && e.name === 'openrouter');
@@ -1159,6 +1177,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   if (kind === 'resolve') {
     if (!run) throw new HttpError(404, 'not found');
     const target = resolveFor(run, url.searchParams.get('path') ?? '');
+    if (!t.series[target]) {
+      const targetInst = instance(target);
+      if (targetInst.doc.status === 'deleted') throw new HttpError(404, `${targetInst.label} was deleted`);
+    }
     return send(res, 200, { id: target, kind: t.series[target] ? 'series' : 'instance' });
   }
   if (kind === 'workspaces' && !id && req.method === 'POST') {
@@ -1179,7 +1201,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     })));
   }
   // A workspace's managers let another workspace they see read it, and its managers or the other's take that off. What its agents
-  // read, that one's people see, whoever they are; a run reading it as it's taken off is cut (waker.ts leases()).
+  // read, that one's people see, whoever they are; taking a link off does not immediately stop in-flight reading runs — the narrowed
+  // view takes effect on their next run (the reading run's series owner, its workspace's managers, or admins can still manually interrupt it).
   if (kind === 'workspaces' && action === 'readers') {
     const w = t.workspaces[id], o = t.workspaces[other];
     if (req.method === 'PUT') {
@@ -1336,9 +1359,14 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const p = asPerson(email);
       return p && canSee(p, t.workspaces[s.workspace]);
     }));
+    if (action === 'credentials' && req.method === 'GET') {
+      const settings = seriesSettings(seriesDir(id));
+      const { schedules, scheduleRevision } = seriesOwnerSchedules(id, s.name);
+      return send(res, 200, { owner: settings.owner, epoch: settings.epoch, consent: settings.consent, schedules, scheduleRevision });
+    }
     if (['owner', 'credentials'].includes(action) && req.method === 'PUT') return inOrder(id, async () => {
       recheckRequest(req);
-      const { ws, who } = mustUnarchived(by, id), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
+      const { ws, who } = mustUnarchived(by, id, me), settings = seriesSettings(seriesDir(id)), at = new Date().toISOString();
       if (action === 'owner') {
         if (settings.owner !== by && !canManage(who, ws)) throw new HttpError(403, 'only the current series owner or a workspace manager transfers ownership');
         if ('logins' in payload || 'autonomous' in payload || 'consent' in payload) throw new HttpError(400, 'a transfer never grants credential consent; the new owner selects credentials separately');
@@ -1346,18 +1374,30 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (!p || !canSee(p, ws)) throw new HttpError(400, 'the owner must be enabled and see the workspace');
         if (to === settings.owner) throw new HttpError(409, `${to} already owns this series`);
         await changeAuthority(id, { version: 1, owner: to, epoch: settings.epoch + 1, since: at }, by);
+        return send(res, 200, 'ok');
       } else {
         if (settings.owner !== by) throw new HttpError(403, 'only the series owner selects credentials');
         if (!Array.isArray(payload.logins) || typeof payload.autonomous !== 'boolean') throw new HttpError(400, 'select logins explicitly, including [], and an autonomous boolean');
+        const { schedules, scheduleRevision } = seriesOwnerSchedules(id, tree().series[id].name);
+        if (payload.autonomous && schedules.length > 0 && (payload.expectedEpoch !== settings.epoch || payload.expectedSchedules !== scheduleRevision)) {
+          return send(res, 409, { error: 'review the current series epoch and pending schedules before enabling autonomous runs', epoch: settings.epoch, schedules, scheduleRevision });
+        }
+        if (payload.expectedEpoch !== undefined && payload.expectedEpoch !== settings.epoch) {
+          return send(res, 409, { error: 'series ownership or settings changed; review updated schedules and save again', epoch: settings.epoch, schedules, scheduleRevision });
+        }
+        if (payload.autonomous && payload.expectedSchedules !== undefined && payload.expectedSchedules !== scheduleRevision) {
+          return send(res, 409, { error: 'pending schedules changed since you reviewed them; review updated schedules and save again', epoch: settings.epoch, schedules, scheduleRevision });
+        }
         const ticks = checkTicks(by, payload.logins, tree().series[id].workspace), was = settings.consent;
         const removed = !!was && (was.logins.some(l => !ticks.includes(l)) || (was.autonomous && !payload.autonomous));
         const next = { ...settings, epoch: settings.epoch + (removed ? 1 : 0), since: removed ? at : settings.since, consent: { by, at, workspace: tree().series[id].workspace, logins: ticks, autonomous: payload.autonomous } };
         if (removed) await changeAuthority(id, next, by);
         else saveSeriesSettings(seriesDir(id), next);
+        act(by, { op: 'credentials', series: id, epoch: next.epoch, autonomous: payload.autonomous, logins: ticks, ...(payload.autonomous && schedules.length ? { adoptedSchedules: schedules.map(k => k.id), scheduleRevision } : {}) });
+        return send(res, 200, { ok: true, epoch: next.epoch, schedules, scheduleRevision });
       }
-      return send(res, 200, 'ok');
     });
-    if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners, or PUT owner or credentials');
+    if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners or credentials, or PUT owner or credentials');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -1384,7 +1424,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       try {
         await pipeline(req, capped, createWriteStream(tmp));
         recheckRequest(req);
-        mustUnarchived(by, id);
+        mustUnarchived(by, id, me, !!run);
         mustKeepNotes(id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
@@ -1410,8 +1450,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (s.single) throw new HttpError(400, `${s.name} is a task with one instance; promote it before creating more periods`);
     if (req.method === 'POST') return inOrder(id, async () => {
       recheckRequest(req);
-      mustUnarchived(by, id);
-      if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
+      mustUnarchived(by, id, me);
+      if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credentials');
       return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
     });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
@@ -1453,7 +1493,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (req.method === 'DELETE') {
       const owner = seriesSettings(seriesDir(sid)).owner;
       const mayCancel = run ? run.runner === owner && !!run.authority.autonomous : by === owner || canManage(me, t.workspaces[t.series[sid].workspace]);
-      const ownRequest = !wake!.authority && (run ? wake!.inst === run.inst.id : wake!.from === by);
+      const ownRequest = !!wake!.request && (run ? wake!.inst === run.inst.id : wake!.from === by);
       if (!mayCancel && !ownRequest) throw new HttpError(403, 'only the series owner, a workspace manager, or its authorized autonomous run cancels this schedule');
       // A person's cancellation is theirs in the system's log; a run's is recorded there too, with the wake, its instance and run.
       if (run) act('agent', { method: 'DELETE', path: url.pathname, wake, inst: run.inst.id, run: run.n });
@@ -1483,13 +1523,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to record a correction on a closed instance, use rf correct --superseded (or Correct… on its page)`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
+    if (!run && check && !can(me, 'wake-check'))
+      throw new HttpError(403, 'a wake check needs a scheduled wake of your own series, autonomous consent, and the wake-check capability');
     const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
       ...(check && { check }), ...(deadline !== undefined && { deadline: new Date(until).toISOString() }),
       ...(maxStaleMin !== undefined && { maxStaleMin: parsedMaxStale }),
       ...(backstopHours !== undefined && { backstopHours: parsedBackstop }),
-    });
+    }, run ? undefined : me);
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);
     return send(res, 200, created);
@@ -1501,10 +1543,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') return inOrder(r.series, async () => {
       recheckRequest(req);
-      mustUnarchived(by, r.series);
+      mustUnarchived(by, r.series, me);
       const settings = seriesSettings(seriesDir(r.series));
       if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
-      if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
+      if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credentials separately');
       if (settings.owner !== by) throw new HttpError(403, 'only the current series owner starts requests');
       if (!settings.consent || settings.consent.by !== by || settings.consent.workspace !== tree().series[r.series].workspace) throw new HttpError(403, 'the owner must explicitly select series credentials first, including an empty selection');
       const quiet = !!payload.quiet, provenance = { from: r.from, text: r.text, inst: r.inst, note: true, quiet };
@@ -1616,7 +1658,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     try {
       await pipeline(req, capped, createWriteStream(tmp));
       recheckRequest(req);
-      mustUnarchived(by, inst.seriesId);
+      mustUnarchived(by, inst.seriesId, me, !!run);
       const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
       // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
       // person's name, unless a run of the instance is going, whose end commits it.
@@ -1632,7 +1674,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     try {
       await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
       recheckRequest(req);
-      mustUnarchived(by, inst.seriesId);
+      mustUnarchived(by, inst.seriesId, me, !!run);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
       if (!standing(inst, up)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
@@ -1703,7 +1745,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       const recheck = () => {
         recheckRequest(req);
         if (run && running(run.token) !== run) throw new HttpError(409, 'its run has ended');
-        const { ws, who } = mustUnarchived(by, inst.seriesId, run ? me : undefined);
+        const { ws, who } = mustUnarchived(by, inst.seriesId, me, !!run);
         if (inst.doc.status !== 'open') throw new HttpError(409, `instance is ${inst.doc.status}`);
         const cur = active.get(inst.seriesId);
         return { ws, who, mine: cur?.inst === inst ? cur : undefined };
@@ -2113,7 +2155,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
       const change = await json(req);
-      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email);
+      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req));
       if (change.via !== undefined || change.internal !== undefined) await closeUnlent();
       send(res, 200, 'ok');
     }
@@ -2123,7 +2165,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
     else if (url.pathname === '/grants' && req.method === 'POST') {
       const { site, workspace, reason } = await json(req);
-      send(res, 200, await ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? '')));
+      send(res, 200, await ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? ''), () => recheckRequest(req)));
     }
     else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'POST') {
       const { approve, text } = await json(req);
@@ -2134,11 +2176,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       await closeUnlent();
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email, () => recheckRequest(req)), 'ok'));
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
-      const header = String((await json(req)).header ?? ''), since = Date.now();
-      const id = await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), header);
+      const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();
+      if (websitesOf(me.email)[site]?.via && !can(me, 'vpn')) throw new HttpError(403, 'vpn capability required to open a VPN-routed website sign-in');
+      const id = await startSignIn(me.email, site, header, me, () => recheckRequest(req));
       send(res, 200, { id, expires: new Date(since + Number(process.env.RF_SIGNIN_S ?? 600) * 1000).toISOString() });
     }
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.
@@ -2165,12 +2208,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'POST') {
       const id = url.pathname.slice(9);
       if (can(me, 'vpn') && isVpnSignIn(me.email, id)) {
-        try { await saveVpnSignIn(me, id); } finally { await closeUnlent(); }
+        try { await saveVpnSignIn(me, id, () => recheckRequest(req)); } finally { await closeUnlent(); }
         send(res, 200, 'ok');
       } else {
         const { keepalive } = await json(req);
         if (keepalive !== undefined && !can(me, 'keepalive')) throw new HttpError(403, 'keeping a login alive is for admins and those they grant keepalive: ask an admin');
-        send(res, 200, (await endSignIn(me.email, id, true, keepalive), 'ok'));
+        send(res, 200, (await endSignIn(me.email, id, true, keepalive, () => recheckRequest(req)), 'ok'));
       }
     }
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'DELETE') {
@@ -2187,6 +2230,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       const { key, enabled } = await json(req), was = logins(me.email).find(l => l.id === 'openrouter'), k = String(key ?? '').trim();
       if (!k && !was) throw new HttpError(400, 'your OpenRouter key: paste it to save it');
       if (k && !(await fetch(`${upstreams['openrouter.ai'] ?? 'https://openrouter.ai'}/api/v1/key`, { headers: { authorization: `Bearer ${k}` } })).ok) throw new HttpError(400, 'OpenRouter refused this key');
+      recheckRequest(req);
       saveLogin(me.email, { id: 'openrouter', kind: 'key', name: 'OpenRouter', since: k ? new Date().toISOString() : was!.since, offers: [], enabled: !!enabled, ...(!k && enabled && was!.expired && { expired: true }) }, k || undefined);
       send(res, 200, 'saved');
     }

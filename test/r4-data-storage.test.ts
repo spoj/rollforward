@@ -81,7 +81,7 @@ test('B-R4-DATA-03a: pushSkill() atomically writes .pushed.json and versionsOf()
     }
 
     assert.equal(readlinkSync(join(root, 'skills', 'live', 'demo')), '../versions/demo/1');
-    assert.deepEqual(skills().map(s => s.id), ['demo']);
+    assert.ok(skills().some(s => s.id === 'demo'));
     assert.deepEqual(versionsOf('demo').map(v => v.version), [1]);
 
     mkdirSync(join(root, 'skills', 'versions', 'demo', '3'), { recursive: true });

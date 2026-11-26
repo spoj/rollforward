@@ -183,7 +183,7 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
   const w = existsSync(wakesFile) ? JSON.parse(readFileSync(wakesFile, 'utf8')) : { pending: {}, fired: {}, requests: {} };
   const snapshot = (p: typeof moved) => {
     const s = JSON.parse(readFileSync(join(root, 'series', p.target.id, 'series.json'), 'utf8'));
-    return { initiator: BOB, authority: { version: 1, owner: BOB, epoch: s.epoch, workspace: p.wsA.id, logins: [], autonomous: true } };
+    return { request: false, initiator: BOB, authority: { version: 1, owner: BOB, epoch: s.epoch, workspace: p.wsA.id, logins: [], autonomous: true } };
   };
   w.pending['wk_moved'] = { target: moved.target.id, at: dueSoon, from: 'Source-moved/Feeder/one', inst: moved.inst.id, label: '2026-11-15', days, text: 'from moved', ...snapshot(moved) };
   w.pending['wk_moved_del'] = { target: movedDeleted.target.id, at: dueSoon, from: 'Source-moved-del/Feeder/one', inst: movedDeleted.inst.id, label: '2026-11-15', days, text: 'from moved deleted', ...snapshot(movedDeleted) };
@@ -198,7 +198,9 @@ test('R4-DATA-03 (BURST1-05): run-created wakes drop across workspaces while sam
     assert.equal((await call('PUT', `/api/proposals/${p.wsA.id}`, JSON.stringify({ kind: 'move', series: p.target.id, to: p.wsB.id }))).status, 200);
     assert.equal((await call('POST', `/api/proposals/${p.wsA.id}`, JSON.stringify({ owners: [], members: [] }), carolCookie)).status, 200);
     assert.equal((await call('PUT', `/api/series/${p.target.id}/owner`, JSON.stringify({ owner: CAROL }))).status, 200);
-    assert.equal((await call('PUT', `/api/series/${p.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [] }), carolCookie)).status, 200);
+    assert.equal((await call('PUT', `/api/series/${p.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [] }), carolCookie)).status, 409, 'enabling autonomy with pending schedules requires reviewed epoch and scheduleRevision');
+    const credPreview = await json(`/api/series/${p.target.id}/credentials`, carolCookie);
+    assert.equal((await call('PUT', `/api/series/${p.target.id}/credentials`, JSON.stringify({ autonomous: true, logins: [], expectedEpoch: credPreview.epoch, expectedSchedules: credPreview.scheduleRevision }), carolCookie)).status, 200);
     assert.equal((await call('PUT', `/api/workspaces/${p.wsA.id}`, JSON.stringify({ name: 'SECRET-PRIVATE-' + p.wsA.id }), bobCookie)).status, 200);
   }
 
