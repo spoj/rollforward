@@ -37,6 +37,7 @@ if (!Number.isFinite(DRAIN_MS) || DRAIN_MS < 0 || DRAIN_MS > 2_147_483_647) thro
 let draining: NodeJS.Timeout | undefined;
 const full = () => !!draining || active.size + checking.size >= MAX_RUNS || (MIN_FREE > 0 && freemem() < MIN_FREE + started.filter(t => t > Date.now() - 60_000).length * 2 ** 30);
 export const MAX_OPEN = 3;
+export const UNGROUPED_IDLE_MS = 24 * 60 * 60 * 1000;
 const SPACING_MS = 15 * 60_000, MAX_WAKES = 20;
 
 export type Active = { inst: Instance; n: number; runner: string; authority: Authority; token: string; view: View; workspace: string; run?: Run; sent: number; noted: number; seen: number; delivered: number; texts: Map<string, number>; done: boolean; cost: number; estimated: boolean; failed?: string; hosts: Map<string, boolean>; links: Map<string, { name: string; offer: string }>; browsers?: Browsers; timer?: NodeJS.Timeout; process: string; thread?: string;
@@ -1165,6 +1166,42 @@ export function fire() {
     }
   }
   if (changed) saveWakes(w);
+  void sweepIdleUngrouped();
+}
+
+const sweeping = new Set<string>();
+
+// Auto-abandon open Ungrouped (single: true) instances that have been idle for >= 24h;
+// recurring series stay on their existing MAX_OPEN cap.
+export async function sweepIdleUngrouped(
+  now = Date.now(),
+  idleMs = Number(process.env.RF_UNGROUPED_IDLE_MS ?? UNGROUPED_IDLE_MS),
+): Promise<string[]> {
+  if (!Number.isFinite(idleMs) || idleMs <= 0) return [];
+  const t = tree(), abandoned: string[] = [];
+  for (const [sid, s] of Object.entries(t.series)) {
+    if (!s.single || busy(sid)) continue;
+    for (const inst of instances(sid)) {
+      if (inst.hole || inst.closing || inst.doc.status !== 'open') continue;
+      if (debounce.has(inst.id) || waiting.has(inst) || sweeping.has(inst.id)) continue;
+      const last = inst.log.at(-1)?.at;
+      const lastMs = last ? Date.parse(last) : NaN;
+      if (!Number.isFinite(lastMs) || now - lastMs < idleMs) continue;
+      sweeping.add(inst.id);
+      try {
+        await inst.abandon('server');
+        cancelWakes([inst.id]);
+        changes.emit('change', inst.id);
+        changes.emit('change', 'tree');
+        abandoned.push(inst.id);
+      } catch (e) {
+        console.error(`failed to auto-abandon idle ungrouped instance ${inst.id}`, e);
+      } finally {
+        sweeping.delete(inst.id);
+      }
+    }
+  }
+  return abandoned;
 }
 
 // Why a run was cut, its done's error, which `rf runs` tells from a failure: a restart, or a change that broke its lease (leases()).

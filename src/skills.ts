@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HttpError } from './store.ts';
 import { refused } from './git.ts';
 
@@ -10,12 +11,16 @@ import { refused } from './git.ts';
 
 // Skills are data: each push is a version, DATA/skills/versions/<id>/<n>/, with who pushed it and when in its .pushed.json, and
 // DATA/skills/live/<id> links to the version runs use, so a push is live at once. Rolling back is pushing an earlier one again.
+const builtinRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
 let root = '';
 export function openSkills(dataRoot: string) {
   root = join(dataRoot, 'skills', 'live');
   mkdirSync(root, { recursive: true });
 }
-export const pushed = (s: Skill): { version: number; by: string; at: string } => JSON.parse(readFileSync(join(s.dir, '.pushed.json'), 'utf8'));
+export const pushed = (s: Skill): { version: number; by: string; at: string } => {
+  const file = join(s.dir, '.pushed.json');
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 0, by: 'builtin', at: '' };
+};
 
 const ID = /^[a-z0-9][a-z0-9-]*$/;
 function checkId(id: string) {
@@ -90,9 +95,16 @@ function frontMatter(text: string): Record<string, string> {
 }
 
 export function skills(): Skill[] {
-  if (!existsSync(root)) return [];
-  return readdirSync(root).filter(id => ID.test(id) && existsSync(join(root, id, 'SKILL.md'))).sort().map(id => {
-    const dir = join(root, id), fm = frontMatter(readFileSync(join(dir, 'SKILL.md'), 'utf8'));
-    return { id, name: fm.name ?? id, description: fm.description ?? '', dir };
-  });
+  const byId = new Map<string, Skill>();
+  const load = (base: string) => {
+    if (!base || !existsSync(base)) return;
+    for (const id of readdirSync(base)) {
+      if (!ID.test(id) || byId.has(id) || !existsSync(join(base, id, 'SKILL.md'))) continue;
+      const dir = join(base, id), fm = frontMatter(readFileSync(join(dir, 'SKILL.md'), 'utf8'));
+      byId.set(id, { id, name: fm.name ?? id, description: fm.description ?? '', dir });
+    }
+  };
+  load(root);
+  load(builtinRoot);
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
