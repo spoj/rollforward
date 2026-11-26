@@ -732,21 +732,20 @@ const crefs = h => h.replace(/(<a\b[^]*?<\/a>|<code>[^]*?<\/code>|<[^>]*>)|(?<![
 // which the text holds escaped and data-file decodes. [name](#cN) links a comment, and [name](../<label>#cN) one of another instance, last,
 // so what its title quotes of the comment is left as it is.
 const inline = (s, base, inst) => s.replace(/!\[([^\]]*)\]\(((?:[^()&]|\([^()&]*\))+\.(?:png|jpe?g|gif|webp|svg))\)/gi, (m, alt, f) => {
-  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(f)) return m;
-  const prefix = base?.match(/^(\.\.\/[^/]+\/)/)?.[1] ?? '';
-  let r;
-  if (/^\.\.\/(?!\.\.\/)[^/]+\/(?:upload|working)\//.test(f)) r = f;
-  else if (/^(?:upload|working)\//.test(f)) r = prefix + f;
-  else {
-    const rel = prefix ? base.slice(prefix.length) : base ?? '', parts = rel ? rel.split('/').slice(0, -1) : [];
-    for (const seg of f.split('/')) {
-      if (!seg || seg === '.') continue;
-      if (seg === '..') { if (!parts.length) return m; parts.pop(); }
-      else parts.push(seg);
-    }
-    if (!parts.length) return m;
-    r = prefix + parts.join('/');
+  const raw = f.replace(/&(amp|quot|#39|lt|gt);/g, (_, k) => ({ amp: '&', quot: '"', '#39': "'", lt: '<', gt: '>' }[k]));
+  if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(raw)) return m;
+  const cross = raw.match(/^(\.\.\/(?!\.\.\/)[^/]+\/)(?=(?:upload|working)\/)/)?.[1];
+  const prefix = cross ?? base?.match(/^(\.\.\/[^/]+\/)/)?.[1] ?? '';
+  const rooted = cross || /^(?:upload|working)\//.test(raw);
+  const rel = !rooted && base ? (prefix ? base.slice(prefix.length) : base) : '';
+  const parts = rel ? rel.split('/').slice(0, -1) : [];
+  for (const seg of (cross ? raw.slice(cross.length) : raw).split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') { if (!parts.length) return m; parts.pop(); }
+    else parts.push(seg);
   }
+  if (!parts.length) return m;
+  const r = prefix + parts.join('/');
   const target = inst && !r.startsWith('../') ? { inst, path: r } : r;
   const attr = typeof target === 'string' ? `data-file="${esc(target)}"` : `data-pin="${esc(JSON.stringify(target))}"`;
   return `<img class="md" src="${fileUrl(target)}" loading="lazy" alt="${alt}" title="${alt}" data-act="preview" ${attr}>`;

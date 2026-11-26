@@ -2889,7 +2889,7 @@ test('composer shows distinct hints, placeholders, and buttons for non-owner and
 
 test('markdown preview resolves relative image paths and dialog preserves scrollLeft on redraw', async () => {
   await page.evaluate(() => {
-    pv = { title: 'notes.md', path: 'working/sub/notes.md', md: true, text: '![c](chart.png)\n![u](../../upload/x.png)\n![esc](../../../etc/passwd.png)\n![ext](https://evil.test/a.png)' };
+    pv = { title: 'notes.md', path: 'working/sub/notes.md', md: true, text: '![c](chart.png)\n![u](../../upload/x.png)\n![esc](../../../etc/passwd.png)\n![trav](working/../../x.png)\n![ext](https://evil.test/a.png)' };
     renderPv();
   });
   const imgs = await page.evaluate(() => [...document.querySelectorAll('#pv img.md')].map(i => ({ file: i.getAttribute('data-file'), src: i.getAttribute('src') })));
