@@ -68,7 +68,7 @@ function settings(email: string, manage: boolean, consent: any = null) {
 test('page script parses and removes live instance assignment, sharing and credential mutations', () => {
   new Script(code);
   assert.doesNotMatch(code, /data\??\.runner|i\.runner|data-act="(?:takeover|assign|share-on|share-off)"|instPath\(\)\}\/logins|\/assignees/);
-  assert.match(code, /seriesPath\(cur\)\}\/credentials/);
+  assert.match(code, /\/api\/series\/\$\{s\.id\}\/credentials/);
   assert.match(code, /path\}\/owner/);
   assert.doesNotMatch(code, /localStorage\.ticks/);
 });

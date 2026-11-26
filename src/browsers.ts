@@ -169,6 +169,7 @@ export async function startSignIn(email: string, site: string, given: string, ca
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
   await checkHost(new URL(w.url).hostname, !!w.via);
   const via = await vpnVia(email, w, caller);
+  recheck?.();
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));

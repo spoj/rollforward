@@ -829,9 +829,9 @@ else if (cmd === 'comment' && args.length < 2) {
   const fmtSched = (k: any) => `  ${k.id}  ${k.targetLabel ?? k.target}  ${k.at}${k.deadline ? ` (deadline ${k.deadline})` : ''}${k.days ? ` (${k.days.join(',')})` : ''}${k.label ? `  ${k.label}` : ''}${k.from ? `  by ${k.from}` : ''}${k.check ? `  check=${k.check}` : ''}${k.text ? `  ${k.text}` : ''}`;
   if (flags.set !== undefined || flags.clear) {
     if (!['true', 'false'].includes(String(flags.autonomous))) throw new Error('saving requires --autonomous true|false');
-    const previewRes = await api(`/api/series/${s.id}/credentials`, {}, [404, 405]);
+    const previewRes = await api(`/api/series/${s.id}/credentials`, {}, flags.autonomous === 'true' ? [] : [404, 405]);
     const preview = previewRes.ok ? await previewRes.json() : null;
-    if (flags.autonomous === 'true' && !preview && ![404, 405].includes(previewRes.status)) {
+    if (flags.autonomous === 'true' && !preview) {
       throw new Error('could not load pending schedules to review before enabling autonomous runs');
     }
     if (flags.autonomous === 'true' && Array.isArray(preview?.schedules) && preview.schedules.length) {
