@@ -782,18 +782,19 @@ export function weekly(text: string, at: Date, label?: string): string[] | undef
 
 // A series' one-off wake for a label pending already moves it, or is one a weekly wake starting that label has made; any other adds
 // up, unless the same is pending, to 20 a target.
-export function setWake(target: string, wake: Omit<Wake, 'target'>): Wake & { id: string } {
+export function setWake(target: string, wake: Omit<Wake, 'target'>, caller?: Me): Wake & { id: string } {
   const w = wakes(), t = tree(), sid = t.series[target] ? target : instance(target).seriesId, s = seriesSettings(seriesDir(sid));
   if (wake.inst) {
     const srcInst = instance(wake.inst);
     if (srcInst.seriesId !== sid) throw new HttpError(403, `${named(t, sid)} is another series: runs can only wake their own series`);
   }
   const p = s.owner && asPerson(s.owner), source = wake.inst ? active.get(sid) : undefined;
+  const effectiveOwner = p && caller && caller.email === s.owner ? { ...p, groups: p.groups.filter(g => caller.groups.includes(g)) } : p;
   const immediate = !wake.inst && wake.from === s.owner && wake.at <= new Date().toISOString();
   const authorized = s.consent && (immediate || s.consent.autonomous) && s.consent.by === s.owner && s.consent.workspace === t.series[sid].workspace
-    && p && canSee(p, t.workspaces[t.series[sid].workspace])
+    && effectiveOwner && canSee(effectiveOwner, t.workspaces[t.series[sid].workspace])
     && (wake.inst ? source?.inst.id === wake.inst && byToken.has(source.token) && source.runner === s.owner && source.authority.autonomous && sameAuthority(source.inst, source.authority) && ownerOf(source.inst).consent?.autonomous : wake.from === s.owner);
-  if (wake.check && (!authorized || !s.consent?.autonomous || immediate || !can(p, 'wake-check')))
+  if (wake.check && (!authorized || !s.consent?.autonomous || immediate || !can(effectiveOwner, 'wake-check')))
     throw new HttpError(403, 'a wake check needs a scheduled wake of your own series, autonomous consent, and the wake-check capability');
   const k: Wake = { ...wake, target, immediate: immediate || undefined, authority: authorized ? { version: 1, owner: s.owner!, epoch: s.epoch, workspace: t.series[sid].workspace, logins: s.consent!.logins.filter(o => !source || source.authority.logins.includes(o)), autonomous: s.consent!.autonomous } : undefined, initiator: authorized ? s.owner : undefined, ...(source && { sourceRun: source.n }) }, labelled = k.label !== undefined && !k.days;
   // A weekly one keeps its time of day; fire() spaces it.
@@ -1188,6 +1189,20 @@ function ungroupedGcConfig(): { enabled: boolean; owners?: Set<string> } {
   return process.env.RF_UNGROUPED_GC === '1' ? { enabled: true } : { enabled: false };
 }
 
+function hasLoginHold(inst: Instance): boolean {
+  const owner = ownerOf(inst).by;
+  if (!owner) return false;
+  const expiredLogins = new Set(
+    inst.log
+      .filter(e => e.op === 'expired' && !e.left && e.runner === owner && typeof e.login === 'string')
+      .map(e => e.login as string),
+  );
+  for (const login of expiredLogins) {
+    if (held(inst, login, owner, login !== 'openrouter')) return true;
+  }
+  return false;
+}
+
 function isIdleUngroupedEligible(sid: string, inst: Instance, now: number, idleMs: number, allowedOwners?: Set<string>): boolean {
   const t = tree();
   const s = t.series[sid];
@@ -1197,7 +1212,7 @@ function isIdleUngroupedEligible(sid: string, inst: Instance, now: number, idleM
     if (!owner || !allowedOwners.has(owner)) return false;
   }
   if (inst.hole || inst.closing || inst.doc.status !== 'open') return false;
-  if (debounce.has(inst.id) || waiting.has(inst) || starting.has(inst.id) || due(inst)) return false;
+  if (debounce.has(inst.id) || waiting.has(inst) || starting.has(inst.id) || due(inst) || hasLoginHold(inst)) return false;
   const w = wakes();
   for (const k of Object.values(w.pending)) {
     if (k.target === inst.id || k.target === sid) return false;

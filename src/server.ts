@@ -214,7 +214,7 @@ function mustKeepNotes(sid: string, s = tree().series[sid]) {
   if (s.single && instances(sid).some(i => i.doc.status === 'deleted')) throw new HttpError(409, `${s.name} was deleted`);
 }
 
-function mustUnarchived(by: string, sid: string, effective?: Me, isRun = false) {
+function mustUnarchived(by: string, sid: string, effective: Me, isRun = false) {
   const now = tree(), s = now.series[sid], ws = now.workspaces[s.workspace], shut = [ws, s].find(x => x?.archived);
   const fresh = isRun && effective ? effective : asPerson(by);
   const who = fresh ? (effective && !isRun ? { ...fresh, groups: fresh.groups.filter(g => effective.groups.includes(g)) } : fresh) : null;
@@ -1385,7 +1385,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       try {
         await pipeline(req, capped, createWriteStream(tmp));
         recheckRequest(req);
-        mustUnarchived(by, id);
+        mustUnarchived(by, id, me, !!run);
         mustKeepNotes(id);
         return send(res, 200, { file: keep(join(book, 'notes'), 'files', url.searchParams.get('name') ?? 'file', tmp) });
       } finally {
@@ -1411,7 +1411,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (s.single) throw new HttpError(400, `${s.name} is a task with one instance; promote it before creating more periods`);
     if (req.method === 'POST') return inOrder(id, async () => {
       recheckRequest(req);
-      mustUnarchived(by, id);
+      mustUnarchived(by, id, me);
       if ('logins' in payload) throw new HttpError(410, 'instance credentials were removed; only the owner selects the series credential ceiling');
       return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
     });
@@ -1484,13 +1484,15 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (!t.series[to] && instance(to).doc.status !== 'open') throw new HttpError(409, `${instance(to).label} is ${instance(to).doc.status}: to record a correction on a closed instance, use rf correct --superseded (or Correct… on its page)`);
     const first = new Date(at), starts = t.series[to] ? folderName(String(label)) : undefined;
     if (starts && labels(to).some(l => l.label === starts && instance(l.id).hole)) throw new HttpError(409, `${starts} was deleted, and its label stays with it: choose another`);
+    if (!run && check && !can(me, 'wake-check'))
+      throw new HttpError(403, 'a wake check needs a scheduled wake of your own series, autonomous consent, and the wake-check capability');
     const created = setWake(to, {
       at: first.toISOString(), from: run ? `${named(t, run.inst.seriesId)}/${run.inst.label}` : by, ...(run && { inst: run.inst.id }),
       ...(starts && { label: starts }), ...(days !== undefined && { days: weekly(String(days), first, starts) }), ...(text?.trim() && { text: text.trim() }),
       ...(check && { check }), ...(deadline !== undefined && { deadline: new Date(until).toISOString() }),
       ...(maxStaleMin !== undefined && { maxStaleMin: parsedMaxStale }),
       ...(backstopHours !== undefined && { backstopHours: parsedBackstop }),
-    });
+    }, run ? undefined : me);
     if (run) act('agent', { method: 'PUT', path: url.pathname, wake: wakes().pending[created.id], inst: run.inst.id, run: run.n });
     if (!run && !t.series[to] && by === seriesSettings(seriesDir(sid)).owner) see(by, to, instance(to).log.at(-1)!.seq);
     return send(res, 200, created);
@@ -1502,7 +1504,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     mustSee(me, t.workspaces[t.series[r.series].workspace]);
     if (req.method === 'POST') return inOrder(r.series, async () => {
       recheckRequest(req);
-      mustUnarchived(by, r.series);
+      mustUnarchived(by, r.series, me);
       const settings = seriesSettings(seriesDir(r.series));
       if (!wakes().requests[id]) throw new HttpError(404, `no request ${id}`);
       if ('logins' in payload) throw new HttpError(410, 'request credentials were removed; the owner selects the series credential ceiling separately');
@@ -1617,7 +1619,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     try {
       await pipeline(req, capped, createWriteStream(tmp));
       recheckRequest(req);
-      mustUnarchived(by, inst.seriesId);
+      mustUnarchived(by, inst.seriesId, me, !!run);
       const file = inst.keep(url.searchParams.get('name') ?? 'file', tmp, 'upload/attachments');
       // No entry of the instance's names it until a comment does: the system's log records it, and it's committed at once in its
       // person's name, unless a run of the instance is going, whose end commits it.
@@ -1633,7 +1635,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     try {
       await pipeline(req, capped, async function* (chunks: AsyncIterable<Buffer>) { for await (const c of chunks) { hash.update(c); yield c; } }, createWriteStream(tmp));
       recheckRequest(req);
-      mustUnarchived(by, inst.seriesId);
+      mustUnarchived(by, inst.seriesId, me, !!run);
       const up = inst.upload(by, url.searchParams.get('name') ?? 'file', tmp, hash.digest('hex'), pane, url.searchParams.get('onto'), quiet);
       // What starts no run, quiet or a note, is committed at once in its person's name; a run going commits it as it ends.
       if (!standing(inst, up)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, me, `Upload ${up.file}`).catch(err => inst.append('server', 'commit', { cause: up.seq, error: err.message }));
@@ -2124,7 +2126,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (url.pathname === '/grants' && req.method === 'GET') send(res, 200, visible(me));
     else if (url.pathname === '/grants' && req.method === 'POST') {
       const { site, workspace, reason } = await json(req);
-      send(res, 200, await ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? '')));
+      send(res, 200, await ask(me, String(site ?? ''), String(workspace ?? ''), String(reason ?? ''), () => recheckRequest(req)));
     }
     else if (/^\/grants\/\w+$/.test(url.pathname) && req.method === 'POST') {
       const { approve, text } = await json(req);
@@ -2138,8 +2140,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email), 'ok'));
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
-      const header = String((await json(req)).header ?? ''), since = Date.now();
-      const id = await startSignIn(me.email, decodeURIComponent(url.pathname.slice(12)), header);
+      const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();
+      if (websitesOf(me.email)[site]?.via && !can(me, 'vpn')) throw new HttpError(403, 'vpn capability required to open a VPN-routed website sign-in');
+      const id = await startSignIn(me.email, site, header, me);
       send(res, 200, { id, expires: new Date(since + Number(process.env.RF_SIGNIN_S ?? 600) * 1000).toISOString() });
     }
     // What a person's login offers that they add themselves: Microsoft 365's sources and Databricks' warehouses.

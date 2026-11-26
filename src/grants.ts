@@ -93,7 +93,7 @@ export function unapproved(email: string, site: string, workspace?: string) {
 }
 
 // Asked by someone who may approve it, a request is approved at once, by them, as their approval of it would be.
-export async function ask(me: Me, site: string, workspace: string, reason: string): Promise<{ id: string; profile: Profile; state: Grant['state']; said: string }> {
+export async function ask(me: Me, site: string, workspace: string, reason: string, recheck?: () => void): Promise<{ id: string; profile: Profile; state: Grant['state']; said: string }> {
   const w = tree().workspaces[workspace], login = logins(me.email).find(l => l.id === `web:${site}`);
   if (!w || !canSee(me, w)) throw new HttpError(404, `no workspace ${workspace} of yours`);
   if (!login) throw new HttpError(409, `sign in to ${site} first, on the Logins page: you ask to use your login to it`);
@@ -103,7 +103,9 @@ export async function ask(me: Me, site: string, workspace: string, reason: strin
   if (had()) throw asked(had()!);
   const { url, profile: existing } = websitesOf(me.email)[site];
   const profile = isCheckingWebsite(me.email, site) || !existing || 'error' in existing || existing.curated || profiles()[new URL(url).hostname]
-    ? await checkWebsite(me.email, site, login.trace) : existing, again = had();
+    ? await checkWebsite(me.email, site, login.trace) : existing;
+  recheck?.();
+  const again = had();
   if (again) throw asked(again);
   // Removing the website meanwhile signed them out of it, and took their grants for it.
   if (!logins(me.email).some(l => l.id === login.id)) throw new HttpError(409, `you removed ${site} or signed out of it while it was checked`);

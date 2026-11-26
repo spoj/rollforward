@@ -153,7 +153,7 @@ function currentSignIn(s: SignIn) {
   return w;
 }
 
-export async function startSignIn(email: string, site: string, given: string): Promise<string> {
+export async function startSignIn(email: string, site: string, given: string, caller?: Me): Promise<string> {
   const w = website(email, site), kept = `web:${site}.header`, key = `${email} ${site}`;
   const websiteGeneration = websiteGenerations.get(key), loginSince = logins(email).find(l => l.id === `web:${site}`)?.since;
   let token;
@@ -168,7 +168,7 @@ export async function startSignIn(email: string, site: string, given: string): P
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
   const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
   await checkHost(new URL(w.url).hostname, !!w.via);
-  const via = await vpnVia(email, w);
+  const via = await vpnVia(email, w, caller);
   currentSignIn(signing);
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));

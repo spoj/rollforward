@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { once } from 'node:events';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
@@ -87,9 +87,10 @@ test('Entra ID Bearer JWT auth (server JWKS verification + rf login --az)', asyn
       proc.once('exit', code => fail(new Error(`server exited with ${code}`)));
     });
 
-    // Pre-enroll admin with oid and a group (RF_ADMINS cannot be claimed on first use via Bearer JWT).
+    // Pre-enroll admin and bob with oid (Bearer JWTs never auto-provision or bind new OIDs).
     writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify({
       'admin@demo.test': { role: 'admin', name: 'Admin User', oid: 't1/oid-admin', groups: ['g-finance'], epoch: 1 },
+      'bob@demo.test': { role: 'user', name: 'Bob', oid: 't1/oid-bob', groups: [], epoch: 1 },
       'unlinked@demo.test': { role: 'user', name: 'Unlinked', epoch: 1 },
     }));
 
@@ -268,6 +269,79 @@ printf '%s\\n' '${validApiAud}'
       privateKey,
     );
     assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${preGrantedJwt}` } })).status, 403);
+
+    // P1-2: brand-new email (even with no grants and auto-provision enabled) cannot auto-provision or bind OID via Bearer JWT
+    const newbieJwt = signJwt(
+      { alg: 'RS256', typ: 'JWT', kid: 'k1' },
+      { iss: issuer, aud: 'api://rf-test-app', exp: nowSec + 3600, iat: nowSec, scp: 'access_as_user', preferred_username: 'newbie@demo.test', tid: 't1', oid: 'oid-newbie' },
+      privateKey,
+    );
+    assert.equal((await fetch(`${base}/me`, { headers: { authorization: `Bearer ${newbieJwt}` } })).status, 403);
+    assert.equal('newbie@demo.test' in JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8')), false);
+
+    // P1-4: wake-check and VPN-routed sign-in must enforce admitted JWT capabilities, not stored groups
+    const uCap = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));
+    uCap['carol@demo.test'] = { role: 'user', name: 'Carol', oid: 't1/oid-carol', groups: ['g-mgr', 'g-wc', 'g-vpn'], epoch: 1 };
+    writeFileSync(join(root, '.rf', 'users.json'), JSON.stringify(uCap));
+    writeFileSync(join(root, '.rf', 'capabilities.json'), JSON.stringify({ 'wake-check': ['g-wc'], vpn: ['g-vpn'] }));
+    mkdirSync(join(root, 's_wc'), { recursive: true });
+    const nowIso = new Date().toISOString();
+    writeFileSync(join(root, 's_wc', 'settings.json'), JSON.stringify({ version: 1, owner: 'carol@demo.test', epoch: 1, since: nowIso, consent: { by: 'carol@demo.test', at: nowIso, workspace: 'w1', logins: [], autonomous: true } }));
+    writeFixtureTree(root, {
+      workspaces: { w1: { name: 'Team', owners: ['g-mgr'], members: ['carol@demo.test', 'dave@demo.test'] } },
+      series: { s1: { name: 'Monthly', workspace: 'w1' }, s_wc: { name: 'Checked', workspace: 'w1' } },
+    });
+    const wcRes = await fetch(`${base}/api/wakes/s_wc`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${carolNoGroupJwt}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ at: new Date(Date.now() + 3_600_000).toISOString(), label: '2026-12', check: 'working/check.py' }),
+    });
+    assert.equal(wcRes.status, 403, 'JWT without wake-check group must not schedule a wake-check');
+
+    const carolDir = join(root, '.rf', 'people', createHash('sha256').update('carol@demo.test').digest('hex').slice(0, 16));
+    mkdirSync(carolDir, { recursive: true });
+    writeFileSync(join(carolDir, 'websites.json'), JSON.stringify({ corp: { url: 'https://corp.example.com/', via: 'corp-vpn', added: nowIso } }));
+    const vpnSignInRes = await fetch(`${base}/logins/web/corp`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${carolNoGroupJwt}`, 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(vpnSignInRes.status, 403, 'JWT without vpn group must not open a VPN-routed website sign-in');
+
+    // P1-3: streamed upload must recheck effective JWT workspace visibility at commit, not stored groups
+    const newInstRes = await fetch(`${base}/api/series/s1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${validApiAud}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ label: '2026-11', quiet: true }),
+    });
+    assert.equal(newInstRes.status, 200);
+    const { id: instId } = await newInstRes.json() as { id: string };
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>(ok => { releaseBody = ok; });
+    const slowBody = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(new TextEncoder().encode('hello '));
+        await bodyGate;
+        controller.enqueue(new TextEncoder().encode('world'));
+        controller.close();
+      },
+    });
+    const uploadPromise = fetch(`${base}/api/instances/${instId}/upload?name=test.txt&quiet=1`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${carolNoGroupJwt}` },
+      body: slowBody,
+      // @ts-expect-error duplex required by undici for ReadableStream request body
+      duplex: 'half',
+    });
+    // Withdraw carol's direct membership while upload is in flight (she still has stored g-mgr in users.json, omitted from JWT)
+    await new Promise(r => setTimeout(r, 50));
+    writeFixtureTree(root, {
+      workspaces: { w1: { name: 'Team', owners: ['g-mgr'], members: ['dave@demo.test'] } },
+      series: { s1: { name: 'Monthly', workspace: 'w1' }, s_wc: { name: 'Checked', workspace: 'w1' } },
+    });
+    releaseBody();
+    const uploadRes = await uploadPromise;
+    assert.equal(uploadRes.status, 404, 'streamed upload must fail closed when direct membership is removed mid-flight');
 
     // P1-A: duplicate OID rows rejected explicitly
     const uDup = JSON.parse(readFileSync(join(root, '.rf', 'users.json'), 'utf8'));

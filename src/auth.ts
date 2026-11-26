@@ -387,51 +387,31 @@ export async function verifyEntraJwt(token: string): Promise<{ me: Me; exp: numb
 
   const oid = `${claims.tid}/${claims.oid}`;
   const all = users();
-  const tokenEmail = String(claims.email ?? claims.preferred_username ?? claims.upn ?? '').trim().toLowerCase();
+  const rev = revokedPrincipals();
+  if (rev[oid] && claims.iat * 1000 < rev[oid]) {
+    throw new HttpError(401, 'this token was revoked; sign in again');
+  }
   const oidMatches = Object.entries(all).filter(([, u]) => u.oid === oid).map(([k]) => k);
   if (oidMatches.length > 1) throw new HttpError(403, 'ambiguous Microsoft account binding; sign in via the browser');
-  const byOid = oidMatches[0];
-  const email = byOid ?? tokenEmail;
-  if (!email.includes('@')) throw new HttpError(403, 'bearer token has no email address');
-  if (domains.length) {
-    if (!tokenEmail || !tokenEmail.includes('@') || !domains.includes(tokenEmail.split('@')[1])) {
-      throw new HttpError(403, `${tokenEmail || email} is not in an allowed domain`);
-    }
-    if (!domains.includes(email.split('@')[1])) throw new HttpError(403, `${email} is not in an allowed domain`);
-  }
-
-  const rev = revokedPrincipals();
-  const revokedBefore = Math.max(rev[oid] ?? 0, rev[email] ?? 0, all[email]?.revoked_before ?? 0);
-  if (revokedBefore && claims.iat * 1000 < revokedBefore) {
-    throw new HttpError(401, 'this token was revoked; sign in again');
+  if (oidMatches.length === 0) throw new HttpError(403, 'sign in via the browser first to link this Microsoft account');
+  const email = oidMatches[0];
+  if (domains.length && !domains.includes(email.split('@')[1])) {
+    throw new HttpError(403, `${email} is not in an allowed domain`);
   }
 
   const known = all[email];
-  if (!known) {
-    if (env.RF_AUTO_PROVISION === '0') throw new HttpError(403, `${email} has no access yet`);
-    const hasPreGrant = admins.has(email)
-      || Object.values(tree().workspaces).some(w => everyone(w).includes(email))
-      || Object.values(capabilities()).some(list => list.includes(email));
-    if (hasPreGrant) throw new HttpError(403, `${email} must sign in via the browser first`);
-  } else {
-    if (known.disabled) throw new HttpError(403, `${email} is disabled`);
-    if (known.oid && known.oid !== oid) throw new HttpError(403, `${email} belongs to another Microsoft account`);
-    if (!known.oid) {
-      if (!(known.sub && typeof claims.sub === 'string' && known.sub === claims.sub)) {
-        throw new HttpError(403, `${email} must sign in via the browser first to link this account`);
-      }
-    }
+  const revokedBefore = Math.max(rev[oid] ?? 0, rev[email] ?? 0, known.revoked_before ?? 0);
+  if (revokedBefore && claims.iat * 1000 < revokedBefore) {
+    throw new HttpError(401, 'this token was revoked; sign in again');
   }
+  if (known.disabled) throw new HttpError(403, `${email} is disabled`);
 
-  // Never mutate stored groups from replayable bearer JWTs; fail closed when groups claim is absent.
+  // Never auto-provision or mutate stored users/groups from replayable bearer JWTs; fail closed when groups claim is absent.
   const jwtGroups = Array.isArray(claims.groups) ? claims.groups.map(String) : [];
-  const u = (!known || !known.oid)
-    ? upsertUser(email, { name: claims.name ?? known?.name, oid, ...(!known && { groups: [] }) })
-    : known;
-  const baseMe = asPerson(email, u);
+  const baseMe = asPerson(email, known);
   if (!baseMe) throw new HttpError(403, `${email} is disabled`);
   const me: Me = { ...baseMe, groups: baseMe.groups.filter(g => jwtGroups.includes(g)) };
-  return { me, exp: claims.exp * 1000, oid, epoch: u.epoch ?? 0, jwtGroups };
+  return { me, exp: claims.exp * 1000, oid, epoch: known.epoch ?? 0, jwtGroups };
 }
 
 async function discovery() {

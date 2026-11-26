@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
-import { createInstance, instance, openStore, seriesDir } from '../src/store.ts';
+import { createInstance, HttpError, instance, openStore, seriesDir } from '../src/store.ts';
 import { saveSeriesSettings } from '../src/series.ts';
-import { sweepIdleUngrouped, UNGROUPED_IDLE_MS } from '../src/waker.ts';
+import { held, sweepIdleUngrouped, UNGROUPED_IDLE_MS } from '../src/waker.ts';
 import { openSkills, pushed, skills } from '../src/skills.ts';
 import { serverCall, upstreams } from '../src/connections.ts';
+import { ask, grants } from '../src/grants.ts';
+import { personDir, saveLogin } from '../src/logins.ts';
 import { createServer } from 'node:http';
 
 test('sweepIdleUngrouped abandons single:true open instances idle >= 24h and leaves recent or recurring ones open', async () => {
@@ -193,6 +195,54 @@ test('run_subagent.sh enforces RF policy flags and scopes --resume to current ru
   }
 });
 
+test('run_subagent.sh derives writable instance dir from RF_WORKING without touching read-only work root (P1-1)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-subagent-ro-'));
+  const workRoot = join(root, 'work');
+  const instDir = join(workRoot, 'ws1', 'series1', 'inst1');
+  const workingDir = join(instDir, 'working');
+  const sessionDir = join(instDir, 'session');
+  try {
+    const fakeBin = join(root, 'bin');
+    mkdirSync(fakeBin, { recursive: true });
+    mkdirSync(workingDir, { recursive: true });
+    mkdirSync(sessionDir, { recursive: true });
+    const cwdFile = join(root, 'pi-cwd.txt');
+    const fakePi = join(fakeBin, 'pi');
+    writeFileSync(fakePi, `#!/usr/bin/env bash\npwd > "${cwdFile}"\n`);
+    chmodSync(fakePi, 0o755);
+    const fakePrompt = join(root, 'prompt.md');
+    writeFileSync(fakePrompt, '# RF Policy\n');
+
+    // Simulate production sandbox: /work and instance parent dirs are read-only, only working/ and session/ are writable.
+    chmodSync(instDir, 0o555);
+    chmodSync(join(workRoot, 'ws1', 'series1'), 0o555);
+    chmodSync(join(workRoot, 'ws1'), 0o555);
+    chmodSync(workRoot, 0o555);
+
+    const script = join(process.cwd(), 'skills', 'subagent', 'run_subagent.sh');
+    const env = { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, RF_INSTANCE: 'inst1', RF_TOKEN: 'tok-ro', RF_SYSTEM_PROMPT: fakePrompt, RF_WORKING: workingDir };
+    delete env.RF_WORK_DIR;
+
+    const out = execFileSync('bash', [script, '--prompt', 'draft'], { cwd: tmpdir(), env, encoding: 'utf8' });
+    assert.match(out, /status: completed/);
+    assert.equal(execFileSync('cat', [cwdFile], { encoding: 'utf8' }).trim(), instDir);
+    const sessionPath = out.split('\n').find(l => l.startsWith('session: '))!.replace('session: ', '').trim();
+    assert.ok(sessionPath.startsWith('session/subagents/'), `expected session/subagents/... got ${sessionPath}`);
+    const fullSession = join(instDir, sessionPath);
+    writeFileSync(fullSession, '{}\n');
+    assert.equal(existsSync(join(workRoot, 'session')), false, 'must never write session/ into read-only work root');
+
+    // Resume from another cwd using RF_WORKING must also succeed
+    const resOut = execFileSync('bash', [script, '--resume', fullSession, '--prompt', 'continue'], { cwd: tmpdir(), env, encoding: 'utf8' });
+    assert.match(resOut, /status: completed/);
+  } finally {
+    for (const d of [workRoot, join(workRoot, 'ws1'), join(workRoot, 'ws1', 'series1'), instDir]) {
+      try { chmodSync(d, 0o755); } catch {}
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('built-in subagent skill is loaded and bin/pi is executable', () => {
   const root = mkdtempSync(join(tmpdir(), 'rf-builtin-skill-'));
   try {
@@ -223,12 +273,21 @@ test('sweepIdleUngrouped respects RF_UNGROUPED_GC_OWNERS allowlist, rejects empt
     t.series.s_alice = { name: 'Alice Idle', workspace: 'w1', single: true };
     t.series.s_bob = { name: 'Bob Idle', workspace: 'w1', single: true };
     t.series.s_due = { name: 'Alice Due', workspace: 'w1', single: true };
+    t.series.s_held = { name: 'Alice Login Held', workspace: 'w1', single: true };
     saveTree(t);
 
     const aliceInst = createInstance('s_alice', 'Alice Idle', 'alice@example.com');
     const bobInst = createInstance('s_bob', 'Bob Idle', 'bob@example.com');
     const dueInst = createInstance('s_due', 'Alice Due', 'alice@example.com');
     dueInst.append('alice@example.com', 'comment', { text: 'please run this', authorityEpoch: 1, authorityOwner: 'alice@example.com' });
+    const heldInst = createInstance('s_held', 'Alice Login Held', 'alice@example.com');
+    heldInst.append('alice@example.com', 'comment', { text: 'needs entra', authorityEpoch: 1, authorityOwner: 'alice@example.com' });
+    heldInst.append('server', 'expired', {
+      login: 'entra',
+      runner: 'alice@example.com',
+      initiator: 'alice@example.com',
+      authority: { version: 1, owner: 'alice@example.com', epoch: 1, workspace: 'w1', logins: [], autonomous: true },
+    });
 
     const writeSettings = (sid: string, owner: string) => {
       const at = new Date().toISOString();
@@ -237,12 +296,16 @@ test('sweepIdleUngrouped respects RF_UNGROUPED_GC_OWNERS allowlist, rejects empt
     writeSettings('s_alice', 'alice@example.com');
     writeSettings('s_bob', 'bob@example.com');
     writeSettings('s_due', 'alice@example.com');
+    writeSettings('s_held', 'alice@example.com');
+
+    assert.equal(held(heldInst, 'entra', 'alice@example.com'), true, 'fixture task should be login-held');
 
     const now = Date.now();
     const oldAt = new Date(now - UNGROUPED_IDLE_MS - 3_600_000).toISOString();
     aliceInst.log.at(-1)!.at = oldAt;
     bobInst.log.at(-1)!.at = oldAt;
     dueInst.log.at(-1)!.at = oldAt;
+    heldInst.log.at(-1)!.at = oldAt;
 
     // Empty/whitespace-only RF_UNGROUPED_GC_OWNERS must disable GC, never select everyone
     process.env.RF_UNGROUPED_GC_OWNERS = ' ,  ';
@@ -250,13 +313,14 @@ test('sweepIdleUngrouped respects RF_UNGROUPED_GC_OWNERS allowlist, rejects empt
     assert.equal(instance(aliceInst.id).doc.status, 'open');
     assert.equal(instance(bobInst.id).doc.status, 'open');
 
-    // Named pilot owner selects only alice's idle task, skipping bob's and alice's due task
+    // Named pilot owner selects only alice's idle task, skipping bob's, alice's due task, and alice's login-held task (P1-6)
     process.env.RF_UNGROUPED_GC_OWNERS = 'alice@example.com';
     const abandoned = await sweepIdleUngrouped(now);
     assert.deepEqual(abandoned, [aliceInst.id]);
     assert.equal(instance(aliceInst.id).doc.status, 'abandoned');
     assert.equal(instance(bobInst.id).doc.status, 'open');
     assert.equal(instance(dueInst.id).doc.status, 'open');
+    assert.equal(instance(heldInst.id).doc.status, 'open', 'login-held task must NOT be abandoned by GC');
   } finally {
     if (prevOwners === undefined) delete process.env.RF_UNGROUPED_GC_OWNERS;
     else process.env.RF_UNGROUPED_GC_OWNERS = prevOwners;
@@ -300,6 +364,39 @@ test('serverCall honors checkpoint before 429 resend (P1-G)', async () => {
     if (prevKey === undefined) delete process.env.OPENROUTER_API_KEY;
     else process.env.OPENROUTER_API_KEY = prevKey;
     upstream.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('grants.ask enforces request recheck before saving or self-approving a grant (P1-5)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-grants-recheck-'));
+  try {
+    initSystem(root);
+    writeJson('users.json', {
+      'alice@example.com': { role: 'admin', name: 'Alice', groups: [], epoch: 1 },
+    });
+    const t = tree();
+    t.workspaces.w1 = { name: 'Main', owners: ['alice@example.com'], members: [] };
+    saveTree(t);
+    const userDir = personDir('alice@example.com');
+    mkdirSync(userDir, { recursive: true });
+    writeFileSync(join(userDir, 'websites.json'), JSON.stringify({
+      erp: { url: 'https://erp.example.com/', added: new Date().toISOString(), profile: { name: 'ERP', risk: 'low', summary: 'ok', at: new Date().toISOString() } },
+    }));
+    saveLogin('alice@example.com', { id: 'web:erp', kind: 'web', name: 'erp', offers: [{ id: 'web:erp', name: 'erp' }], since: new Date().toISOString() }, JSON.stringify({ cookies: [] }));
+
+    await assert.rejects(
+      () => ask(
+        { email: 'alice@example.com', name: 'Alice', role: 'admin', groups: [] },
+        'erp',
+        'w1',
+        'need erp',
+        () => { throw new HttpError(401, 'sign in first'); },
+      ),
+      /sign in first/,
+    );
+    assert.equal(Object.keys(grants()).length, 0, 'expired/revoked credential must not save or self-approve a grant');
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -32,10 +32,11 @@ fi
 
 # Anchor launch and transcript storage to the real instance workspace so Pi's
 # AGENTS.md hierarchy and session/subagents/ cannot be bypassed by running from /tmp.
+# In the production sandbox, RF_WORKING is <instance>/working and /work is read-only.
 if [[ -n "${RF_WORK_DIR:-}" ]]; then
   WORK_DIR="$RF_WORK_DIR"
-elif [[ -d /work ]]; then
-  WORK_DIR="/work"
+elif [[ -n "${RF_WORKING:-}" ]]; then
+  WORK_DIR="$(dirname "$RF_WORKING")"
 else
   WORK_DIR="$PWD"
 fi
