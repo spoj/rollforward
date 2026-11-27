@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -79,12 +79,19 @@ export const PRINT = 'print';
 const printer = async () => (await browserJson('POST', '/sessions', { site: { hosts: [], public: true }, ttl_s: 1800 })).id as string;
 
 const allowedHosts = (w: Website) => {
-  const ex = except();
-  return reached(w).filter(h => (!w.checks?.[h] || w.checks[h].verdict === 'pass') && !ex.some(x => covers(h, x) || covers(x, h)));
+  const ex = except(), let_ = letIn();
+  return reached(w).filter(h => (!w.checks?.[h] || w.checks[h].verdict === 'pass') && !ex.some(x => covers(h, x) || covers(x, h)) && (throughVpn(w, h) || !!let_[h] || !internalRevocations.has(h)));
 };
 
+export async function sessionHosts(w: Website): Promise<{ hosts: string[]; public?: true }> {
+  const hasInternal = internalOf(w), let_ = letIn();
+  let hosts = allowedHosts(w);
+  if (hasInternal) hosts = (await Promise.all(hosts.map(async h => (throughVpn(w, h) || let_[h] || h.startsWith('*.') || !(await resolvesInternal(h))) ? h : ''))).filter(Boolean);
+  return { hosts, ...(!hasInternal && { public: true as const }) };
+}
+
 const openSession = async (w: Website, ttl_s: number, state?: unknown, via?: Via, audit = false): Promise<{ id: string; shots?: string }> =>
-  browserJson('POST', '/sessions', { site: { hosts: allowedHosts(w), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s, ...(audit && { audit: true }) });
+  browserJson('POST', '/sessions', { site: { ...(await sessionHosts(w)), start_url: w.url, via }, state, ttl_s, ...(audit && { audit: true }) });
 const open = async (w: Website, ttl_s: number, state?: unknown, via?: Via): Promise<string> => (await openSession(w, ttl_s, state, via)).id;
 const throughVpn = (w: Website, host: string) => !!w.via && vpnHosts(w.url).some(p => covers(p, host));
 // Whether one of the website's exact hosts has an admin's internal-address permission.
@@ -125,6 +132,7 @@ export const profiles = () => readJson<Record<string, Classification & { by: str
 export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; hostRevs?: Record<string, number>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
 const internalRevocations = new Map<string, number>();
+const processNonce = randomBytes(16).toString('hex');
 const bumpHostRevs = (prev: Record<string, number> | undefined, hosts: string[]) => {
   const next: Record<string, number> = Object.assign(Object.create(null), prev);
   for (const h of hosts) next[h] = (next[h] ?? 0) + 1;
@@ -134,7 +142,7 @@ export const siteIdentity = (w: Pick<Website, 'url' | 'added'>) =>
   createHash('sha256').update(JSON.stringify([w.url, w.added])).digest('hex').slice(0, 16);
 export const siteRevision = (email: string, site: string, w: Website, host = '') => {
   const h = host.trim().toLowerCase();
-  return createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, h ? (Object.hasOwn(w.hostRevs ?? {}, h) ? w.hostRevs![h] : 0) : 0, websiteGenerations.get(`${email} ${site}`) ?? 0, h ? (internalRevocations.get(h) ?? 0) : 0])).digest('hex').slice(0, 16);
+  return createHash('sha256').update(JSON.stringify([processNonce, w.url, w.via ?? '', w.added, w.generation ?? 0, h ? (Object.hasOwn(w.hostRevs ?? {}, h) ? w.hostRevs![h] : 0) : 0, websiteGenerations.get(`${email} ${site}`) ?? 0, h ? (internalRevocations.get(h) ?? 0) : 0])).digest('hex').slice(0, 16);
 };
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 // By name, a person's: none is Object's, such as constructor.

@@ -61,7 +61,7 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeHost, removeSite, revokeInternalHosts, setSite, siteRevision, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeHost, removeSite, revokeInternalHosts, sessionHosts, setSite, siteRevision, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { letIn, setLetIn, upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
@@ -592,24 +592,36 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal(mutatedCount, 1, 'persisted internal revocation still triggers cleanup even when sibling websites.json is corrupt');
   rmSync(corruptDir, { recursive: true, force: true });
 
-  // Partial revocation: if replaceFile fails for a site with a pending internal verdict, its pre-revocation Waiting siteRev still returns 409
-  const partialEmail = 'partial@company.test';
-  await addSite(partialEmail, 'partialapp', 'https://10.9.8.21/');
-  changeWebsite(partialEmail, 'partialapp', { checks: { '10.9.8.22': { verdict: 'internal', why: 'It is at an internal address.' } } });
-  const preRevokeToken = siteRevision(partialEmail, 'partialapp', websitesOf(partialEmail).partialapp, '10.9.8.22');
-  setLetIn(['10.9.8.22'], admin.email, true);
-  const partialDir = personDir(partialEmail);
-  chmodSync(partialDir, 0o500);
-  t.after(() => { if (existsSync(partialDir)) chmodSync(partialDir, 0o700); });
-  try {
-    setLetIn(['10.9.8.22'], admin.email, false);
-    await assert.rejects(revokeInternalHosts(['10.9.8.22']), { code: 'EACCES' });
-  } finally {
-    chmodSync(partialDir, 0o700);
+  // Partial revocation: if replaceFile fails for a site with a pending/passed internal host,
+  // (a) its pre-revocation Waiting siteRev still returns 409 (and changes across process restarts),
+  // (b) a new run browser session still omits the revoked host even when another internal grant keeps public:true off.
+  if (process.getuid?.() !== 0) {
+    const partialEmail = 'partial@company.test';
+    await addSite(partialEmail, 'partialapp', 'https://10.9.8.21/');
+    changeWebsite(partialEmail, 'partialapp', { checks: { '10.9.8.22': { verdict: 'internal', why: 'It is at an internal address.' } } });
+    await addSite(partialEmail, 'partialrun', 'https://10.9.8.21/');
+    changeWebsite(partialEmail, 'partialrun', { hosts: ['10.9.8.22'], checks: { '10.9.8.22': { verdict: 'pass', why: 'Allowed.' } } });
+    const preRevokeToken = siteRevision(partialEmail, 'partialapp', websitesOf(partialEmail).partialapp, '10.9.8.22');
+    const freshProcessRev = execFileSync(process.execPath, ['--input-type=module', '-e',
+      `import { siteRevision } from './src/browsers.ts'; console.log(siteRevision(${JSON.stringify(partialEmail)}, 'partialapp', ${JSON.stringify(websitesOf(partialEmail).partialapp)}, '10.9.8.22'));`
+    ], { encoding: 'utf8' }).trim();
+    assert.notEqual(freshProcessRev, preRevokeToken, 'per-process nonce invalidates Waiting siteRev tokens across server restarts');
+    setLetIn(['10.9.8.21', '10.9.8.22'], admin.email, true);
+    const partialDir = personDir(partialEmail);
+    chmodSync(partialDir, 0o500);
+    t.after(() => { if (existsSync(partialDir)) chmodSync(partialDir, 0o700); });
+    try {
+      setLetIn(['10.9.8.22'], admin.email, false);
+      await assert.rejects(revokeInternalHosts(['10.9.8.22']), { code: 'EACCES' });
+    } finally {
+      chmodSync(partialDir, 0o700);
+    }
+    assert.equal(websitesOf(partialEmail).partialapp.hostRevs?.['10.9.8.22'], undefined, 'revision write truly failed for affected site');
+    assert.deepEqual(websitesOf(partialEmail).partialrun.hosts, ['10.9.8.22'], 'stale websites.json still lists revoked host');
+    await assert.rejects(allowHost(admin, 'partialapp', '10.9.8.22', partialEmail, undefined, preRevokeToken), { status: 409 });
+    assert.equal(Boolean(letIn()['10.9.8.22']), false, 'stale Waiting Allow after partial revocation cannot restore global grant');
+    assert.deepEqual(await sessionHosts(websitesOf(partialEmail).partialrun), { hosts: ['10.9.8.21'] }, 'new run browser omits revoked internal host even while another grant remains active');
   }
-  assert.equal(websitesOf(partialEmail).partialapp.hostRevs?.['10.9.8.22'], undefined, 'revision write truly failed for affected site');
-  await assert.rejects(allowHost(admin, 'partialapp', '10.9.8.22', partialEmail, undefined, preRevokeToken), { status: 409 });
-  assert.equal(Boolean(letIn()['10.9.8.22']), false, 'stale Waiting Allow after partial revocation cannot restore global grant');
 
   // Revoking one internal host only updates sign-ins that hold (or are updating to) that host, never touching unrelated live sign-ins
   await addSite(email, 'sitea', 'https://10.9.8.23/');
