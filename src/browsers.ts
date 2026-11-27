@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -858,7 +858,7 @@ function writeBrowserArtifact(instDir: string, rel: string, data: Buffer | strin
     const base = process.platform === 'linux' ? `/proc/self/fd/${dfd}` : browserDir;
     const dst = `${base}/${name}`;
     const existing = lstatSync(dst, { throwIfNoEntry: false });
-    if (existing?.isDirectory()) throw new HttpError(500, 'browser artifact destination is a directory');
+    if (existing && !existing.isFile()) throw new HttpError(500, 'browser artifact destination is not a regular file');
     const tmp = `${base}/.${name}.${randomBytes(4).toString('hex')}.tmp`;
     writeFileSync(tmp, data, { mode: 0o444, flag: 'wx' });
     try {
@@ -867,6 +867,9 @@ function writeBrowserArtifact(instDir: string, rel: string, data: Buffer | strin
     } catch (e) {
       rmSync(tmp, { force: true });
       throw e;
+    }
+    if (process.platform === 'linux' && readlinkSync(`/proc/self/fd/${dfd}`) !== browserDir) {
+      throw new HttpError(500, 'browser artifact directory moved during publication');
     }
   } finally {
     closeSync(dfd);
@@ -1389,6 +1392,7 @@ async function finalizeV2Session(
 ): Promise<void> {
   const openId = b.openId ?? id;
   let state: unknown = null;
+  let hasFrozenSeal = Boolean(b.sealCursors);
   let sealCursors = b.sealCursors ?? { log: b.logCursor ?? 0, cdp: b.cdpCursor ?? 0, shot: b.shotCursor ?? 0 };
   let sealGaps: SealGaps = b.sealGaps ?? { droppedGets: 0, droppedCdp: 0, droppedShots: 0, refusedFull: 0 };
   let sealedAt = b.sealedAt ?? new Date().toISOString();
@@ -1435,6 +1439,7 @@ async function finalizeV2Session(
         refusedFull: g.refusedFull,
       };
       sealedAt = new Date().toISOString();
+      hasFrozenSeal = true;
       b.phase = 'sealed';
       b.sealCursors = sealCursors;
       b.sealGaps = sealGaps;
@@ -1461,9 +1466,12 @@ async function finalizeV2Session(
     const dir = spoolDirOf(openId);
     const httpSpoolPath = join(dir, 'http.jsonl');
     const cdpSpoolPath = join(dir, 'cdp.jsonl');
-    const httpRaw = repairJsonlStream(httpSpoolPath, Math.max(b.logCursor ?? 0, sealCursors.log), sealCursors.log).entries as Entry[];
-    const cdpRaw = repairJsonlStream(cdpSpoolPath, b.cdpFile ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : 0, sealCursors.cdp).entries;
-    const shotState = readShotSpool(openId, Math.max(b.shotCursor ?? 0, sealCursors.shot));
+    // Apply frozen seal cursor as upper bound ONLY when a seal actually supplied it; if remote was already gone before seal, recover all valid host-spooled records.
+    const httpSpool = repairJsonlStream(httpSpoolPath, hasFrozenSeal ? Math.max(b.logCursor ?? 0, sealCursors.log) : (b.logCursor ?? 0), hasFrozenSeal ? sealCursors.log : undefined);
+    const cdpSpool = repairJsonlStream(cdpSpoolPath, b.cdpFile ? (hasFrozenSeal ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : (b.cdpCursor ?? 0)) : 0, hasFrozenSeal ? sealCursors.cdp : undefined);
+    const httpRaw = httpSpool.entries as Entry[];
+    const cdpRaw = cdpSpool.entries;
+    const shotState = readShotSpool(openId, hasFrozenSeal ? Math.max(b.shotCursor ?? 0, sealCursors.shot) : (b.shotCursor ?? 0));
 
     // Evaluate Stage-1 execpolicy over drained browser writes for unified API+browser policy telemetry.
     const { enriched: httpEntries, policySummary } = evaluateBrowserPolicySummary(inst, b.run, httpRaw);
@@ -1532,9 +1540,9 @@ async function finalizeV2Session(
       extractorV: EXTRACTOR_V,
       sealedAt,
       finalCursors: {
-        log: b.logCursor ?? sealCursors.log,
-        cdp: b.cdpCursor ?? sealCursors.cdp,
-        shot: b.shotCursor ?? sealCursors.shot,
+        log: hasFrozenSeal ? (b.logCursor ?? sealCursors.log) : Math.max(b.logCursor ?? 0, httpSpool.maxCursor),
+        cdp: hasFrozenSeal ? (b.cdpCursor ?? sealCursors.cdp) : Math.max(b.cdpCursor ?? 0, cdpSpool.maxCursor),
+        shot: hasFrozenSeal ? (b.shotCursor ?? sealCursors.shot) : Math.max(b.shotCursor ?? 0, ...allShots.map(s => s.seq)),
       },
       gaps: sealGaps,
       ...(policySummary && { policySummary }),
@@ -1676,10 +1684,22 @@ function readVerifiedWorkspaceFile(instDir: string, rel: string, expectedSha256:
   const fd = openFile(instDir, rel);
   if (fd === undefined) return { status: 'missing' };
   try {
-    // Bound size BEFORE allocation so a replaced workspace file can never exhaust server memory.
+    // Enforce byte limit both before AND during reading so a concurrently growing file can never exhaust server memory.
     const st = fstatSync(fd);
     if (st.size > maxBytes) return { status: 'tampered' };
-    const buf = readFileSync(fd);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const chunkSize = 64 * 1024;
+    for (;;) {
+      const remaining = maxBytes + 1 - total;
+      const chunk = Buffer.allocUnsafe(Math.min(chunkSize, remaining));
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      if (n === 0) break;
+      total += n;
+      if (total > maxBytes) return { status: 'tampered' };
+      chunks.push(n === chunk.length ? chunk : chunk.subarray(0, n));
+    }
+    const buf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total);
     if (sha256Hex(buf) !== expectedSha256) return { status: 'tampered' };
     return { buf, status: 'ok' };
   } finally {

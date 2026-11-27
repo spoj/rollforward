@@ -162,6 +162,14 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   const badOrCall = entries.findLast(e => e.op === 'call')!;
   assert.equal(badOrCall.refused, 'invalid JSON request body');
   assert.ok(!JSON.stringify(badOrCall).includes('TOP_SECRET_MALFORMED_PROMPT_999'));
+
+  // Graph unsupported-resource refusal must NOT leak raw query values or redacted path segments into call.refused!
+  const graphRefused = await sendViaProxy(run, 'graph.microsoft.com', 'GET', '/v1.0/groups/aB3dE5fG7hI9jK1lM3nO5pQ7/members?token=SECRET_GRAPH_Q&filter=JaneDoe', {});
+  assert.equal(graphRefused.status, 403);
+  const graphRefCall = entries.findLast(e => e.op === 'call')!;
+  assert.ok(!String(graphRefCall.refused).includes('SECRET_GRAPH_Q'), 'raw query token scrubbed from call.refused');
+  assert.ok(!String(graphRefCall.refused).includes('JaneDoe'), 'raw query value scrubbed from call.refused');
+  assert.ok(!String(graphRefCall.refused).includes('aB3dE5fG7hI9jK1lM3nO5pQ7'), 'redacted path segment scrubbed from call.refused');
 });
 
 test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade with zero upstream hits and ruleId-only 403, and unlocks sendMail after current-epoch signoff', async () => {

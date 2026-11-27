@@ -516,10 +516,14 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   let jsonApi = false;
   let parsedUrl: URL | null = null;
   let sanPathname: string | undefined;
+  let sanSearch: string | undefined;
   try {
     const url = parsedUrl = URL.parse(req.url!, `https://${host}`);
     if (!url) throw new HttpError(403, `invalid request target: ${path}`);
-    sanPathname = sanitizeUrl(url, { projection: 'semantic' }).path;
+    const sanParsed = sanitizeUrl(url, { projection: 'semantic' });
+    sanPathname = sanParsed.path;
+    const qIdx = sanParsed.url.indexOf('?');
+    sanSearch = qIdx >= 0 ? sanParsed.url.slice(qIdx) : '';
     const link = a.links.get(url.href), s = link ? undefined : own(host);
     if (link) { name = link.name; path = sanitizeLoggedTarget(url.href, host, true); }
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
@@ -777,14 +781,40 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // A refusal, or an expired login, is the server's answer; anything else, a failure to reach the host.
     const err = e as Error & { status?: number; login?: string; since?: string }, status = e instanceof HttpError ? err.status! : 502;
     let msg = [process.env.OPENROUTER_API_KEY, process.env.OPENROUTER_FALLBACK_KEY, process.env.EXA_API_KEY].reduce((m, k) => k ? m.replaceAll(k, '[redacted]') : m, err.message);
-    if (parsedUrl && sanPathname && sanPathname !== parsedUrl.pathname) {
-      msg = msg.replaceAll(parsedUrl.pathname, sanPathname);
-      try {
-        const dec = decodeURIComponent(parsedUrl.pathname);
-        if (dec && dec !== sanPathname) msg = msg.replaceAll(dec, sanPathname);
-        const decNoSlash = dec.replace(/\/$/, '');
-        if (decNoSlash && decNoSlash !== sanPathname) msg = msg.replaceAll(decNoSlash, sanPathname.replace(/\/$/, ''));
-      } catch {}
+    if (parsedUrl) {
+      if (parsedUrl.search && sanSearch !== undefined && parsedUrl.search !== sanSearch) {
+        msg = msg.replaceAll(parsedUrl.search, sanSearch);
+      }
+      if (sanPathname && sanPathname !== parsedUrl.pathname) {
+        msg = msg.replaceAll(parsedUrl.pathname, sanPathname);
+        // Also replace versionless Graph bare path (e.g. /v1.0/foo -> /foo) and individually redacted segments.
+        const bareRaw = parsedUrl.pathname.replace(/^\/(?:v1\.0|beta)(?=\/|$)/i, '');
+        const bareSan = sanPathname.replace(/^\/(?:v1\.0|beta)(?=\/|$)/i, '');
+        if (bareRaw && bareSan && bareRaw !== bareSan) {
+          msg = msg.replaceAll(bareRaw, bareSan);
+          try {
+            const bareDec = decodeURIComponent(bareRaw);
+            if (bareDec && bareDec !== bareSan) msg = msg.replaceAll(bareDec, bareSan);
+          } catch {}
+        }
+        try {
+          const dec = decodeURIComponent(parsedUrl.pathname);
+          if (dec && dec !== sanPathname) msg = msg.replaceAll(dec, sanPathname);
+          const decNoSlash = dec.replace(/\/$/, '');
+          if (decNoSlash && decNoSlash !== sanPathname) msg = msg.replaceAll(decNoSlash, sanPathname.replace(/\/$/, ''));
+        } catch {}
+        const rawSegs = parsedUrl.pathname.split('/');
+        const sanSegs = sanPathname.split('/');
+        for (let i = 0; i < Math.min(rawSegs.length, sanSegs.length); i++) {
+          if (rawSegs[i] && sanSegs[i] && rawSegs[i] !== sanSegs[i]) {
+            msg = msg.replaceAll(rawSegs[i], sanSegs[i]);
+            try {
+              const decSeg = decodeURIComponent(rawSegs[i]);
+              if (decSeg && decSeg !== sanSegs[i]) msg = msg.replaceAll(decSeg, sanSegs[i]);
+            } catch {}
+          }
+        }
+      }
     }
     const rawTargetPath = (req.url ?? '').replace(/^https:\/\/[^/]+/i, '').split(/[?#]/, 1)[0];
     if (sanPathname && rawTargetPath && rawTargetPath !== sanPathname) {

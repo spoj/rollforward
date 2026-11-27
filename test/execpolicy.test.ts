@@ -522,6 +522,11 @@ test('replayExecPolicy deterministically replays saved log.jsonl + browser/*.jso
     }));
     const tamperedReplay = await replayExecPolicy(dir, { instId: 'inst-replay', manifestsDir });
     assert.ok(tamperedReplay.results.some(r => r.insufficientReason === 'browser_log_manifest_mismatch'));
+
+    // Malformed non-object (`null`) line in log.jsonl does NOT crash replay and emits insufficient_evidence!
+    writeFileSync(join(dir, 'log.jsonl'), `${logLines.map(l => JSON.stringify(l)).join('\n')}\nnull\n`);
+    const nullLineReplay = await replayExecPolicy(dir);
+    assert.ok(nullLineReplay.results.some(r => r.insufficientReason === 'malformed_instance_log_line'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

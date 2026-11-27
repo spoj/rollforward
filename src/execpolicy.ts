@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { closeSync, existsSync, fstatSync, readdirSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, readdirSync, readFileSync, readSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import {
   DESC_V,
@@ -691,14 +691,27 @@ export type ReplaySummary = {
 const MAX_REPLAY_LOG_BYTES = 12 * 1024 * 1024
 
 function parseJsonlBuffer(rawBuf: Buffer): { entries: any[]; malformedLines: number[] } {
+  if (rawBuf.length === 0) return { entries: [], malformedLines: [] }
   const raw = rawBuf.toString('utf8')
   const entries: any[] = []
   const malformedLines: number[] = []
-  const lines = raw.split('\n')
+  const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n')
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim()
-    if (!trimmed) continue
-    try { entries.push(JSON.parse(trimmed)) } catch { malformedLines.push(i + 1) }
+    if (!trimmed) {
+      malformedLines.push(i + 1)
+      continue
+    }
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        malformedLines.push(i + 1)
+        continue
+      }
+      entries.push(parsed)
+    } catch {
+      malformedLines.push(i + 1)
+    }
   }
   return { entries, malformedLines }
 }
@@ -710,13 +723,31 @@ function readJsonlStrict(filePath: string): { entries: any[]; malformedLines: nu
   return { entries, malformedLines, rawBuf }
 }
 
+function readFdBounded(fd: number, maxBytes: number): Buffer | undefined {
+  const st = fstatSync(fd)
+  if (st.size > maxBytes) return undefined
+  const chunks: Buffer[] = []
+  let total = 0
+  const chunkSize = 64 * 1024
+  for (;;) {
+    const remaining = maxBytes + 1 - total
+    const buf = Buffer.allocUnsafe(Math.min(chunkSize, remaining))
+    const n = readSync(fd, buf, 0, buf.length, null)
+    if (n === 0) break
+    total += n
+    if (total > maxBytes) return undefined
+    chunks.push(n === buf.length ? buf : buf.subarray(0, n))
+  }
+  return chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total)
+}
+
 function readContainedFileOnce(baseDir: string, relFile: string, maxBytes: number): { status: 'ok' | 'missing' | 'oversize'; buf?: Buffer } {
   const fd = openFile(baseDir, relFile)
   if (fd === undefined) return { status: 'missing' }
   try {
-    const st = fstatSync(fd)
-    if (st.size > maxBytes) return { status: 'oversize' }
-    return { status: 'ok', buf: readFileSync(fd) }
+    const buf = readFdBounded(fd, maxBytes)
+    if (!buf) return { status: 'oversize' }
+    return { status: 'ok', buf }
   } finally {
     closeSync(fd)
   }

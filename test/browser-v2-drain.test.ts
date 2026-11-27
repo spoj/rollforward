@@ -409,6 +409,22 @@ test('fail-closed spool & protocol checks: malformed /capabilities, corrupt shot
   } finally {
     rmSync(outsideDir, { recursive: true, force: true });
   }
+
+  // 5. Remote gone before seal: host-spooled entries beyond journal logCursor MUST be recovered (not rejected!)
+  const instGone = makeInst('v2gone');
+  const bGone = new Browsers(instGone, 1);
+  const idGone = await bGone.browser('erp');
+  const sessGone = remoteSessions.get(idGone)!;
+  mkdirSync(join(rfDir(), 'browser-spool', idGone), { recursive: true });
+  writeFileSync(join(rfDir(), 'browser-spool', idGone, 'http.jsonl'), sessGone.http.map(e => JSON.stringify(e) + '\n').join(''));
+  // Simulate remote session vanishing before seal while journal still has logCursor: 0
+  remoteSessions.delete(idGone);
+  await bGone.close('erp');
+  const goneAudit = readBrowserAudit(instGone, idGone);
+  assert.equal(goneAudit.integrity.ok, true);
+  assert.equal(goneAudit.manifest.gaps.remoteGone, true);
+  assert.equal(goneAudit.manifest.finalCursors.log, 2);
+  assert.equal(goneAudit.http.length, 2, 'host-spooled records recovered even when remote vanished before seal');
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {
