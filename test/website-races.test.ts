@@ -49,7 +49,7 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, siteRevision, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { letIn, upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
@@ -446,4 +446,18 @@ test('concurrent route change or website replacement rejects pending internal, a
 
   await assert.rejects(refuseHost(admin, 'portal', 'files.example.net', email, () => replaceSite('https://third.review.test/')), { status: 409 });
   assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
+
+  // Stale siteRev captured before a site replacement rejects Allow (even for internal host) and Keep blocked with 409
+  const staleRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  replaceSite('https://fourth.review.test/');
+  await assert.rejects(allowHost(admin, 'portal', '10.9.8.9', email, undefined, staleRev), { status: 409 });
+  assert.equal(Boolean(letIn()['10.9.8.9']), false, 'stale Allow must not enroll internal host in global internal.json');
+  await assert.rejects(refuseHost(admin, 'portal', 'files.example.net', email, undefined, staleRev), { status: 409 });
+  assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
+
+  // Concurrent addSite for the same name must not let the second overwrite the first
+  const [r1, r2] = await Promise.allSettled([addSite(email, 'dup', 'https://first.review.test/'), addSite(email, 'dup', 'https://second.review.test/')]);
+  assert.deepEqual([r1.status, r2.status].sort(), ['fulfilled', 'rejected']);
+  assert.equal((r1.status === 'rejected' ? r1.reason : (r2 as PromiseRejectedResult).reason).status, 409);
+  assert.equal(websitesOf(email).dup.url, 'https://first.review.test/');
 });

@@ -1379,10 +1379,10 @@ function waiting() {
       if (me.role === 'admin') for (const r of i.refused ?? []) for (const x of r.hosts ?? []) {
         const key = `${r.login}\0${r.site}\0${x}`, c = r.counts?.[x] ?? r.count ?? 1, hostAt = r.ats?.[x] ?? r.at ?? '', t = Date.parse(hostAt) || 0;
         const prev = refusedByHost.get(key);
-        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: hostAt, t, login: r.login, site: r.site, host: x, why: r.why?.[x] ?? '', count: c });
+        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: hostAt, t, login: r.login, site: r.site, siteRev: r.siteRev ?? '', host: x, why: r.why?.[x] ?? '', count: c });
         else {
           prev.count += c;
-          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: hostAt, t, why: r.why?.[x] || prev.why });
+          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: hostAt, t, siteRev: r.siteRev || prev.siteRev, why: r.why?.[x] || prev.why });
         }
       }
       if (i.wrong && i.owner === me.email) { out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`); actionable++; }
@@ -1401,7 +1401,7 @@ function waiting() {
   }
   for (const r of refusedRows.values()) {
     out.push(`<div class="wt">${at(r.w, r.s, r.i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
-      + r.hosts.map(x => ` <span class="creds">${esc(x.host)}${x.count > 1 ? ` <span class="sub">${x.count}\u00D7</span>` : ''}${x.why ? ` <span class="sub">${esc(x.why)}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}">Allow</a> \u00b7 <a data-act="refuse-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}">Keep blocked</a></span>`).join('') + '</div>');
+      + r.hosts.map(x => ` <span class="creds">${esc(x.host)}${x.count > 1 ? ` <span class="sub">${x.count}\u00D7</span>` : ''}${x.why ? ` <span class="sub">${esc(x.why)}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}"${x.siteRev ? ` data-rev="${esc(x.siteRev)}"` : ''}>Allow</a> \u00b7 <a data-act="refuse-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}"${x.siteRev ? ` data-rev="${esc(x.siteRev)}"` : ''}>Keep blocked</a></span>`).join('') + '</div>');
     actionable += r.hosts.length;
   }
   for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) { out.push(grantHtml(g, 'wt')); actionable++; }
@@ -2166,12 +2166,12 @@ async function onAct(act, el) {
     }
   }
   if (act === 'allow-host') {
-    await api(`/logins/web/${enc(el.dataset.site)}/hosts?person=${enc(el.dataset.person)}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host }) });
+    await api(`/logins/web/${enc(el.dataset.site)}/hosts?person=${enc(el.dataset.person)}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host, ...(el.dataset.rev && { siteRev: el.dataset.rev }) }) });
     await refresh();
     renderPv();
   }
   if (act === 'refuse-host') {
-    await api(`/logins/web/${enc(el.dataset.site)}/hosts?person=${enc(el.dataset.person)}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host, allow: false }) });
+    await api(`/logins/web/${enc(el.dataset.site)}/hosts?person=${enc(el.dataset.person)}`, { method: 'POST', body: JSON.stringify({ host: el.dataset.host, allow: false, ...(el.dataset.rev && { siteRev: el.dataset.rev }) }) });
     await refresh();
     renderPv();
   }

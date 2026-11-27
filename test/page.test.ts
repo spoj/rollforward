@@ -1384,11 +1384,11 @@ test('only admins see Allow and Keep blocked for deduplicated refused hosts in W
   const decisions: [string, { host: string; allow?: boolean }][] = [];
   // inst0 run 1 saw files.example.net at t1 and late.example.net at t3 (row.at = t3, per-host ats preserves t1 vs t3).
   // inst1 run 5 saw files.example.net at t2 (t1 < t2 < t3), so files.example.net must link to inst1 run 5, not inst0 run 1!
-  const refused1 = [{ at: t3, run: 1, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net', 'late.example.net'],
+  const refused1 = [{ at: t3, run: 1, site: 'gg', siteRev: 'rev-gg-1', login: 'bob@demo.test', hosts: ['files.example.net', 'late.example.net'],
     counts: { 'files.example.net': 2, 'late.example.net': 1 }, ats: { 'files.example.net': t1, 'late.example.net': t3 },
     why: { 'files.example.net': 'A file-sharing site.', 'late.example.net': 'Late host.' } },
-    { at: t1, run: 2, site: 'portal', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
-  const refused2 = [{ at: t2, run: 5, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'],
+    { at: t1, run: 2, site: 'portal', siteRev: 'rev-portal-1', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
+  const refused2 = [{ at: t2, run: 5, site: 'gg', siteRev: 'rev-gg-1', login: 'bob@demo.test', hosts: ['files.example.net'],
     counts: { 'files.example.net': 3 }, ats: { 'files.example.net': t2 }, why: { 'files.example.net': 'A file-sharing site.' } }];
   const kept = (list: typeof refused1) => list.map(e => ({ ...e, hosts: e.hosts.filter(h => !decisions.some(([, b]) => b.host === h)) })).filter(e => e.hosts.length);
   // The server's answer, with refused hosts across two instances until each is allowed or kept blocked.
@@ -1416,8 +1416,8 @@ test('only admins see Allow and Keep blocked for deduplicated refused hosts in W
   await page.locator('#pv [data-act=allow-host][data-host="sso.other.test"]').click();
   await page.waitForSelector('#pv .creds:has-text("sso.other.test")', { state: 'detached' });
   assert.deepEqual(decisions, [
-    ['/logins/web/gg/hosts?person=bob%40demo.test', { host: 'files.example.net', allow: false }],
-    ['/logins/web/portal/hosts?person=admin%40demo.test', { host: 'sso.other.test' }],
+    ['/logins/web/gg/hosts?person=bob%40demo.test', { host: 'files.example.net', allow: false, siteRev: 'rev-gg-1' }],
+    ['/logins/web/portal/hosts?person=admin%40demo.test', { host: 'sso.other.test', siteRev: 'rev-portal-1' }],
   ]);
   await page.unroute('**/api');
   await page.unroute('**/logins/web/*/hosts?*');

@@ -19,7 +19,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteRevision, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -319,31 +319,32 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
     // Only admins decide hosts: those rated high or internal, with why, for a week, deduplicated per (login, site, host).
     refused: (() => {
       if (me.role !== 'admin') return [];
-      const byHost = new Map<string, { at: string; t: number; run: number; site: string; login: string; host: string; count: number; why: string }>();
+      const byHost = new Map<string, { at: string; t: number; run: number; site: string; siteRev: string; login: string; host: string; count: number; why: string }>();
       for (const e of k.refused) {
         if (!fresh(e.at) || !e.login) continue;
         const w = websitesOf(e.login)[e.site];
         if (!w) continue;
-        const checks = w.checks ?? {};
+        const checks = w.checks ?? {}, siteRev = siteRevision(e.login, e.site, w);
         const hosts = unreached(e.login, e.site, Object.keys(e.hosts)).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
         if (!hosts.length) continue;
         const t = Date.parse(e.at) || 0;
         for (const h of hosts) {
           const n = Math.max(1, Number(e.hosts[h]) || 1);
           const key = `${e.login}\0${e.site}\0${h}`, prev = byHost.get(key);
-          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, login: e.login, host: h, count: n, why: checks[h].why });
+          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, siteRev, login: e.login, host: h, count: n, why: checks[h].why });
           else {
             prev.count += n;
             if (t > prev.t || (t === prev.t && e.run >= prev.run)) { prev.at = e.at; prev.t = t; prev.run = e.run; }
             prev.why = checks[h].why;
+            prev.siteRev = siteRev;
           }
         }
       }
-      const byRow = new Map<string, { at: string; t: number; run: number; site: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
+      const byRow = new Map<string, { at: string; t: number; run: number; site: string; siteRev: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
       for (const h of byHost.values()) {
         const key = `${h.login}\0${h.site}\0${h.run}`;
         let row = byRow.get(key);
-        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, login: h.login, hosts: [], why: {}, counts: {}, ats: {} });
+        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, siteRev: h.siteRev, login: h.login, hosts: [], why: {}, counts: {}, ats: {} });
         else if (h.t > row.t) { row.at = h.at; row.t = h.t; }
         row.hosts.push(h.host);
         row.why[h.host] = h.why;
@@ -2230,8 +2231,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') {
       const data = await json(req), site = decodeURIComponent(url.pathname.split('/')[3]), host = String(data.host ?? ''), person = url.searchParams.get('person') ?? me.email;
       if (data.allow !== undefined && typeof data.allow !== 'boolean') throw new HttpError(400, 'allow: true or false');
-      if (data.allow === false) await refuseHost(me, site, host, person, () => recheckRequest(req));
-      else await allowHost(me, site, host, person, () => recheckRequest(req));
+      if (data.siteRev !== undefined && typeof data.siteRev !== 'string') throw new HttpError(400, 'siteRev: string');
+      if (data.allow === false) await refuseHost(me, site, host, person, () => recheckRequest(req), data.siteRev);
+      else await allowHost(me, site, host, person, () => recheckRequest(req), data.siteRev);
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));

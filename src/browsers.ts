@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
@@ -123,6 +124,8 @@ export type Profile = (Classification & { flags: string[]; curated?: true }) | {
 export const profiles = () => readJson<Record<string, Classification & { by: string; at: string }>>('profiles.json', {});
 export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
+export const siteRevision = (email: string, site: string, w: Website) =>
+  createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, websiteGenerations.get(`${email} ${site}`) ?? 0])).digest('hex').slice(0, 16);
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 // By name, a person's: none is Object's, such as constructor.
 export const websitesOf = (email: string): Record<string, Website> => Object.assign(Object.create(null), existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {});
@@ -203,6 +206,7 @@ export async function addSite(email: string, name: string, url: string, header =
   if (header && !/^[a-z0-9-]+$/i.test(header)) throw new HttpError(400, 'header: the name of a header its sign-in needs, such as x-bot-token');
   if (websitesOf(email)[name]) throw new HttpError(409, `you have a website ${name} already: name this one otherwise`);
   await checkHost(new URL(url).hostname, true);
+  if (websitesOf(email)[name]) throw new HttpError(409, `you have a website ${name} already: name this one otherwise`);
   saveWebsites(email, { ...websitesOf(email), [name]: { url, hosts: [], writeback: true, ...(header && { header }), added: new Date().toISOString() } });
   return { site: name };
 }
@@ -332,13 +336,15 @@ export function removeSite(email: string, name: string) {
 }
 
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
-export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
+export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void, expectedRev?: string) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
-  const before = website(email, site), siteKey = `${email} ${site}`, beforeGen = websiteGenerations.get(siteKey), h = host.trim().toLowerCase(), routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
+  const before = website(email, site), beforeRev = siteRevision(email, site, before), h = host.trim().toLowerCase();
+  if (expectedRev !== undefined && beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
+  const routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
   await checkHost(h, routed || inside);
   recheck?.();
   const w = website(email, site);
-  if (w.url !== before.url || w.via !== before.via || w.added !== before.added || (w.generation ?? 0) !== (before.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
+  if (siteRevision(email, site, w) !== beforeRev)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
   if (inside && !letIn()[h]) {
@@ -353,14 +359,15 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
 }
 
 // Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
-export async function refuseHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
+export async function refuseHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void, expectedRev?: string) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins decide website hosts');
-  const before = website(email, site), siteKey = `${email} ${site}`, beforeGen = websiteGenerations.get(siteKey), h = host.trim().toLowerCase();
+  const before = website(email, site), beforeRev = siteRevision(email, site, before), h = host.trim().toLowerCase();
+  if (expectedRev !== undefined && beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
   if (!h || h.startsWith('*.')) throw new HttpError(400, `${h || '(empty)'}: name an exact host to keep blocked`);
   if (!Object.hasOwn(before.checks ?? {}, h)) await checkHost(h, true);
   recheck?.();
   const w = website(email, site);
-  if (w.url !== before.url || w.via !== before.via || w.added !== before.added || (w.generation ?? 0) !== (before.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
+  if (siteRevision(email, site, w) !== beforeRev)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   if (reached(w).some(p => covers(p, h))) throw new HttpError(409, `${site} already reaches ${h}`);
   changeWebsite(email, site, { checks: { ...w.checks, [h]: { verdict: 'refused', why: 'An admin kept it blocked.' } } });
@@ -410,7 +417,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
   changes.emit('change', 'tree');
   const { state, log } = await close(id);
   expired ||= Date.now() >= expires || state === null;
-  const requests: Trace['requests'] = {}, kinds: NonNullable<Trace['kinds']> = {}, blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
+  const requests: Trace['requests'] = Object.create(null), kinds: NonNullable<Trace['kinds']> = Object.create(null), blocked = { count: 0, hosts: [] as string[] }, failed: string[] = [];
   for (const e of log) {
     const host = URL.parse(e.url)?.hostname, from = URL.parse(e.from ?? '')?.hostname;
     if (!host) {
@@ -418,7 +425,7 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
       else if (e.status >= 400) failed.push(`${e.method} <invalid-url> ${e.status}${e.error ? ` ${e.error}` : ''}`);
       continue;
     }
-    (requests[host] ??= {})[e.status] = (requests[host][e.status] ?? 0) + 1;
+    (requests[host] ??= Object.create(null))[e.status] = (requests[host][e.status] ?? 0) + 1;
     const k = kinds[host] ??= { dest: [], from: [] };
     if (e.dest && !k.dest.includes(e.dest)) k.dest.push(e.dest);
     if (from && !k.from.includes(from)) k.from.push(from);
@@ -679,11 +686,11 @@ export async function checkWebsite(email: string, site: string, given?: Trace, s
 }
 
 async function checkRefused(inst: Instance, run: number, email: string, site: string, log: Entry[], source: () => boolean) {
-  const before = website(email, site).hosts, trace: Trace = { requests: {}, kinds: {}, blocked: [], seconds: 0 };
+  const before = website(email, site).hosts, trace: Trace = { requests: Object.create(null), kinds: Object.create(null), blocked: [], seconds: 0 };
   for (const e of log) {
     const host = URL.parse(e.url)?.hostname, from = URL.parse(e.from ?? '')?.hostname;
     if (!host) continue;
-    (trace.requests[host] ??= {})[e.status] = (trace.requests[host][e.status] ?? 0) + 1;
+    (trace.requests[host] ??= Object.create(null))[e.status] = (trace.requests[host][e.status] ?? 0) + 1;
     const k = trace.kinds![host] ??= { dest: [], from: [] };
     if (e.dest && !k.dest.includes(e.dest)) k.dest.push(e.dest);
     if (from && !k.from.includes(from)) k.from.push(from);
