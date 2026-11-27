@@ -240,16 +240,21 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
   const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   recheck?.();
-  setLetIn(hosts, by.email, let_);
-  if (!let_) await revokeInternalHosts(hosts);
-  else if (hosts.some(h => next.checks?.[h]?.verdict === 'internal')) {
-    const passed = hosts.filter(h => next.checks?.[h]?.verdict === 'internal');
-    changeWebsite(person, name, {
-      hosts: [...new Set([...next.hosts, ...passed.filter(h => h !== new URL(next.url).hostname)])],
-      checks: { ...next.checks, ...Object.fromEntries(passed.map(h => [h, { verdict: 'pass' as const, why: 'An admin allowed this internal host.' }])) },
-    });
+  const latest = website(person, name);
+  const effective = let_ ? hosts.filter(h => reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal') : hosts;
+  setLetIn(effective, by.email, let_);
+  if (!let_) await revokeInternalHosts(effective);
+  else {
+    const passed = effective.filter(h => latest.checks?.[h]?.verdict === 'internal');
+    if (passed.length) {
+      changeWebsite(person, name, {
+        hosts: [...new Set([...latest.hosts, ...passed.filter(h => h !== new URL(latest.url).hostname)])],
+        checks: { ...latest.checks, ...Object.fromEntries(passed.map(h => [h, { verdict: 'pass' as const, why: 'An admin allowed this internal host.' }])) },
+      });
+      changes.emit('change', 'tree');
+    }
   }
-  act(by.email, { op: 'internal', person, site: name, hosts, let: let_ });
+  act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ });
 }
 
 export async function revokeInternalHosts(hosts: string[]) {

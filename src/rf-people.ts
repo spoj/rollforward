@@ -17,9 +17,9 @@ const usage = (c?: string, vpn = false, admin = false) => {
   const all = `rf login URL [TOKEN] [--az [--resource URI]]   without a TOKEN, through the browser; with --az, short-lived Entra tokens via Azure CLI (no token on disk); run via npx @rfany/rf@latest
 rf ls [--mine] [--json]           every workspace, series and instance you see, with its status, owner, asks waiting and wakes;
                                   --mine, only open instances of series you own
-rf waiting [--json]               what waits on you: asks, proposals, requests and expired logins; also note notices (FYI).
-                                  Only admins see hosts a run's browser was refused that the server rates high or finds
-                                  at an internal address
+rf waiting [--json] [--dismiss-settled]   what waits on you: asks, proposals, requests and expired logins; also note notices (FYI).
+                                  --dismiss-settled dismisses all your settled note notices. Only admins see hosts a
+                                  run's browser was refused that the server rates high or finds at an internal address
 rf show PATH [--json]             an instance: its items, the threads that wait on someone, by id, and its last run
 rf log PATH [--since SEQ] [--follow] [--json]   its log, a line an entry, after SEQ; --follow prints more as they come;
                                   --json prints the entries as they are, a line each
@@ -79,6 +79,7 @@ rf logins offer|unoffer LOGIN SOURCE|OFFER   what a login offers runs: Microsoft
                                   OFFER rf logins lists
 rf logins allow SITE HOST --person EMAIL   admins alone allow a host the server left refused; one at an internal address
                                   is allowed once for everyone's websites
+rf logins refuse SITE HOST [--person EMAIL]   admins alone keep a refused host blocked so it leaves Waiting on you
 rf logins disallow SITE HOST      a host your website SITE reaches no more, which stays refused, the server's check letting
                                   it no more
 rf logins signout LOGIN${vpn ? '\nrf vpns [--json]                  client VPNs and whether you are connected to each; sign in on the page' : ''}
@@ -285,7 +286,7 @@ if (cmd === 'comment' || cmd === 'settle') {
 } else for (let i = 0; i < argv.length; i++) {
   const flag = argv[i] === '-n' ? 'dry-run' : argv[i] === '-d' ? 'delay' : argv[i].match(/^--(.+)$/)?.[1];
   if (!flag) args.push(argv[i]);
-  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all', 'az'].includes(flag)) flags[flag] = true;
+  else if (['wait', 'wake', 'output', 'delete', 'dry-run', 'force', 'json', 'failed', 'running', 'clear', 'follow', 'superseded', 'undo', 'by-amount', 'yes', 'mine', 'daily', 'all', 'az', 'dismiss-settled'].includes(flag)) flags[flag] = true;
   else if (argv[i + 1] === undefined) throw new Error(`--${flag} takes a value`);
   else if (flag === 'exclude') excludes.push(argv[++i]);
   else flags[flag] = argv[++i];
@@ -665,26 +666,32 @@ if (cmd === 'login' && url) {
     for (const k of r.wakes) console.log(`  wake ${k.id} ${k.at}${k.label ? ` starts ${k.label}` : ''}${k.days ? `, then each ${k.days.join(', ')}` : ''}${k.text ? `: ${k.text}` : ''}${k.check ? `; check ${k.check}${k.deadline ? ` until ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}` : ''}`);
   }
 } else if (cmd === 'waiting' && !args.length) {
+  if (flags['dismiss-settled']) {
+    const res = await (await post('/api/messages', { dismissAll: 'settled' })).json();
+    console.log(flags.json ? JSON.stringify(res, null, 1) : `dismissed ${res.dismissed} settled note notice${res.dismissed === 1 ? '' : 's'}`);
+  } else {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
   const refusedByHost = new Map<string, { path: string; since: string; t: number; run: number; site: string; person: string; host: string; why: string; count: number }>();
   for (const w of all) if (!w.archived) for (const x of w.series) if (!x.archived) for (const i of x.instances) for (const r of i.refused ?? []) for (const h of r.hosts ?? []) {
-    const key = `${r.login}\0${r.site}\0${h}`, c = r.counts?.[h] ?? r.count ?? 1, t = Date.parse(r.at ?? '') || 0;
+    const key = `${r.login}\0${r.site}\0${h}`, c = r.counts?.[h] ?? r.count ?? 1, hostAt = r.ats?.[h] ?? r.at ?? '', t = Date.parse(hostAt) || 0;
     const prev = refusedByHost.get(key);
-    if (!prev) refusedByHost.set(key, { path: `${w.name}/${x.name}/${i.label}`, since: r.at, t, run: r.run, site: r.site, person: r.login, host: h, why: r.why?.[h] ?? '', count: c });
+    if (!prev) refusedByHost.set(key, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, site: r.site, person: r.login, host: h, why: r.why?.[h] ?? '', count: c });
     else {
       prev.count += c;
-      if (t > prev.t || (t === prev.t && (r.run ?? 0) >= prev.run)) Object.assign(prev, { path: `${w.name}/${x.name}/${i.label}`, since: r.at, t, run: r.run, why: r.why?.[h] || prev.why });
+      if (t > prev.t || (t === prev.t && (r.run ?? 0) >= prev.run)) Object.assign(prev, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, why: r.why?.[h] || prev.why });
     }
   }
-  const refusedRows = new Map<string, { path: string; since: string; run: number; site: string; person: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number> }>();
+  const refusedRows = new Map<string, { path: string; since: string; t: number; run: number; site: string; person: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
   for (const h of refusedByHost.values()) {
     const rowKey = `${h.person}\0${h.site}\0${h.path}\0${h.run}`;
     let row = refusedRows.get(rowKey);
-    if (!row) refusedRows.set(rowKey, row = { path: h.path, since: h.since, run: h.run, site: h.site, person: h.person, hosts: [], why: {}, counts: {} });
+    if (!row) refusedRows.set(rowKey, row = { path: h.path, since: h.since, t: h.t, run: h.run, site: h.site, person: h.person, hosts: [], why: {}, counts: {}, ats: {} });
+    else if (h.t > row.t) { row.since = h.since; row.t = h.t; }
     row.hosts.push(h.host);
     if (h.why) row.why[h.host] = h.why;
     row.counts[h.host] = h.count;
+    if (h.since) row.ats[h.host] = h.since;
   }
   const rows = [
     ...s.ownership.map(s => ({ kind: 'owner', path: s.path, text: s.text })),
@@ -693,13 +700,14 @@ if (cmd === 'login' && url) {
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
-    ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
+    ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, ats: r.ats, text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else console.log(rows.map(r => r.kind === 'open' || r.kind === 'settled'
     ? `note ${r.kind}  ${r.path}#${r.id} by ${r.by} at ${when(r.at)}: ${gist(r.text, 120)}`
     : `${r.kind}  ${r.path ?? r.login}${r.since ? ` since ${when(r.since)}` : ''}${r.id ? `, ${r.kind === 'grant' ? 'grant' : 'request'} ${r.id}` : ''}: ${r.kind === 'grant' ? r.text : r.text.split('\n')[0].slice(0, 120)}`).join('\n') || 'Nothing waits on you.');
+  }
 } else if (cmd === 'show' && args.length === 1) {
   const { inst, at } = await instanceAt(args[0]), { doc, log, run, queued, owner, waiting: w } = await get(at);
   const waiting = w.map(({ who, seq }) => {
@@ -938,13 +946,14 @@ else if (cmd === 'comment' && args.length < 2) {
     // A website's login offers itself alone.
     for (const o of l.offers.filter(o => o.id !== l.id)) console.log(`  offers ${o.id}  ${o.name}`);
   }
-} else if (cmd === 'logins' && ['offer', 'unoffer', 'allow', 'disallow'].includes(args[0]) && args.length === 3) {
+} else if (cmd === 'logins' && ['offer', 'unoffer', 'allow', 'refuse', 'disallow'].includes(args[0]) && args.length === 3) {
   const [what, login, x] = args, at = `/logins/${encodeURIComponent(login)}`;
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
   else if (what === 'disallow') await api(`/logins/web/${encodeURIComponent(login)}/hosts/${encodeURIComponent(x)}`, { method: 'DELETE' });
+  else if (what === 'refuse') await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x, allow: false });
   else await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x });
-  console.log(`${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches', disallow: 'no longer reaches' }[what]} ${x}`);
+  console.log(what === 'refuse' ? `${login} keeps ${x} blocked` : `${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches', disallow: 'no longer reaches' }[what]} ${x}`);
 } else if (cmd === 'vpns' && !args.length) {
   const all = await get('/vpns');
   if (flags.json) console.log(JSON.stringify(all, null, 1));

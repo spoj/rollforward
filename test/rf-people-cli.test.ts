@@ -761,6 +761,60 @@ test('rf can adds and removes grants without replacing other grantees', async ()
   assert.equal((await can('--clear')).code, 0);
 });
 
+test('rf waiting deduplicates refused hosts with per-host timestamps and counts; rf logins refuse and rf waiting --dismiss-settled match web actions', async t => {
+  const calls: { method: string; url: string; body: any }[] = [];
+  const t1 = '2026-11-27T10:00:00.000Z', t2 = '2026-11-27T10:05:00.000Z', t3 = '2026-11-27T10:10:00.000Z';
+  const srv = createHttpServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const raw = Buffer.concat(chunks).toString();
+    calls.push({ method: req.method!, url: req.url!, body: raw ? JSON.parse(raw) : undefined });
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/me') return void res.end(JSON.stringify({ email: 'admin@demo.test', role: 'admin', can: [] }));
+    if (req.url === '/api/status') return void res.end(JSON.stringify({ ownership: [], asks: [], expired: [], noteNotices: [] }));
+    if (req.url === '/api') return void res.end(JSON.stringify([{
+      id: 'w1', name: 'WS', archived: false, manage: true, grants: [],
+      series: [{
+        id: 's1', name: 'Ser', archived: false, requests: [],
+        instances: [
+          { id: 'i1', label: 'Jan', refused: [{ at: t3, run: 1, site: 'portal', login: 'bob@demo.test', hosts: ['a.test', 'b.test'], counts: { 'a.test': 2, 'b.test': 1 }, ats: { 'a.test': t1, 'b.test': t3 }, why: { 'a.test': 'File sharing.', 'b.test': 'Internal.' } }] },
+          { id: 'i2', label: 'Feb', refused: [{ at: t2, run: 4, site: 'portal', login: 'bob@demo.test', hosts: ['a.test'], counts: { 'a.test': 5 }, ats: { 'a.test': t2 }, why: { 'a.test': 'File sharing.' } }] },
+        ],
+      }],
+    }]));
+    if (req.method === 'POST' && req.url === '/api/messages') return void res.end(JSON.stringify({ dismissed: 3 }));
+    if (req.method === 'POST' && req.url?.startsWith('/logins/web/portal/hosts')) return void res.end('ok');
+    res.statusCode = 404; res.end('not found');
+  });
+  await new Promise<void>(ok => srv.listen(0, '127.0.0.1', ok));
+  t.after(() => srv.close());
+  const home = join(tmp, 'home-waiting-cli');
+  mkdirSync(join(home, '.config'), { recursive: true });
+  const port = (srv.address() as { port: number }).port;
+  writeFileSync(join(home, '.config', 'rollforward.json'), JSON.stringify({ url: `http://127.0.0.1:${port}`, token: 'tok' }));
+
+  const w = await runRf(home, ['waiting', '--json']);
+  assert.equal(w.code, 0, w.stderr);
+  const rows = JSON.parse(w.stdout);
+  assert.equal(rows.length, 2);
+  const aRow = rows.find((r: any) => r.hosts.includes('a.test'));
+  const bRow = rows.find((r: any) => r.hosts.includes('b.test'));
+  assert.equal(aRow.path, 'WS/Ser/Feb', 'per-host ats links a.test to Feb (t2 > t1)');
+  assert.equal(aRow.counts['a.test'], 7, 'counts sum across instances (2 + 5)');
+  assert.match(aRow.text, /a\.test \(7×, File sharing\.\)/);
+  assert.equal(bRow.path, 'WS/Ser/Jan', 'b.test stays linked to Jan (t3)');
+
+  const ref = await runRf(home, ['logins', 'refuse', 'portal', 'a.test', '--person', 'bob@demo.test']);
+  assert.equal(ref.code, 0, ref.stderr);
+  assert.match(ref.stdout, /portal keeps a\.test blocked/);
+  assert.deepEqual(calls.at(-1), { method: 'POST', url: '/logins/web/portal/hosts?person=bob%40demo.test', body: { host: 'a.test', allow: false } });
+
+  const dis = await runRf(home, ['waiting', '--dismiss-settled']);
+  assert.equal(dis.code, 0, dis.stderr);
+  assert.match(dis.stdout, /dismissed 3 settled note notices/);
+  assert.deepEqual(calls.at(-1), { method: 'POST', url: '/api/messages', body: { dismissAll: 'settled' } });
+});
+
 
 
 

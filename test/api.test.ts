@@ -71,12 +71,13 @@ before(async () => {
   appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1, at: new Date().toISOString(), by: 'server', op: 'browser', run: 1, site: 'waiting-hosts', login: bob, requests: 5, writes: 0, blocked: 5,
     hosts: Object.fromEntries(['files.example.net', 'intra.acme.localhost', 'cdn.example.net', 'tracker.example.net', 'unchecked.example.net'].map(h => [h, 1])) }) + '\n');
   const t0 = Date.now();
-  for (const [n, offset, hosts] of [
+  for (const [idx, [n, offset, hosts]] of ([
     [1, -3000, { 'files.example.net': 2, 'intra.acme.localhost': 1 }],
+    [1, -500, { 'later.example.net': 1 }],
     [2, -2000, { 'files.example.net': 4 }],
     [3, -1000, { 'files.example.net': 1 }],
-  ] as const) {
-    appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1 + n, at: new Date(t0 + offset).toISOString(), by: 'server', op: 'browser', run: n, site: 'waiting-hosts-dedup', login: bob, requests: 3, writes: 0, blocked: 2, hosts }) + '\n');
+  ] as const).entries()) {
+    appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 2 + idx, at: new Date(t0 + offset).toISOString(), by: 'server', op: 'browser', run: n, site: 'waiting-hosts-dedup', login: bob, requests: 3, writes: 0, blocked: 2, hosts }) + '\n');
   }
   // A copy of 2026-08-30 as earlier versions made one: its files but its session, open, and its log, then a duplicate entry.
   const august = join(root, 'instances', '3d70f7ca6f20'), copy = join(root, 'instances', 'c0b1ed000001');
@@ -845,15 +846,18 @@ test('refused hosts deduplicate per (login, site, host) with counts and admins c
   changeWebsite(bob, site, { checks: {
     'files.example.net': { verdict: 'high', why: 'Can receive company files.' },
     'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
+    'later.example.net': { verdict: 'high', why: 'Later refusal in run 1.' },
   } });
   const refused = async (cookie: string) => (await workspaces(cookie)).flatMap((w: any) => w.series.flatMap((s: any) => s.instances.flatMap((i: any) => i.refused))).filter((r: any) => r.site === site);
   const rows = await refused(admin);
   assert.equal(rows.length, 2, 'hosts with different latest runs keep their own latest run without duplicating any host');
-  const byHost = Object.fromEntries(rows.flatMap((r: any) => r.hosts.map((h: string) => [h, { run: r.run, count: r.counts[h], why: r.why[h] }])));
-  assert.deepEqual(byHost, {
-    'files.example.net': { run: 3, count: 3, why: 'Can receive company files.' },
+  const byHost = Object.fromEntries(rows.flatMap((r: any) => r.hosts.map((h: string) => [h, { run: r.run, count: r.counts[h], why: r.why[h], at: r.ats[h] }])));
+  assert.deepEqual(Object.fromEntries(Object.entries(byHost).map(([h, v]) => [h, { run: v.run, count: v.count, why: v.why }])), {
+    'files.example.net': { run: 3, count: 7, why: 'Can receive company files.' },
     'intra.acme.localhost': { run: 1, count: 1, why: 'It is at an internal address.' },
+    'later.example.net': { run: 1, count: 1, why: 'Later refusal in run 1.' },
   });
+  assert.ok(Date.parse(byHost['intra.acme.localhost'].at) < Date.parse(byHost['later.example.net'].at), 'per-host ats preserves distinct timestamps within the same run');
   // Validation and permissions for Keep blocked (allow: false)
   assert.equal((await call('POST', `/logins/web/${site}/hosts`, JSON.stringify({ host: 'files.example.net', allow: false }), b)).status, 403);
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: 'false' }))).status, 400);
@@ -866,10 +870,11 @@ test('refused hosts deduplicate per (login, site, host) with counts and admins c
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'FILES.EXAMPLE.NET', allow: false }))).status, 200);
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false }))).status, 200, 'keep blocked is idempotent');
   assert.deepEqual((await json(`/logins/sites?person=${bob}`))[site].checks['files.example.net'], { verdict: 'refused', why: 'An admin kept it blocked.' });
-  assert.deepEqual((await refused(admin)).flatMap((r: any) => r.hosts), ['intra.acme.localhost']);
+  assert.deepEqual((await refused(admin)).flatMap((r: any) => r.hosts), ['intra.acme.localhost', 'later.example.net']);
 
   const internalBefore = existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '';
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', allow: false }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'later.example.net', allow: false }))).status, 200);
   assert.deepEqual(await refused(admin), [], 'kept-blocked hosts leave Waiting on you');
   assert.equal(existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '', internalBefore, 'keeping an internal host blocked never enrolls it in internal.json');
 

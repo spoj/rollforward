@@ -1360,27 +1360,37 @@ function noteNoticeHtml(s, n) {
 function waiting() {
   const out = tree.filter(w => !w.archived && w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => `<div class="wt">${person(p.by)} proposes ${proposalText(p)}`
     + ` <button class="btn" data-act="accept" data-id="${p.id}">Accept…</button><button class="btn" data-act="proposal-drop" data-id="${p.id}">Decline</button></div>`), at = (w, s, i) => `<a href="#/${i?.id ?? w.id}">${esc(w.name)}${s.single ? '' : ' · ' + esc(s.name)}${i ? ' · ' + esc(i.label) : ''}</a>`;
+  let actionable = out.length;
   const openNotices = [], settledNotices = [], refusedByHost = new Map();
   for (const w of tree.filter(w => !w.archived)) for (const s of w.series.filter(s => !s.archived)) {
     for (const n of s.noteNotices ?? []) (n.kind === 'settled' ? settledNotices : openNotices).push(noteNoticeHtml(s, n));
-    if (w.manage && s.ownerUnavailable) out.push(ownershipHtml(w, s));
+    if (w.manage && s.ownerUnavailable) { out.push(ownershipHtml(w, s)); actionable++; }
     for (const i of s.instances) {
       const n = ['question', 'proposal', 'ask', 'note'].map(k => [k, i.asks.filter(a => a.who === me.email && a.kind === k && !a.from).length]).filter(([, c]) => c);
-      if (n.length) out.push(`<div class="wt">${at(w, s, i)}: ${n.map(([k, c]) => plural(c, k)).join(', ')} for you</div>`);
-      for (const a of i.asks.filter(a => a.who === me.email && a.from)) out.push(`<div class="wt"><a href="#/${i.id}">${person(a.from)} ${a.started ? 'started' : 'added a note to'} ${esc(s.name)} · ${esc(i.label)}</a></div>`);
+      if (n.length) {
+        out.push(`<div class="wt">${at(w, s, i)}: ${n.map(([k, c]) => plural(c, k)).join(', ')} for you</div>`);
+        actionable += n.reduce((sum, [, c]) => sum + c, 0);
+      }
+      for (const a of i.asks.filter(a => a.who === me.email && a.from)) {
+        out.push(`<div class="wt"><a href="#/${i.id}">${person(a.from)} ${a.started ? 'started' : 'added a note to'} ${esc(s.name)} · ${esc(i.label)}</a></div>`);
+        actionable++;
+      }
 
       if (me.role === 'admin') for (const r of i.refused ?? []) for (const x of r.hosts ?? []) {
-        const key = `${r.login}\0${r.site}\0${x}`, c = r.counts?.[x] ?? r.count ?? 1, t = Date.parse(r.at ?? '') || 0;
+        const key = `${r.login}\0${r.site}\0${x}`, c = r.counts?.[x] ?? r.count ?? 1, hostAt = r.ats?.[x] ?? r.at ?? '', t = Date.parse(hostAt) || 0;
         const prev = refusedByHost.get(key);
-        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: r.at ?? '', t, login: r.login, site: r.site, host: x, why: r.why?.[x] ?? '', count: c });
+        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: hostAt, t, login: r.login, site: r.site, host: x, why: r.why?.[x] ?? '', count: c });
         else {
           prev.count += c;
-          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: r.at ?? '', t, why: r.why?.[x] || prev.why });
+          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: hostAt, t, why: r.why?.[x] || prev.why });
         }
       }
-      if (i.wrong && i.owner === me.email) out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`);
+      if (i.wrong && i.owner === me.email) { out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`); actionable++; }
     }
-    for (const r of s.requests.filter(() => s.owner === me.email)) out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
+    for (const r of s.requests.filter(() => s.owner === me.email)) {
+      out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
+      actionable++;
+    }
   }
   const refusedRows = new Map();
   for (const h of refusedByHost.values()) {
@@ -1392,12 +1402,14 @@ function waiting() {
   for (const r of refusedRows.values()) {
     out.push(`<div class="wt">${at(r.w, r.s, r.i)}: run ${r.run}'s browser on ${r.login === me.email ? '' : `${person(r.login)}'s `}${esc(r.site)} was refused`
       + r.hosts.map(x => ` <span class="creds">${esc(x.host)}${x.count > 1 ? ` <span class="sub">${x.count}\u00D7</span>` : ''}${x.why ? ` <span class="sub">${esc(x.why)}</span>` : ''} <a data-act="allow-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}">Allow</a> \u00b7 <a data-act="refuse-host" data-site="${esc(r.site)}" data-host="${esc(x.host)}" data-person="${esc(r.login)}">Keep blocked</a></span>`).join('') + '</div>');
+    actionable += r.hosts.length;
   }
-  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) out.push(grantHtml(g, 'wt'));
+  for (const w of tree.filter(w => !w.archived && w.manage)) for (const g of w.grants.filter(g => g.state === 'pending')) { out.push(grantHtml(g, 'wt')); actionable++; }
   out.push(...expired.map(l => `<div class="wt">Your ${l.kind === 'key' ? 'OpenRouter key is out of credits' : `${esc(l.name)} login has expired`}. ${signInHtml(l.id, l.name)}</div>`));
+  actionable += expired.length;
   const fyi = openNotices.length + settledNotices.length;
   const settledHtml = settledNotices.length ? `<div class="wt-head"><span class="sub">Settled notes (${settledNotices.length})</span><button class="quiet" data-act="note-dismiss-all">Dismiss all</button></div>` + settledNotices.join('') : '';
-  return { html: out.join('') + openNotices.join('') + settledHtml, count: out.length + fyi, actionable: out.length, fyi };
+  return { html: out.join('') + openNotices.join('') + settledHtml, count: actionable + fyi, actionable, fyi };
 }
 
 // Your own OpenRouter key, if a new one is given, and whether your runs use it; a first one is used at once.

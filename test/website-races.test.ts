@@ -49,8 +49,8 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
-const { upstreams } = await import('../src/connections.ts');
+const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { letIn, upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
 upstreams['openrouter.ai'] = base;
@@ -392,4 +392,27 @@ test('removing and recreating a website during its background check discards the
   assert.deepEqual(websitesOf(email).portal, replacement);
   assert.deepEqual(logins(email), []);
   assert.equal(existsSync(join(personDir(email), 'web:portal.header.sealed')), false);
+});
+
+test('concurrent Keep blocked during setSite internal approval is not overwritten and keeps refused hosts blocked', async () => {
+  await portal();
+  const admin: Me = { email: 'admin@company.test', name: 'Admin', role: 'admin', groups: [] };
+  changeWebsite(email, 'portal', { checks: {
+    'files.example.net': { verdict: 'high', why: 'File sharing.' },
+    '10.9.8.7': { verdict: 'internal', why: 'It is at an internal address.' },
+    '10.9.8.8': { verdict: 'internal', why: 'It is at an internal address.' },
+  } });
+  // Simulate another admin clicking Keep blocked on a high-risk host and one internal host while setSite finishes DNS checks.
+  const refs: Promise<void>[] = [];
+  await setSite(admin, 'portal', { internal: true }, email, () => {
+    refs.push(refuseHost(admin, 'portal', 'files.example.net', email));
+    refs.push(refuseHost(admin, 'portal', '10.9.8.8', email));
+  });
+  await Promise.all(refs);
+  const after = websitesOf(email).portal;
+  assert.deepEqual(after.checks?.['files.example.net'], { verdict: 'refused', why: 'An admin kept it blocked.' }, 'high-risk refusal survives concurrent internal approval');
+  assert.deepEqual(after.checks?.['10.9.8.8'], { verdict: 'refused', why: 'An admin kept it blocked.' }, 'concurrently refused internal host stays refused');
+  assert.equal(after.checks?.['10.9.8.7']?.verdict, 'pass', 'uncontested internal host is still approved');
+  assert.equal(Boolean(letIn()['10.9.8.7']), true);
+  assert.equal(Boolean(letIn()['10.9.8.8']), false, 'concurrently refused internal host is not enrolled in internal.json');
 });

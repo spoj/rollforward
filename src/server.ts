@@ -274,7 +274,7 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // The cached sidebar projection also depends on series authority, including consent additions that keep the same epoch.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string; from?: string; started?: boolean }[]; owner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
-  refused: { at: string; run: number; site: string; login: string; hosts: string[] }[] }>();
+  refused: { at: string; run: number; site: string; login: string; hosts: Record<string, number> }[] }>();
 function owner(inst: Instance) {
   const r = ownerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
   return { ...r, name: users()[r.by]?.name ?? r.by, since: seriesSettings(inst.series()).since, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
@@ -307,7 +307,7 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i, workspace, settings).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
-    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: Object.keys(e.hosts as object) })) });
+    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, hosts: e.hosts as Record<string, number> })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakeCheck: wakeCheckStatus(i), wakes: wakesFor(i.id), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
@@ -325,28 +325,30 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
         const w = websitesOf(e.login)[e.site];
         if (!w) continue;
         const checks = w.checks ?? {};
-        const hosts = unreached(e.login, e.site, e.hosts).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
+        const hosts = unreached(e.login, e.site, Object.keys(e.hosts)).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
         if (!hosts.length) continue;
         const t = Date.parse(e.at) || 0;
         for (const h of hosts) {
+          const n = Math.max(1, Number(e.hosts[h]) || 1);
           const key = `${e.login}\0${e.site}\0${h}`, prev = byHost.get(key);
-          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, login: e.login, host: h, count: 1, why: checks[h].why });
+          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, login: e.login, host: h, count: n, why: checks[h].why });
           else {
-            prev.count++;
+            prev.count += n;
             if (t > prev.t || (t === prev.t && e.run >= prev.run)) { prev.at = e.at; prev.t = t; prev.run = e.run; }
             prev.why = checks[h].why;
           }
         }
       }
-      const byRow = new Map<string, { at: string; t: number; run: number; site: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number> }>();
+      const byRow = new Map<string, { at: string; t: number; run: number; site: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
       for (const h of byHost.values()) {
         const key = `${h.login}\0${h.site}\0${h.run}`;
         let row = byRow.get(key);
-        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, login: h.login, hosts: [], why: {}, counts: {} });
+        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, login: h.login, hosts: [], why: {}, counts: {}, ats: {} });
         else if (h.t > row.t) { row.at = h.at; row.t = h.t; }
         row.hosts.push(h.host);
         row.why[h.host] = h.why;
         row.counts[h.host] = h.count;
+        row.ats[h.host] = h.at;
       }
       return [...byRow.values()].map(({ t: _, ...r }) => ({ ...r, count: Math.max(...Object.values(r.counts)) }));
     })(),
