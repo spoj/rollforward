@@ -82,8 +82,9 @@ const allowedHosts = (w: Website) => {
   return reached(w).filter(h => (!w.checks?.[h] || w.checks[h].verdict === 'pass') && !ex.some(x => covers(h, x) || covers(x, h)));
 };
 
-const open = async (w: Website, ttl_s: number, state?: unknown, via?: Via): Promise<string> =>
-  (await browserJson('POST', '/sessions', { site: { hosts: allowedHosts(w), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s })).id;
+const openSession = async (w: Website, ttl_s: number, state?: unknown, via?: Via, audit = false): Promise<{ id: string; shots?: string }> =>
+  browserJson('POST', '/sessions', { site: { hosts: allowedHosts(w), start_url: w.url, via, ...(!internalOf(w) && { public: true }) }, state, ttl_s, ...(audit && { audit: true }) });
+const open = async (w: Website, ttl_s: number, state?: unknown, via?: Via): Promise<string> => (await openSession(w, ttl_s, state, via)).id;
 const throughVpn = (w: Website, host: string) => !!w.via && vpnHosts(w.url).some(p => covers(p, host));
 // Whether one of the website's exact hosts has an admin's internal-address permission.
 const internalOf = (w: Website) => {
@@ -685,7 +686,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -773,12 +774,16 @@ export class Browsers {
           throw e;
         }
       } : undefined;
-      const internal = w ? internalHosts(w) : [], opening = w ? open(w, 7200, state, via) : printer();
-      const ready = opening.then(async id => {
+      const internal = w ? internalHosts(w) : [], opening = w ? openSession(w, 7200, state, via, this.run > 0) : printer().then(id => ({ id, shots: undefined }));
+      const ready = opening.then(async ({ id, shots: shotsPath }) => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b = { id, email, since: login?.since ?? '', writeback, file, generation, source, conns: 0, via, internal };
+        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
+        if (shotsPath) {
+          b.shotPoll = setInterval(() => { void this.drainShots(site, b).catch(() => {}); }, 15_000);
+          b.shotPoll.unref?.();
+        }
         changes.emit('change', this.inst.id); // for its instance's page to show it
         setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file, generation } });
         if (this.ended) {
@@ -820,6 +825,7 @@ export class Browsers {
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
   cut() {
     this.ended = true;
+    for (const b of this.bySite.values()) clearInterval(b.shotPoll);
     for (const c of this.conns.keys()) c.destroy();
   }
 
@@ -860,8 +866,9 @@ export class Browsers {
   drive(site: string, email: string, conn: Duplex): string {
     if (!this.yours(email).includes(site)) throw new HttpError(404, `no browser of this run on ${site} in your login`);
     this.connected(site, conn);
+    const b = this.bySite.get(site)!;
     this.inst.append(email, 'browser', { run: this.run, site, action: 'drive' });
-    return this.bySite.get(site)!.id;
+    return b.id;
   }
 
   // The agent found the website signed out: the runner's login is marked expired, and logged so, for them to sign in again, which
@@ -906,9 +913,39 @@ export class Browsers {
     return Promise.all([...this.closing, ...[...this.opening.values()].map(p => p.catch(() => {}))]);
   }
 
-  // A screenshot of each browser's newest tab, unless it looks as it did at the last, logged as shot for the audit.
+  private drainShots(site: string, b: { id: string; shotsPath?: string; shotSeq?: number; drainingShots?: Promise<void> }): Promise<void> {
+    if (!b.shotsPath || this.inst.hole || this.ended) return Promise.resolve();
+    if (b.drainingShots) return b.drainingShots;
+    const run = (async () => {
+      for (let page = 0; page < 5; page++) {
+        if (this.inst.hole || this.ended) return;
+        const items = await browserJson('GET', `${b.shotsPath}?after=${b.shotSeq ?? 0}`, undefined, 5_000) as { seq: number; jpeg: string }[];
+        if (!Array.isArray(items) || !items.length) return;
+        mkdirSync(join(this.inst.dir, 'browser'), { recursive: true });
+        for (const item of items) {
+          if (this.inst.hole || this.ended) return;
+          if (typeof item?.seq !== 'number' || typeof item?.jpeg !== 'string' || item.seq <= (b.shotSeq ?? 0)) continue;
+          const file = `browser/run ${this.run} ${site} ${++this.shots}.jpg`;
+          replaceReadOnly(join(this.inst.dir, file), Buffer.from(item.jpeg, 'base64'));
+          this.inst.append('server', 'shot', { run: this.run, site, file });
+          b.shotSeq = item.seq;
+        }
+        if (items.length < 20) return;
+      }
+    })().finally(() => { b.drainingShots = undefined; });
+    b.drainingShots = run;
+    return run;
+  }
+
+  // Audit screenshots for each open browser: drains event-triggered JPEGs from the browser service when supported;
+  // offline print browsers still capture via /screenshot, while website browsers skip capture if /shots is absent.
   async shoot() {
     await Promise.all([...this.bySite].map(async ([site, b]) => {
+      if (b.shotsPath) {
+        await this.drainShots(site, b);
+        return;
+      }
+      if (site !== PRINT) return;
       const png = await call('GET', `/sessions/${b.id}/screenshot`);
       if (this.ended || this.inst.hole || b.shot?.equals(png)) return;
       b.shot = png;
@@ -923,9 +960,11 @@ export class Browsers {
   // back refreshed, unless it expired or its person signed in to it anew since the browser opened, which a stale state would
   // overwrite, and lets the next run have its person's browser there.
   close(only?: string) {
-    const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, { id, email, since, writeback, file, generation, source, idle }]) => {
+    const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, b]) => {
+      const { id, email, since, writeback, file, generation, source, idle, shotPoll } = b;
       this.bySite.delete(site);
       clearTimeout(idle);
+      clearInterval(shotPoll);
       for (const [conn, on] of this.conns) if (on === site) conn.destroy();
       try {
         const closed = await close(id), all = journal();

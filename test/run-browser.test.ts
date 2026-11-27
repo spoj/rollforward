@@ -34,10 +34,10 @@ let page = Buffer.from('page 1'), back: unknown = { cookies: [], origins: [] }, 
 const plain = [{ method: 'GET', url: 'https://crm.example.com/', status: 200 }];
 let requested: object[] = plain, closeGate: Promise<void> | undefined;
 const states: unknown[] = [], headers: unknown[] = [], deleted: string[] = [], starts: string[] = [], publics: boolean[] = [];
-const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown }[] = [];
+const opened: { site: { hosts: string[]; start_url?: string; public?: boolean; open?: boolean; except?: string[] }; ttl_s: number; state?: unknown; audit?: boolean }[] = [];
 let blocked: Record<string, boolean> = {};
 const toldHosts: { path: string; hosts: string[] }[] = [];
-let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, oversizeStatus = 200, openGate: Promise<void> | undefined;
+let nextId = 'b9', refuseClose = false, dropClose = false, hangClose = false, oversizeClose = false, oversizeStatus = 200, openGate: Promise<void> | undefined, auditShots: { seq: number; at: string; url: string; jpeg: string }[] | null = null, auditFail = false;
 const service = createServer(async (req, res) => {
   if (req.method === 'PUT') {
     toldHosts.push({ path: req.url!, ...JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) });
@@ -72,7 +72,12 @@ const service = createServer(async (req, res) => {
     publics.push(!!site.public);
     if (state?.cookies?.[0]?.value === 'refused') return res.writeHead(500).end('{"error":"refused"}');
     await openGate;
-    return res.writeHead(201).end(JSON.stringify({ id: nextId }));
+    return res.writeHead(201).end(JSON.stringify({ id: nextId, ...(body.audit && auditShots !== null && { shots: `/sessions/${nextId}/shots` }) }));
+  }
+  if (req.url!.startsWith('/sessions/') && req.url!.includes('/shots')) {
+    if (auditFail) return res.writeHead(500).end('{"error":"boom"}');
+    const after = Number(new URL(req.url!, 'http://browser.test').searchParams.get('after') ?? '0');
+    return res.writeHead(200).end(JSON.stringify((auditShots ?? []).filter(s => s.seq > after)));
   }
   if (req.url!.startsWith('/blocked?')) {
     const hosts = new URL(req.url!, 'http://browser.test').searchParams.getAll('host');
@@ -119,17 +124,17 @@ after(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-test("after each tool call, each of the run's browsers is shot unless its page looks the same, kept read-only and logged", async () => {
+test("after each tool call, offline print browsers are shot unless their page looks the same, kept read-only and logged", async () => {
   const inst = running('2026-11', [], 2), browsers = new Browsers(inst, 2);
-  browsers.bySite.set('erp', { id: 'b1', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 2 erp.jsonl', conns: 0 });
+  browsers.bySite.set('print', { id: 'b1', email: '', since: '', writeback: false, file: 'browser/run 2 print.jsonl', generation: 0, conns: 0, internal: [] });
   await browsers.shoot();
   await browsers.shoot();
   page = Buffer.from('page 2');
   await browsers.shoot();
   const shots = inst.log.filter(e => e.op === 'shot');
-  assert.deepEqual(shots.map(e => [e.by, e.run, e.site, e.file]), [['server', 2, 'erp', 'browser/run 2 erp 1.png'], ['server', 2, 'erp', 'browser/run 2 erp 2.png']]);
-  assert.equal(readFileSync(join(inst.dir, 'browser/run 2 erp 2.png'), 'utf8'), 'page 2');
-  assert.equal(statSync(join(inst.dir, 'browser/run 2 erp 1.png')).mode & 0o222, 0, 'the agent reads it but cannot change it');
+  assert.deepEqual(shots.map(e => [e.by, e.run, e.site, e.file]), [['server', 2, 'print', 'browser/run 2 print 1.png'], ['server', 2, 'print', 'browser/run 2 print 2.png']]);
+  assert.equal(readFileSync(join(inst.dir, 'browser/run 2 print 2.png'), 'utf8'), 'page 2');
+  assert.equal(statSync(join(inst.dir, 'browser/run 2 print 1.png')).mode & 0o222, 0, 'the agent reads it but cannot change it');
 });
 
 test("the agent says a website signed it out: its runner's login is marked expired and its browser closes, keeping its request log", async () => {
@@ -148,7 +153,7 @@ test("the agent says a website signed it out: its runner's login is marked expir
 
 test('an answer of the browser service that is no JSON, as a proxy in front of it may give, fails that call alone', async () => {
   const inst = running('2027-01', [], 3), browsers = new Browsers(inst, 3);
-  browsers.bySite.set('erp', { id: 'gone', email: 'alice@demo.test', since: '', writeback: true, file: 'browser/run 3 erp.jsonl', conns: 0 });
+  browsers.bySite.set('print', { id: 'gone', email: '', since: '', writeback: false, file: 'browser/run 3 print.jsonl', generation: 0, conns: 0, internal: [] });
   await assert.rejects(browsers.shoot(), (e: { status: number; message: string }) => e.status === 502 && e.message.startsWith('browser service: 404 page'));
 });
 
@@ -1208,4 +1213,56 @@ test('removing an internal host resets passing checks, drops it from website hos
   assert.deepEqual(opened.at(-1)!.site.hosts, []);
   assert.equal(publics.at(-1), true);
   await run.close();
+});
+
+test('real runs opt into audit shots, drain JPEGs incrementally and before close, and never block close on /shots errors', async () => {
+  sites({ crm: { url: 'https://crm.example.com', hosts: [], writeback: false } });
+  writeJson('grants.json', { ...everyone, gcrm: { person: alice, site: 'crm', workspace: 'w', reason: '', at: '', state: 'approved' } });
+  saveLogin(alice, website('crm', 'CRM'), JSON.stringify(state('crm-cookie')));
+  const jpg1 = Buffer.from([0xff, 0xd8, 0x01]).toString('base64'), jpg2 = Buffer.from([0xff, 0xd8, 0x02]).toString('base64');
+  auditShots = [{ seq: 1, at: '2026-11-27T00:00:00Z', url: 'https://crm.example.com/a', jpeg: jpg1 }];
+  nextId = 'ba1';
+  try {
+    // run === 0 (try) and print do NOT request audit
+    const tryInst = running('2028-07-try', ['web:crm'], 0), tryB = new Browsers(tryInst, 0);
+    await tryB.browser('crm');
+    assert.equal(opened.at(-1)!.audit, undefined, 'try run does not enable audit');
+    await tryB.close();
+
+    // Real run (run > 0) requests audit: true and drains JPEGs incrementally via shoot() without delaying close()
+    const inst = running('2028-07-audit', ['web:crm'], 2), run = new Browsers(inst, 2);
+    await run.browser('crm');
+    assert.equal(opened.at(-1)!.audit, true);
+    await run.shoot();
+    await run.shoot(); // no duplicate
+    auditShots.push({ seq: 2, at: '2026-11-27T00:00:05Z', url: 'https://crm.example.com/b', jpeg: jpg2 });
+    await run.shoot();
+    await run.close();
+    const shots = inst.log.filter(e => e.op === 'shot');
+    assert.deepEqual(shots.map(e => [e.run, e.site, e.file]), [[2, 'crm', 'browser/run 2 crm 1.jpg'], [2, 'crm', 'browser/run 2 crm 2.jpg']]);
+    assert.deepEqual(readFileSync(join(inst.dir, 'browser/run 2 crm 2.jpg')), Buffer.from(jpg2, 'base64'));
+    assert.equal(statSync(join(inst.dir, 'browser/run 2 crm 1.jpg')).mode & 0o222, 0);
+
+    // Website browsers skip legacy /screenshot when the service does not expose attested /shots
+    auditShots = null;
+    nextId = 'b1';
+    const instD = running('2028-07-legacy', ['web:crm'], 4), runD = new Browsers(instD, 4);
+    await runD.browser('crm');
+    await runD.shoot();
+    assert.equal(instD.log.filter(e => e.op === 'shot').length, 0, 'website skips unattested legacy /screenshot');
+    await runD.close();
+
+    // /shots error never blocks close()
+    auditShots = [];
+    auditFail = true;
+    nextId = 'ba2';
+    const inst2 = running('2028-07-err', ['web:crm'], 3), run2 = new Browsers(inst2, 3);
+    await run2.browser('crm');
+    await run2.close();
+    assert.ok(deleted.includes('ba2'), 'DELETE still ran despite /shots failure');
+  } finally {
+    auditShots = null;
+    auditFail = false;
+    nextId = 'b9';
+  }
 });
