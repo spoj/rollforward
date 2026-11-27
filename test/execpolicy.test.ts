@@ -304,7 +304,16 @@ test('Stage-1 execpolicy deterministic rules: method-override escalation/downgra
   }).descriptor;
   assert.equal(evaluateStage1(dropDesc.safe, 'enforce', { approved: true, approvalRef: 'c5', recentApprovedProposals: [] }).action, 'deny');
 
-  // Precedence checks: wire DELETE + SQL-read or GraphQL-query MUST NOT bypass http_delete; approved write with unread body MUST escalate write_body_not_inspected!
+  // Precedence checks: wire DELETE + SQL-read or GraphQL-query MUST NOT bypass http_delete; wire POST + override PUT Databricks DROP MUST still deny; approved write with unread body MUST escalate!
+  const postOverrideDrop = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', seq: 21, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json', 'x-http-method-override': 'PUT' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'w1', statement: 'DROP TABLE fin.ledger' })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(evaluateStage1(postOverrideDrop.safe, 'enforce', { approved: true, approvalRef: 'c5', recentApprovedProposals: [] }).action, 'deny');
+
   const delSqlRead = buildApiRequestDescriptor({
     connection: 'dbx', connectionType: 'databricks', seq: 22, method: 'DELETE',
     url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { connect, isIP } from 'node:net';
 import { connect as tlsConnect } from 'node:tls';
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { request as httpRequest, STATUS_CODES, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
@@ -835,8 +835,67 @@ function writeShotSpool(openId: string, state: ShotSpoolState) {
   replaceFile(join(dir, 'shots.json'), JSON.stringify(state));
 }
 
-// Truncate any torn last NDJSON line (missing trailing '\n') on restart, fail closed on missing expected spool or corrupt complete lines.
-function repairJsonlStream(filePath: string, expectedCursor = 0): { entries: any[]; seenCursors: Set<number>; maxCursor: number } {
+// Contained read-only write into `instDir/browser/<name>`: refuses symlinks and directory swaps using O_DIRECTORY | O_NOFOLLOW + /proc/self/fd verification.
+function writeBrowserArtifact(instDir: string, rel: string, data: Buffer | string) {
+  if (!rel.startsWith('browser/')) throw new HttpError(500, `invalid browser artifact path: ${rel}`);
+  const name = rel.slice('browser/'.length);
+  if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+    throw new HttpError(500, `invalid browser artifact name: ${rel}`);
+  }
+  const realInst = realpathSync(instDir);
+  const browserDir = join(realInst, 'browser');
+  const st = lstatSync(browserDir, { throwIfNoEntry: false });
+  if (!st) {
+    mkdirSync(browserDir, { mode: 0o755 });
+  } else if (!st.isDirectory()) {
+    throw new HttpError(500, 'browser artifact directory is not a regular directory');
+  }
+  const dfd = openSync(browserDir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    if (process.platform === 'linux' && readlinkSync(`/proc/self/fd/${dfd}`) !== browserDir) {
+      throw new HttpError(500, 'browser artifact directory escaped instance containment');
+    }
+    const base = process.platform === 'linux' ? `/proc/self/fd/${dfd}` : browserDir;
+    const dst = `${base}/${name}`;
+    const existing = lstatSync(dst, { throwIfNoEntry: false });
+    if (existing?.isDirectory()) throw new HttpError(500, 'browser artifact destination is a directory');
+    const tmp = `${base}/.${name}.${randomBytes(4).toString('hex')}.tmp`;
+    writeFileSync(tmp, data, { mode: 0o444, flag: 'wx' });
+    try {
+      if (process.platform === 'win32' && existing) chmodSync(dst, 0o644);
+      renameSync(tmp, dst);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
+  } finally {
+    closeSync(dfd);
+  }
+}
+
+function isValidStorageState(s: unknown): boolean {
+  if (s === null) return true;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return false;
+  const obj = s as Record<string, unknown>;
+  if (!Array.isArray(obj.cookies) || !Array.isArray(obj.origins)) return false;
+  for (const c of obj.cookies) {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+    const cc = c as Record<string, unknown>;
+    if (typeof cc.name !== 'string' || typeof cc.value !== 'string' || typeof cc.domain !== 'string' || typeof cc.path !== 'string') {
+      return false;
+    }
+  }
+  for (const o of obj.origins) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+    const oo = o as Record<string, unknown>;
+    if (typeof oo.origin !== 'string') return false;
+    if (oo.localStorage !== undefined && !Array.isArray(oo.localStorage)) return false;
+  }
+  return true;
+}
+
+// Truncate any torn last NDJSON line (missing trailing '\n') on restart, fail closed on missing expected spool, interior blank lines, corrupt complete lines, or invalid/out-of-range cursors.
+function repairJsonlStream(filePath: string, expectedCursor = 0, maxAllowedCursor?: number): { entries: any[]; seenCursors: Set<number>; maxCursor: number } {
   if (!existsSync(filePath)) {
     if (expectedCursor > 0) {
       throw new HttpError(500, `missing browser audit spool file ${filePath} (expected cursor ${expectedCursor})`);
@@ -852,20 +911,32 @@ function repairJsonlStream(filePath: string, expectedCursor = 0): { entries: any
   const entries: any[] = [];
   const seenCursors = new Set<number>();
   let maxCursor = 0;
-  for (const line of raw.subarray(0, end).toString('utf8').split('\n')) {
-    if (!line.trim()) continue;
+  if (end === 0) return { entries, seenCursors, maxCursor };
+  // Drop only the single trailing empty string after the final '\n'; any interior empty line is spool corruption.
+  const lines = raw.subarray(0, end - 1).toString('utf8').split('\n');
+  for (const line of lines) {
+    if (!line.trim()) {
+      throw new HttpError(500, `corrupt blank line in browser audit spool ${filePath}`);
+    }
     let obj: any;
     try {
       obj = JSON.parse(line);
     } catch {
       throw new HttpError(500, `corrupt JSONL line in browser audit spool ${filePath}`);
     }
-    const n = typeof obj?.n === 'number' ? obj.n : undefined;
-    if (n !== undefined) {
-      if (seenCursors.has(n)) continue;
-      seenCursors.add(n);
-      if (n > maxCursor) maxCursor = n;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+      throw new HttpError(500, `corrupt non-object record in browser audit spool ${filePath}`);
     }
+    const n = obj.n;
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < 1) {
+      throw new HttpError(500, `corrupt cursor in browser audit spool ${filePath}`);
+    }
+    if (maxAllowedCursor !== undefined && n > maxAllowedCursor) {
+      throw new HttpError(500, `spool cursor ${n} exceeds frozen seal cursor ${maxAllowedCursor} in ${filePath}`);
+    }
+    if (seenCursors.has(n)) continue;
+    seenCursors.add(n);
+    if (n > maxCursor) maxCursor = n;
     entries.push(obj);
   }
   return { entries, seenCursors, maxCursor };
@@ -954,13 +1025,12 @@ async function doDrainSession(
         }
         return;
       }
-      mkdirSync(join(inst.dir, 'browser'), { recursive: true });
       for (const item of items) {
         if (inst.hole || opts.abortIf?.()) return;
         if (typeof item?.seq !== 'number' || typeof item?.jpeg !== 'string' || item.seq <= cursor) continue;
         const shotNum = opts.onLegacyShot ? opts.onLegacyShot() : item.seq;
         const file = `browser/run ${b.run} ${b.site} ${shotNum}.jpg`;
-        replaceReadOnly(join(inst.dir, file), Buffer.from(item.jpeg, 'base64'));
+        writeBrowserArtifact(inst.dir, file, Buffer.from(item.jpeg, 'base64'));
         inst.append('server', 'shot', { run: b.run, site: b.site, file });
         cursor = item.seq;
         b.shotCursor = cursor;
@@ -983,8 +1053,8 @@ async function doDrainSession(
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const httpPath = join(dir, 'http.jsonl');
   const cdpPath = join(dir, 'cdp.jsonl');
-  const httpState = repairJsonlStream(httpPath, b.logCursor ?? 0);
-  const cdpState = repairJsonlStream(cdpPath, b.cdpFile ? (b.cdpCursor ?? 0) : 0);
+  const httpState = repairJsonlStream(httpPath, b.logCursor ?? 0, opts.targetCursors?.log);
+  const cdpState = repairJsonlStream(cdpPath, b.cdpFile ? (b.cdpCursor ?? 0) : 0, opts.targetCursors?.cdp);
   const shotState = readShotSpool(openId, b.shotCursor ?? 0);
 
   // Reconcile any direct shots interrupted mid-publication on crash: promote if file+hash exist on disk, else drop from pending so it refetches!
@@ -1133,11 +1203,10 @@ async function doDrainSession(
           file: rel,
           sha256: digest,
         };
-        // Crash-safe two-step direct publication: record pending hash -> write JPEG -> idempotent append -> promote to published -> advance cursor!
+        // Crash-safe two-step direct publication: record pending hash -> contained write -> idempotent append -> promote to published -> advance cursor!
         shotState.pending.push(meta);
         writeShotSpool(openId, shotState);
-        mkdirSync(join(inst.dir, 'browser'), { recursive: true });
-        replaceReadOnly(join(inst.dir, rel), buf);
+        writeBrowserArtifact(inst.dir, rel, buf);
         if (!inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === item.seq)) {
           inst.append('server', 'shot', { run: b.run, site: b.site, file: rel, sessionId: openId, shotSeq: item.seq, ...(trigger && { trigger }) });
         }
@@ -1242,8 +1311,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   if (inst.hole) return;
   writebackLoginState(inst, b, state);
   if (inst.log.some(e => e.op === 'close' || e.op === 'abandon')) return;
-  mkdirSync(join(inst.dir, 'browser'), { recursive: true });
-  replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
+  writeBrowserArtifact(inst.dir, b.file, log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = Object.create(null);
   for (const h of log.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) hosts[h] = (hosts[h] ?? 0) + 1;
   inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), ...(b.siteId && { siteId: b.siteId }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
@@ -1340,6 +1408,7 @@ async function finalizeV2Session(
         Array.isArray(snap) ||
         snap.sealed !== true ||
         !('state' in snap) ||
+        !isValidStorageState(snap.state) ||
         !isNonNegInt(snap.logCursor) ||
         !isNonNegInt(snap.cdpCursor) ||
         !isNonNegInt(snap.shotCursor) ||
@@ -1392,8 +1461,8 @@ async function finalizeV2Session(
     const dir = spoolDirOf(openId);
     const httpSpoolPath = join(dir, 'http.jsonl');
     const cdpSpoolPath = join(dir, 'cdp.jsonl');
-    const httpRaw = repairJsonlStream(httpSpoolPath, Math.max(b.logCursor ?? 0, sealCursors.log)).entries as Entry[];
-    const cdpRaw = repairJsonlStream(cdpSpoolPath, b.cdpFile ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : 0).entries;
+    const httpRaw = repairJsonlStream(httpSpoolPath, Math.max(b.logCursor ?? 0, sealCursors.log), sealCursors.log).entries as Entry[];
+    const cdpRaw = repairJsonlStream(cdpSpoolPath, b.cdpFile ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : 0, sealCursors.cdp).entries;
     const shotState = readShotSpool(openId, Math.max(b.shotCursor ?? 0, sealCursors.shot));
 
     // Evaluate Stage-1 execpolicy over drained browser writes for unified API+browser policy telemetry.
@@ -1482,13 +1551,12 @@ async function finalizeV2Session(
     if (keepAllowed) {
       writebackLoginState(inst, b, state);
       if (!inst.log.some(e => e.op === 'close' || e.op === 'abandon')) {
-        mkdirSync(join(inst.dir, 'browser'), { recursive: true });
-        replaceReadOnly(join(inst.dir, b.file), httpBytes);
+        writeBrowserArtifact(inst.dir, b.file, httpBytes);
         if (b.cdpFile && cdpBytes) {
-          replaceReadOnly(join(inst.dir, b.cdpFile), cdpBytes);
+          writeBrowserArtifact(inst.dir, b.cdpFile, cdpBytes);
         }
         for (const { meta, buf } of rollingToFlush) {
-          replaceReadOnly(join(inst.dir, meta.file), buf);
+          writeBrowserArtifact(inst.dir, meta.file, buf);
           if (!inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === meta.seq)) {
             inst.append('server', 'shot', { run: b.run, site: b.site, file: meta.file, sessionId: openId, shotSeq: meta.seq, ...(meta.trigger && { trigger: meta.trigger }) });
           }

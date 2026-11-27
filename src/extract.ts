@@ -1235,7 +1235,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       }
     } else if (isDatabricks) {
       const cleanPath = lowerPath.replace(/\/$/, '')
-      if (cleanPath === '/api/2.0/sql/statements' && input.effectiveMethod === 'POST') {
+      if (cleanPath === '/api/2.0/sql/statements' && (input.method === 'POST' || input.effectiveMethod === 'POST')) {
         const stmtRaw = typeof obj?.statement === 'string' ? obj.statement : undefined
         const cls = stmtRaw
           ? classifySqlStatement(stmtRaw)

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import {
   DESC_V,
@@ -12,7 +12,7 @@ import {
 } from './extract.ts'
 import { REDACT_V, sanitizeUrl } from './redact.ts'
 import { isPerson, messageAuthority } from './messages.ts'
-import type { Entry } from './store.ts'
+import { openFile, type Entry } from './store.ts'
 import { readJson, rfDir } from './system.ts'
 
 export const POLICY_VERSION = 'v1'
@@ -688,9 +688,9 @@ export type ReplaySummary = {
   results: ReplayRecordResult[]
 }
 
-function readJsonlStrict(filePath: string): { entries: any[]; malformedLines: number[]; rawBuf?: Buffer } {
-  if (!existsSync(filePath)) return { entries: [], malformedLines: [] }
-  const rawBuf = readFileSync(filePath)
+const MAX_REPLAY_LOG_BYTES = 12 * 1024 * 1024
+
+function parseJsonlBuffer(rawBuf: Buffer): { entries: any[]; malformedLines: number[] } {
   const raw = rawBuf.toString('utf8')
   const entries: any[] = []
   const malformedLines: number[] = []
@@ -700,7 +700,26 @@ function readJsonlStrict(filePath: string): { entries: any[]; malformedLines: nu
     if (!trimmed) continue
     try { entries.push(JSON.parse(trimmed)) } catch { malformedLines.push(i + 1) }
   }
+  return { entries, malformedLines }
+}
+
+function readJsonlStrict(filePath: string): { entries: any[]; malformedLines: number[]; rawBuf?: Buffer } {
+  if (!existsSync(filePath)) return { entries: [], malformedLines: [] }
+  const rawBuf = readFileSync(filePath)
+  const { entries, malformedLines } = parseJsonlBuffer(rawBuf)
   return { entries, malformedLines, rawBuf }
+}
+
+function readContainedFileOnce(baseDir: string, relFile: string, maxBytes: number): { status: 'ok' | 'missing' | 'oversize'; buf?: Buffer } {
+  const fd = openFile(baseDir, relFile)
+  if (fd === undefined) return { status: 'missing' }
+  try {
+    const st = fstatSync(fd)
+    if (st.size > maxBytes) return { status: 'oversize' }
+    return { status: 'ok', buf: readFileSync(fd) }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function loadHostBrowserManifestHashes(instId: string, manifestsDir?: string): Map<string, string> | undefined {
@@ -807,7 +826,8 @@ export async function replayExecPolicy(
 ): Promise<ReplaySummary> {
   const mode = opts?.mode ?? 'observe'
   const engine = new ExecPolicyEngine(opts?.triageHook)
-  const instLog = readJsonlStrict(join(instDir, 'log.jsonl')).entries as Entry[]
+  const instLogParsed = readJsonlStrict(join(instDir, 'log.jsonl'))
+  const instLog = instLogParsed.entries as Entry[]
   const results: ReplayRecordResult[] = []
   const counts: Record<ReplayVerdict, number> = {
     allow: 0,
@@ -820,6 +840,24 @@ export async function replayExecPolicy(
   let browserCount = 0
   let agreements = 0
   let disagreements = 0
+
+  for (const badLine of instLogParsed.malformedLines) {
+    apiCount++
+    counts.insufficient_evidence++
+    results.push({
+      source: 'api',
+      file: 'log.jsonl',
+      index: badLine,
+      t: '',
+      method: 'UNKNOWN',
+      effectiveMethod: 'UNKNOWN',
+      url: '',
+      verdict: 'insufficient_evidence',
+      ruleId: 'insufficient_evidence',
+      agreed: null,
+      insufficientReason: 'malformed_instance_log_line',
+    })
+  }
 
   // 1. Replay API proxy `call` entries from instDir/log.jsonl
   for (let i = 0; i < instLog.length; i++) {
@@ -889,21 +927,22 @@ export async function replayExecPolicy(
   }
 
   for (const relFile of [...allRelFiles].sort()) {
-    const absPath = join(instDir, relFile)
-    if (manifestHashes) {
-      const expectedSha = manifestHashes.get(relFile)
-      if (!expectedSha) {
-        // Extra unmanifested workspace file cannot inject entries into replay
-        browserCount++
-        counts.insufficient_evidence++
-        results.push({
-          source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
-          verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
-          insufficientReason: 'unmanifested_browser_log_file',
-        })
-        continue
-      }
-      if (!existsSync(absPath)) {
+    if (manifestHashes && !manifestHashes.has(relFile)) {
+      // Extra unmanifested workspace file cannot inject entries into replay
+      browserCount++
+      counts.insufficient_evidence++
+      results.push({
+        source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+        verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+        insufficientReason: 'unmanifested_browser_log_file',
+      })
+      continue
+    }
+
+    // Open ONCE via contained openFile() and hash + parse that single buffer (zero TOCTOU / symlink escape!)
+    const readRes = readContainedFileOnce(instDir, relFile, MAX_REPLAY_LOG_BYTES)
+    if (readRes.status === 'missing') {
+      if (manifestHashes) {
         browserCount++
         counts.insufficient_evidence++
         results.push({
@@ -911,9 +950,23 @@ export async function replayExecPolicy(
           verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
           insufficientReason: 'missing_manifested_browser_log',
         })
-        continue
       }
-      const actualSha = crypto.createHash('sha256').update(readFileSync(absPath)).digest('hex')
+      continue
+    }
+    if (readRes.status === 'oversize' || !readRes.buf) {
+      browserCount++
+      counts.insufficient_evidence++
+      results.push({
+        source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+        verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+        insufficientReason: 'browser_log_manifest_mismatch',
+      })
+      continue
+    }
+
+    if (manifestHashes) {
+      const expectedSha = manifestHashes.get(relFile)!
+      const actualSha = crypto.createHash('sha256').update(readRes.buf).digest('hex')
       if (actualSha !== expectedSha) {
         browserCount++
         counts.insufficient_evidence++
@@ -926,7 +979,7 @@ export async function replayExecPolicy(
       }
     }
 
-    const parsed = readJsonlStrict(absPath)
+    const parsed = parseJsonlBuffer(readRes.buf)
     for (const badLine of parsed.malformedLines) {
       browserCount++
       counts.insufficient_evidence++

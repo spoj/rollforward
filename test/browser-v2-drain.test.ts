@@ -390,6 +390,25 @@ test('fail-closed spool & protocol checks: malformed /capabilities, corrupt shot
   const r3 = await reap();
   await r3.closed;
   assert.equal(remoteSessions.has(id2), false);
+
+  // 4. Symlinked inst.dir/browser MUST be rejected by contained writeBrowserArtifact (never writes outside inst.dir!)
+  const { symlinkSync } = await import('node:fs');
+  const instSym = makeInst('v2symlink');
+  const outsideDir = mkdtempSync(join(tmpdir(), 'rf-outside-'));
+  try {
+    symlinkSync(outsideDir, join(instSym.dir, 'browser'));
+    const bSym = new Browsers(instSym, 1);
+    const idSym = await bSym.browser('erp');
+    await assert.rejects(() => bSym.close('erp'), /not a regular directory/);
+    assert.equal(existsSync(join(outsideDir, 'run 1 erp.jsonl')), false, 'zero bytes written through symlink outside inst.dir');
+    assert.equal(remoteSessions.has(idSym), true, 'remote session preserved when artifact write fails');
+    rmSync(join(instSym.dir, 'browser'), { force: true });
+    const rSym = await reap();
+    await rSym.closed;
+    assert.equal(remoteSessions.has(idSym), false);
+  } finally {
+    rmSync(outsideDir, { recursive: true, force: true });
+  }
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {
