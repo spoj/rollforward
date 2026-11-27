@@ -430,8 +430,24 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
 
 // The run holding each person's browser on a website that writes its state back, by person and website, or none for a keepalive's
 // turn or a browser a restart left, and its release.
-type Held = { run?: Browsers; by?: string; released: Promise<void>; release(): void; waiters: number; closing?: boolean; nudge?: () => boolean };
+type Held = { run?: Browsers; by?: string; released: boolean; onRelease: Set<() => void>; release(): void; waiters: number; closing?: boolean; nudge?: () => boolean };
 const held = new Map<string, Held>();
+function hold(extra: Partial<Pick<Held, 'run' | 'by' | 'closing' | 'nudge'>> = {}): Held {
+  const onRelease = new Set<() => void>();
+  const h: Held = {
+    ...extra,
+    released: false,
+    onRelease,
+    waiters: 0,
+    release() {
+      if (h.released) return;
+      h.released = true;
+      for (const wake of onRelease) wake();
+      onRelease.clear();
+    },
+  };
+  return h;
+}
 const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
@@ -665,8 +681,8 @@ export async function reap() {
   setJournal(all);
   return { closed: Promise.all(sessions.map(async ({ id }) => {
     const b = left[id], key = b?.writeback ? `${b.email} ${b.site}` : '';
-    let release!: () => void;
-    if (key) held.set(key, { by: 'restart', released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0, closing: true });
+    const h = key ? hold({ by: 'restart', closing: true }) : undefined;
+    if (h) held.set(key, h);
     try {
       const closed = await close(id);
       if (b) keep(instance(b.inst), b, closed);
@@ -676,9 +692,9 @@ export async function reap() {
       const all = journal();
       delete all[id];
       setJournal(all);
-      if (key) {
+      if (h) {
         held.delete(key);
-        release();
+        h.release();
       }
     }
   })) };
@@ -697,6 +713,7 @@ export class Browsers {
   private ended = false;
   private cutted = false;
   private endListeners = new Set<() => void>();
+  private holds = new Map<string, Held>();
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -759,21 +776,23 @@ export class Browsers {
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : other.by ?? 'keepalive' });
         other.waiters++;
         other.nudge?.();
-        let onClose: (() => void) | undefined, onEnd: (() => void) | undefined;
+        let wake: (() => void) | undefined, onClose: (() => void) | undefined;
         try {
-          await Promise.race([
-            other.released,
-            new Promise<void>(ok => {
-              onEnd = ok;
-              this.endListeners.add(ok);
-              if (!conn) return;
-              if (conn.destroyed) return ok();
+          await new Promise<void>(ok => {
+            if (other.released || this.ended || conn?.destroyed) return ok();
+            wake = ok;
+            other.onRelease.add(ok);
+            this.endListeners.add(ok);
+            if (conn) {
               onClose = ok;
               conn.once('close', ok);
-            }),
-          ]);
+            }
+          });
         } finally {
-          if (onEnd) this.endListeners.delete(onEnd);
+          if (wake) {
+            other.onRelease.delete(wake);
+            this.endListeners.delete(wake);
+          }
           if (conn && onClose) conn.off('close', onClose);
           other.waiters--;
         }
@@ -782,8 +801,9 @@ export class Browsers {
       }
       const state = w ? JSON.parse(secret(email, login!.id)) : undefined;
       if (writeback) {
-        let release!: () => void;
-        held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0, nudge: () => this.nudge(site, key) });
+        const h = hold({ run: this, nudge: () => this.nudge(site, key) });
+        held.set(key, h);
+        this.holds.set(site, h);
       }
       const generation = w?.generation ?? 0, root = rfDir(), websiteGeneration = websiteGenerations.get(key), signing = signInGenerations.get(key);
       const source = w ? () => {
@@ -905,6 +925,7 @@ export class Browsers {
     const h = held.get(key);
     if (h?.run !== this) return;
     held.delete(key);
+    for (const [site, cur] of this.holds) if (cur === h) this.holds.delete(site);
     h.release();
   }
 
@@ -1080,16 +1101,22 @@ export async function keepAlive(now?: Date) {
     const other = held.get(key);
     if (other) {
       other.waiters++;
+      let wake: (() => void) | undefined;
       try {
         if (!other.nudge?.()) continue;
-        await other.released;
+        await new Promise<void>(ok => {
+          if (other.released) return ok();
+          wake = ok;
+          other.onRelease.add(ok);
+        });
       } finally {
+        if (wake) other.onRelease.delete(wake);
         other.waiters--;
       }
       if (held.has(key) || !current()) continue;
     }
-    let release!: () => void;
-    if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0 });
+    const h = w.writeback ? hold() : undefined;
+    if (h) held.set(key, h);
     try {
       const via = await vpnVia(email, w);
       if (!current()) continue;
@@ -1109,9 +1136,9 @@ export async function keepAlive(now?: Date) {
     } catch (e) {
       console.error(`keeping ${email}'s login to ${site} alive:`, e);
     } finally {
-      if (w.writeback) {
+      if (h) {
         held.delete(key);
-        release();
+        h.release();
       }
     }
   }

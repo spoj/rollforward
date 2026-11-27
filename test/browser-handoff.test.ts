@@ -259,22 +259,27 @@ test('waiter disconnecting while holder is active decrements waiters so holder k
   assert.equal(closedIds.length, 0);
 });
 
-test('repeated abandoned waits leave endListeners empty while both runs remain alive', TEST_OPTS, async () => {
+test('repeated abandoned waits leave endListeners and holder onRelease empty while both runs remain alive', TEST_OPTS, async () => {
   const runA = track(new Browsers(running('listeners-a'), 1));
   const runB = track(new Browsers(running('listeners-b'), 1));
 
   await runA.browser('crm');
   const connA = new PassThrough();
   runA.connected('crm', connA);
+  const holderHold = (runA as unknown as { holds: Map<string, { onRelease: Set<() => void>; waiters: number }> }).holds.get('crm')!;
+  assert.ok(holderHold);
 
   for (let i = 0; i < 10; i++) {
     const connB = new PassThrough();
     const p = runB.browser('crm', connB);
     await sleep(5);
+    assert.equal(holderHold.onRelease.size, 1, `attempt ${i}: waiter registered on holder onRelease`);
     connB.destroy();
     assert.equal(await waitWithTimeout(p, 5_000, `abandoned wait ${i}`), undefined);
+    assert.equal((runB as unknown as { endListeners: Set<() => void> }).endListeners.size, 0, `attempt ${i}: endListeners cleaned up`);
+    assert.equal(holderHold.onRelease.size, 0, `attempt ${i}: holder onRelease cleaned up`);
+    assert.equal(holderHold.waiters, 0, `attempt ${i}: waiters back to 0`);
   }
-  assert.equal((runB as unknown as { endListeners: Set<() => void> }).endListeners.size, 0, 'no leaked end listeners after abandoned waits');
   assert.equal(runA.bySite.size, 1, 'holder remains connected and alive');
 });
 
