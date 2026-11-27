@@ -2,7 +2,7 @@ import { after, beforeEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changes, initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
@@ -10,7 +10,7 @@ import { upsertUser, type Me } from '../src/auth.ts';
 import type { Trace } from '../src/logins.ts';
 
 type Pause = { seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> };
-const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [], sessionPosts: { hosts: string[]; start_url: string }[] = [];
+const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [], sessionPosts: { hosts: string[]; start_url: string }[] = [], sessionDeletes: string[] = [], failPutPaths = new Set<string>();
 const email = 'alice@company.test', url = 'https://vendor.review.test/';
 const profile = { what: 'A vendor accounting portal', category: 'vendor', risk: 'low', flags: [] };
 let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0, activeHostPuts = 0, maxHostPuts = 0;
@@ -30,6 +30,7 @@ const service = createServer(async (req, res) => {
   if (isHostPut) {
     hostPuts.push({ path: u.pathname, hosts: body.hosts });
     activeHostPuts--;
+    if (failPutPaths.has(u.pathname)) return void res.writeHead(500).end('transient host update error');
   }
   res.setHeader('content-type', 'application/json');
   if (u.pathname === '/blocked') return void res.end(JSON.stringify(Object.fromEntries(u.searchParams.getAll('host').map(h => [h, false]))));
@@ -49,7 +50,10 @@ const service = createServer(async (req, res) => {
   }
   const id = u.pathname.split('/')[2], host = sessions.get(id)!;
   const log = [{ method: 'GET', url: `https://${host}/private?code=not-evidence`, status: 200, live: true }, ...extraHosts.map(h => ({ method: 'GET', url: `https://${h}/`, status: 200 }))];
-  if (req.method === 'DELETE') return void res.end(JSON.stringify({ state: { cookies: [{ name: 'sid', domain: host, value: id }], origins: [] }, log }));
+  if (req.method === 'DELETE') {
+    if (u.pathname.startsWith('/sessions/')) sessionDeletes.push(u.pathname);
+    return void res.end(JSON.stringify({ state: { cookies: [{ name: 'sid', domain: host, value: id }], origins: [] }, log }));
+  }
   if (u.pathname.endsWith('/log')) return void res.end(JSON.stringify(log));
   res.end('{}');
 });
@@ -586,4 +590,41 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal(mutatedCount, 0, 'rejected mutations must not trigger server-wide closeUnlent');
   await assert.rejects(setSite(admin, 'intrapre', { internal: false }, email, undefined, () => { mutatedCount++; }), SyntaxError);
   assert.equal(mutatedCount, 1, 'persisted internal revocation still triggers cleanup even when sibling websites.json is corrupt');
+  rmSync(corruptDir, { recursive: true, force: true });
+
+  // Partial revocation: if replaceFile fails for a site with a pending internal verdict, its pre-revocation Waiting siteRev still returns 409
+  const partialEmail = 'partial@company.test';
+  await addSite(partialEmail, 'partialapp', 'https://10.9.8.21/');
+  changeWebsite(partialEmail, 'partialapp', { checks: { '10.9.8.22': { verdict: 'internal', why: 'It is at an internal address.' } } });
+  const preRevokeToken = siteRevision(partialEmail, 'partialapp', websitesOf(partialEmail).partialapp, '10.9.8.22');
+  setLetIn(['10.9.8.22'], admin.email, true);
+  const partialDir = personDir(partialEmail);
+  chmodSync(partialDir, 0o500);
+  t.after(() => { if (existsSync(partialDir)) chmodSync(partialDir, 0o700); });
+  try {
+    setLetIn(['10.9.8.22'], admin.email, false);
+    await assert.rejects(revokeInternalHosts(['10.9.8.22']), { code: 'EACCES' });
+  } finally {
+    chmodSync(partialDir, 0o700);
+  }
+  assert.equal(websitesOf(partialEmail).partialapp.hostRevs?.['10.9.8.22'], undefined, 'revision write truly failed for affected site');
+  await assert.rejects(allowHost(admin, 'partialapp', '10.9.8.22', partialEmail, undefined, preRevokeToken), { status: 409 });
+  assert.equal(Boolean(letIn()['10.9.8.22']), false, 'stale Waiting Allow after partial revocation cannot restore global grant');
+
+  // Revoking one internal host only updates sign-ins that hold (or are updating to) that host, never touching unrelated live sign-ins
+  await addSite(email, 'sitea', 'https://10.9.8.23/');
+  await addSite(email, 'siteb', 'https://10.9.8.24/');
+  setLetIn(['10.9.8.23', '10.9.8.24'], admin.email, true);
+  const idA = await startSignIn(email, 'sitea', '');
+  const idB = await startSignIn(email, 'siteb', '');
+  hostPuts.length = 0;
+  sessionDeletes.length = 0;
+  failPutPaths.add(`/sessions/${idB}/hosts`);
+  t.after(() => failPutPaths.delete(`/sessions/${idB}/hosts`));
+  setLetIn(['10.9.8.23'], admin.email, false);
+  await revokeInternalHosts(['10.9.8.23']);
+  assert.deepEqual(hostPuts, [{ path: `/sessions/${idA}/hosts`, hosts: [] }], 'only the affected sign-in receives a host PUT');
+  assert.equal(sessionDeletes.includes(`/sessions/${idB}`), false, 'unrelated sign-in is not deleted during another host revocation');
+  await endSignIn(email, idB, false);
+  await endSignIn(email, idA, false);
 });

@@ -132,8 +132,10 @@ const bumpHostRevs = (prev: Record<string, number> | undefined, hosts: string[])
 };
 export const siteIdentity = (w: Pick<Website, 'url' | 'added'>) =>
   createHash('sha256').update(JSON.stringify([w.url, w.added])).digest('hex').slice(0, 16);
-export const siteRevision = (email: string, site: string, w: Website, host = '') =>
-  createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, host ? (Object.hasOwn(w.hostRevs ?? {}, host) ? w.hostRevs![host] : 0) : 0, websiteGenerations.get(`${email} ${site}`) ?? 0])).digest('hex').slice(0, 16);
+export const siteRevision = (email: string, site: string, w: Website, host = '') => {
+  const h = host.trim().toLowerCase();
+  return createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, h ? (Object.hasOwn(w.hostRevs ?? {}, h) ? w.hostRevs![h] : 0) : 0, websiteGenerations.get(`${email} ${site}`) ?? 0, h ? (internalRevocations.get(h) ?? 0) : 0])).digest('hex').slice(0, 16);
+};
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 // By name, a person's: none is Object's, such as constructor.
 export const websitesOf = (email: string): Record<string, Website> => Object.assign(Object.create(null), existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {});
@@ -155,7 +157,7 @@ function website(email: string, name: string): Website {
 // it. It is sealed with their login as they save it, and used again when they sign in again without a new one; never sent for a
 // run's browser.
 
-type SignIn = { email: string; site: string; name: string; token?: string; since: number; expires: number; website: Website; websiteGeneration?: number; generation: number; loginSince?: string };
+type SignIn = { email: string; site: string; name: string; token?: string; since: number; expires: number; website: Website; websiteGeneration?: number; generation: number; loginSince?: string; hosts: Set<string> };
 const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, number>(), signInHostUpdates = new Map<string, Promise<void>>();
 
 function syncSignInHosts(id: string, opts: { reload?: boolean; closeOnError?: boolean } = {}) {
@@ -171,8 +173,11 @@ function syncSignInHosts(id: string, opts: { reload?: boolean; closeOnError?: bo
       if (opts.closeOnError) await endSignIn(s.email, id, false);
       throw e;
     }
+    const nextHosts = internalHosts(cur);
+    for (const h of nextHosts) s.hosts.add(h);
     try {
-      await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) });
+      await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: nextHosts });
+      s.hosts = new Set(nextHosts);
       if (opts.reload && signIns.has(id)) await browserJson('POST', `/sessions/${id}/reload`);
     } catch (e) {
       if (opts.closeOnError) await endSignIn(s.email, id, false);
@@ -205,7 +210,7 @@ export async function startSignIn(email: string, site: string, given: string, ca
   signInGenerations.set(key, generation);
   changes.emit('change', 'tree');
   const ttl_s = Number(process.env.RF_SIGNIN_S ?? 600), since = Date.now();
-  const signing = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince };
+  const signing: SignIn = { email, site, name: site, token, since, expires: since + ttl_s * 1000, website: w, websiteGeneration, generation, loginSince, hosts: new Set() };
   await checkHost(new URL(w.url).hostname, !!w.via);
   const via = await vpnVia(email, w, caller);
   recheck?.();
@@ -215,6 +220,7 @@ export async function startSignIn(email: string, site: string, given: string, ca
   recheck?.();
   const current = currentSignIn(signing);
   const openedInternal = internalHosts(current);
+  signing.hosts = new Set(openedInternal);
   const id = (await browserJson('POST', '/sessions', { site: { hosts: openedInternal, open: true, except: except(), start_url: current.url, via, ...(token && { headers: { [current.header!]: token } }) }, ttl_s })).id;
   try {
     recheck?.();
@@ -342,7 +348,8 @@ export async function revokeInternalHosts(hosts: string[]) {
       firstError ??= e;
     }
   }
-  const revoked = await Promise.allSettled([...signIns.keys()].map(id => syncSignInHosts(id, { closeOnError: true })));
+  const targets = [...signIns].filter(([, s]) => hosts.some(h => s.hosts.has(h))).map(([id]) => id);
+  const revoked = await Promise.allSettled(targets.map(id => syncSignInHosts(id, { closeOnError: true })));
   for (const result of revoked) if (result.status === 'rejected') firstError ??= result.reason;
   if (firstError) throw firstError;
 }
