@@ -28,6 +28,7 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   const instId = 'inst1';
   const sessionId = 'sess_v2_abc';
   const tinyJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const filesRequests: string[] = [];
 
   const auditPayload = {
     manifest: {
@@ -98,7 +99,8 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
           doc: { rev: 1, status: 'open', items: [] },
           log: [
             { seq: 1, at: '2026-11-27T09:59:00Z', by: me, op: 'create' },
-            { seq: 2, at: '2026-11-27T10:00:05Z', by: 'server', op: 'browser', run: 1, site: 'erp', login: me, sessionId, requests: 2, writes: 1, blocked: 0, cdp: 1, shots: 1, file: 'browser/run 1 erp.jsonl', cdpFile: 'browser/run 1 erp.cdp.jsonl' },
+            { seq: 2, at: '2026-11-27T10:00:04Z', by: 'server', op: 'shot', run: 1, site: 'erp', file: 'browser/run 1 erp s1.jpg', sessionId, shotSeq: 1, trigger: 'write' },
+            { seq: 3, at: '2026-11-27T10:00:05Z', by: 'server', op: 'browser', run: 1, site: 'erp', login: me, sessionId, requests: 2, writes: 1, blocked: 0, cdp: 1, shots: 1, file: 'browser/run 1 erp.jsonl', cdpFile: 'browser/run 1 erp.cdp.jsonl' },
           ],
           standing: {},
           starts: true,
@@ -122,6 +124,7 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
       return r.fulfill({ json: auditPayload });
     }
     if (p.startsWith(`/files/${instId}/`)) {
+      filesRequests.push(p);
       return r.fulfill({ contentType: 'image/jpeg', body: tinyJpeg });
     }
     return r.continue();
@@ -131,8 +134,9 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   const auditBtn = page.locator('#log [data-act="audit"]');
   await auditBtn.waitFor({ state: 'visible' });
   await auditBtn.click();
-  const btn = page.locator('button[data-act="browser-audit"]');
+  const btn = page.locator('button[data-act="browser-audit"]').last();
   await btn.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#log img[src*="/files/"]').count(), 0, 'v2 shot event in instance feed must NOT load unverified /files/ image');
   await btn.click();
 
   const dialog = page.locator('#pv');
@@ -148,6 +152,15 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   const imgSrcs = await page.locator('#ba-list .ba-shot img').evaluateAll(els => els.map(e => e.getAttribute('src')));
   assert.equal(imgSrcs.length, 1);
   assert.ok(imgSrcs[0]?.startsWith('data:image/jpeg;base64,'), 'verified shot uses verified dataUrl');
+
+  // Clicking verified shot zooms using in-memory dataUrl (ZERO /files/... fetch) and returns to timeline cleanly
+  await page.locator('#ba-list .ba-shot img').first().click();
+  await page.locator('[data-act="ba-shot-unzoom"]').waitFor({ state: 'visible' });
+  const zoomedSrc = await page.locator('#pv .img img').getAttribute('src');
+  assert.ok(zoomedSrc?.startsWith('data:image/jpeg;base64,'), 'enlarged view uses verified dataUrl');
+  assert.equal(filesRequests.length, 0, 'zero unverified /files/ requests for v2 shots');
+  await page.locator('[data-act="ba-shot-unzoom"]').click();
+  await page.locator('#ba-list').waitFor({ state: 'visible' });
 
   // Verify override badge, dupKeys red pill, policy badge, high-severity CDP pill, merged http_end error, and withheld tampered shot
   const listText = await page.locator('#ba-list').textContent() ?? '';

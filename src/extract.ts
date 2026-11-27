@@ -708,6 +708,8 @@ export type SqlClassification = {
   sqlClass: 'read' | 'write' | 'ddl' | 'unknown'
   statements: string[]
   destructive: boolean
+  hasDropOrTruncate: boolean
+  hasDelete: boolean
 }
 
 const SQL_READ_VERBS = new Set(['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'VALUES', 'LIST'])
@@ -871,22 +873,27 @@ export function classifySqlStatement(sql: string): SqlClassification {
         continue
       }
     }
-    statements.push(verb)
+    const normalizedVerb = (SQL_READ_VERBS.has(verb) || SQL_WRITE_VERBS.has(verb) || SQL_DDL_VERBS.has(verb)) ? verb : 'UNKNOWN'
+    statements.push(normalizedVerb)
   }
 
-  if (!statements.length) return { sqlClass: 'unknown', statements: [], destructive: false }
+  if (!statements.length) {
+    return { sqlClass: 'unknown', statements: [], destructive: false, hasDropOrTruncate: false, hasDelete: false }
+  }
 
-  const destructive = statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
+  const hasDropOrTruncate = statements.some(v => v === 'DROP' || v === 'TRUNCATE')
+  const hasDelete = statements.some(v => v === 'DELETE')
+  const destructive = hasDropOrTruncate || hasDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
   if (statements.some(v => SQL_DDL_VERBS.has(v))) {
-    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive }
+    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
   }
   if (statements.some(v => SQL_WRITE_VERBS.has(v))) {
-    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive }
+    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
   }
   if (statements.every(v => SQL_READ_VERBS.has(v))) {
-    return { sqlClass: 'read', statements: statements.slice(0, 16), destructive: false }
+    return { sqlClass: 'read', statements: statements.slice(0, 16), destructive: false, hasDropOrTruncate: false, hasDelete: false }
   }
-  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive }
+  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
 }
 
 // ---- Graph API semantic helpers (domains & counts only, NEVER raw addresses/subject/body PII) ----
@@ -1230,11 +1237,15 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const cleanPath = lowerPath.replace(/\/$/, '')
       if (cleanPath === '/api/2.0/sql/statements' && input.effectiveMethod === 'POST') {
         const stmtRaw = typeof obj?.statement === 'string' ? obj.statement : undefined
-        const cls = stmtRaw ? classifySqlStatement(stmtRaw) : { sqlClass: 'unknown' as const, statements: [], destructive: false }
+        const cls = stmtRaw
+          ? classifySqlStatement(stmtRaw)
+          : { sqlClass: 'unknown' as const, statements: [], destructive: false, hasDropOrTruncate: false, hasDelete: false }
         const details: Record<string, unknown> = {
           sqlClass: cls.sqlClass,
           statements: cls.statements,
           destructive: cls.destructive,
+          ...(cls.hasDropOrTruncate && { hasDropOrTruncate: true }),
+          ...(cls.hasDelete && { hasDelete: true }),
         }
         const wh = validateStructuralIdent(obj?.warehouse_id, DBX_IDENT_RE, input.vault, true)
         vaultRedactions += wh.vaultRedactions

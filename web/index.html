@@ -566,7 +566,7 @@ const actor = (by, at, run) => {
 const labelOf = (id, then) => tree.flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => s.single ? i.label : `${s.name} \u00b7 ${i.label}`)))[0] ?? then;
 // Another instance's agent, which left a note here or on the series, and whom it acted for.
 const agentOf = e => `Agent of <a href="#/${esc(e.see.inst)}">${esc(labelOf(e.see.inst, e.see.label))}</a>, for ${person(e.runner)}`;
-const shotsHtml = es => `<div class="shots">${es.map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
+const shotsHtml = es => `<div class="shots">${es.filter(e => !e.sessionId).map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
 function logText(e) {
   const w = e.see && e.op === 'comment' ? agentOf(e) : actor(e.by, e.at, e.run);
@@ -615,7 +615,9 @@ function logText(e) {
       : e.action === 'allowed' ? `${w} let ${e.login ? `${person(e.login)}'s ` : ''}${esc(e.site)} reach ${esc(e.allowed.join(', '))}${Object.entries(e.why ?? {}).map(([h, y]) => `<div class="d">${esc(h)}: ${esc(y)}</div>`).join('')}`
       : e.action === 'drive' ? `${w} took control of run ${e.run}'s browser on ${esc(e.site)}`
       : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}${e.cdp ? `, ${e.cdp} CDP` : ''}${e.shots ? `, ${e.shots} shots` : ''}`}</div><div class="f">${e.sessionId ? `<button class="btn" data-act="browser-audit" data-session="${esc(e.sessionId)}">Audit timeline</button> ` : ''}${e.file ? `<a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a>` : ''}${e.cdpFile ? ` · <a data-act="preview" data-file="${esc(e.cdpFile)}">${esc(e.cdpFile)}</a>` : ''}</div>`,
-    shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
+    shot: () => e.sessionId
+      ? `Run ${e.run}'s browser on ${esc(e.site)} <button class="btn" data-act="browser-audit" data-session="${esc(e.sessionId)}">Verified screenshot${e.shotSeq ? ` #${esc(String(e.shotSeq))}` : ''}</button>`
+      : `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
@@ -1068,7 +1070,7 @@ function browserAuditRowsHtml(ba) {
       const s = it.data;
       const verified = (!s.integrity || s.integrity === 'ok') && typeof s.dataUrl === 'string' && s.dataUrl.startsWith('data:image/');
       const imgHtml = verified
-        ? `<div class="ba-shot-img"><img src="${s.dataUrl}" loading="lazy" alt="" data-act="preview" data-file="${esc(s.file)}"></div>`
+        ? `<div class="ba-shot-img"><img src="${s.dataUrl}" loading="lazy" alt="" data-act="ba-shot-zoom" data-seq="${esc(String(s.seq))}"></div>`
         : `<div class="ba-sub"><span class="ba-pill ba-warn">Shot ${esc(s.integrity ?? 'unverified')} \u2014 image withheld</span></div>`;
       return `<div class="ba-card ba-shot" data-kind="shot"><div class="ba-hdr">${ts}<span class="ba-pill">shot #${esc(String(s.seq))}</span>${s.trigger ? `<span class="ba-pill">${esc(s.trigger)}</span>` : ''}${s.integrity && s.integrity !== 'ok' ? `<span class="ba-pill ba-warn">${esc(s.integrity)}</span>` : ''}<span class="ba-url">${esc(s.url || '')}</span></div>${imgHtml}</div>`;
     }
@@ -1099,6 +1101,9 @@ function browserAuditRowsHtml(ba) {
 }
 
 function browserAuditHtml(ba) {
+  if (ba.zoom && typeof ba.zoom.dataUrl === 'string' && ba.zoom.dataUrl.startsWith('data:image/')) {
+    return `<div class="ba-wrap"><div class="sub" style="padding:8px 0"><a data-act="ba-shot-unzoom">\u2190 Back to timeline</a> \u00b7 shot #${esc(String(ba.zoom.seq))}${ba.zoom.url ? ` \u00b7 ${esc(ba.zoom.url)}` : ''}</div><div class="img"><img src="${ba.zoom.dataUrl}" alt=""></div></div>`;
+  }
   const m = ba.manifest ?? {}, integ = ba.integrity ?? { ok: true, checked: 0, tampered: [], missing: [] };
   const filter = ba.filter ?? 'all';
   const tapSum = (ba.cdp ?? []).findLast(c => c?.rec === '_tap.summary');
@@ -2016,6 +2021,20 @@ async function onAct(act, el) {
   }
   if (act === 'ba-filter' && pv?.browserAudit) {
     pv.browserAudit.filter = el.dataset.filter;
+    renderPv();
+    return;
+  }
+  if (act === 'ba-shot-zoom' && pv?.browserAudit) {
+    const seq = Number(el.dataset.seq);
+    const shot = (pv.browserAudit.shots ?? []).find(s => s.seq === seq && (!s.integrity || s.integrity === 'ok') && typeof s.dataUrl === 'string' && s.dataUrl.startsWith('data:image/'));
+    if (shot) {
+      pv.browserAudit.zoom = shot;
+      renderPv();
+    }
+    return;
+  }
+  if (act === 'ba-shot-unzoom' && pv?.browserAudit) {
+    pv.browserAudit.zoom = null;
     renderPv();
     return;
   }

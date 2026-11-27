@@ -13,6 +13,7 @@ import { saveSeriesSettings } from '../src/series.ts';
 
 // Mock rollforward-browser v0.3.0 (switchable to legacy v0.2.2)
 let capabilities404 = false;
+let malformedCapabilities = false;
 let sealCalls = 0;
 let sealedDeleteCalls: string[] = [];
 let legacyDeleteCalls: string[] = [];
@@ -34,6 +35,7 @@ const mockService = createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://127.0.0.1');
   if (u.pathname === '/capabilities' && req.method === 'GET') {
     if (capabilities404) return void res.writeHead(404).end('{"error":"no such route"}');
+    if (malformedCapabilities) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ version: '0.3.0' }));
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ version: '0.3.0', auditV2: 2, seal: true, activity: true }));
   }
   if (u.pathname === '/sessions' && req.method === 'GET') {
@@ -335,9 +337,14 @@ test('v0.3.0 capabilities probe, auditV2 session open, seal -> paginated drain -
   assert.ok(String((tampered.shots[1] as any).dataUrl).startsWith('data:image/jpeg;base64,'));
 });
 
-test('fail-closed spool & protocol checks: corrupt shots.json, malformed /seal, malformed DELETE ack, and http_end late error counting', async () => {
+test('fail-closed spool & protocol checks: malformed /capabilities, corrupt shots.json & http.jsonl, malformed /seal, malformed DELETE ack, and http_end late error counting', async () => {
+  // 0. Malformed 200 /capabilities throws 502 and is NOT cached as legacy downgrade
   resetCapabilitiesCache();
   capabilities404 = false;
+  malformedCapabilities = true;
+  await assert.rejects(() => probeCapabilities(), /malformed \/capabilities/);
+  malformedCapabilities = false;
+  assert.equal((await probeCapabilities()).auditV2, 2);
 
   // 1. Corrupt shots.json fails closed and retains journal + remote session
   const inst1 = makeInst('v2corrupt');
@@ -348,6 +355,12 @@ test('fail-closed spool & protocol checks: corrupt shots.json, malformed /seal, 
   await assert.rejects(() => b1.close('erp'), /corrupt browser shot spool/);
   assert.equal(remoteSessions.has(id1), true, 'remote session preserved on corrupt spool');
   rmSync(join(rfDir(), 'browser-spool', id1, 'shots.json'), { force: true });
+  // Also corrupt newline-terminated http.jsonl fails closed!
+  writeFileSync(join(rfDir(), 'browser-spool', id1, 'http.jsonl'), '{corrupt-line\n');
+  const rCorrupt = await reap();
+  await rCorrupt.closed;
+  assert.equal(remoteSessions.has(id1), true, 'remote session preserved on corrupt http.jsonl line');
+  rmSync(join(rfDir(), 'browser-spool', id1, 'http.jsonl'), { force: true });
   const r1 = await reap();
   await r1.closed;
   assert.equal(remoteSessions.has(id1), false);

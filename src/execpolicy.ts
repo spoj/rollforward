@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   DESC_V,
   EXTRACTOR_V,
@@ -42,6 +42,7 @@ export type CompactPolicyDecision = {
   policyVersion: string
   stage?: 1 | 2
   approvalRef?: string
+  atSeq?: number
 }
 
 export type ApprovalContext = {
@@ -265,24 +266,46 @@ export function evaluateStage1(
     return make('deny', 'method_override_downgrade', 'HTTP method override attempted to downgrade write to safe verb')
   }
 
-  // 2. Method-override escalation (safe wire verb escalated to unsafe verb)
+  // 2. Mandatory transport & body-integrity facts (checked upfront so action-specific allows can never bypass them!)
+  const hasDeleteVerb = safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE'
   const escalatedFromSafe = SAFE_METHODS.has(safe.method) && !SAFE_METHODS.has(safe.effectiveMethod)
+  const writeBodyNotInspected = safe.isWrite && safe.completeness.transport === 'not-read' && safe.declaredBytes !== 0
+  const writeIncompleteBody = safe.isWrite && (safe.completeness.transport === 'truncated' || (safe.completeness.decode !== 'complete' && safe.completeness.decode !== 'none'))
+  const writeDupKeys = safe.isWrite && Boolean(safe.dupKeys)
+  const bodyIntegrityFailure: { ruleId: string; reason: string } | undefined = writeDupKeys
+    ? { ruleId: 'write_duplicate_json_keys', reason: 'Write payload contained duplicate JSON keys' }
+    : writeBodyNotInspected
+      ? { ruleId: 'write_body_not_inspected', reason: 'Body-bearing write was not inspected before dispatch' }
+      : writeIncompleteBody
+        ? { ruleId: 'write_incomplete_body', reason: 'Write body was truncated or failed decoding' }
+        : undefined
+  const approvedOrIntegrity = (ruleId: string, approvalRef?: string) =>
+    bodyIntegrityFailure
+      ? make('escalate', bodyIntegrityFailure.ruleId, bodyIntegrityFailure.reason)
+      : make('allow', ruleId, 'Approved by current-epoch human signoff', approvalRef)
 
-  // 3. Action-specific deterministic rules
+  // 3a. Unconditional action-level denies first (DROP/TRUNCATE always deny regardless of transport or approval)
+  for (const act of safe.actions) {
+    if (act.family === 'databricks' && act.op.startsWith('databricks:sql_')) {
+      const stmts = Array.isArray(act.details?.statements) ? (act.details!.statements as string[]) : []
+      if (act.details?.hasDropOrTruncate === true || stmts.some(s => s === 'DROP' || s === 'TRUNCATE')) {
+        return make('deny', 'databricks_destructive_ddl', `Destructive SQL DDL (${stmts.join(',') || 'DROP/TRUNCATE'}) denied`)
+      }
+    }
+  }
+
+  // 3b. Action-specific deterministic rules
   for (const act of safe.actions) {
     // Databricks SQL rules
     if (act.family === 'databricks' && act.op.startsWith('databricks:sql_')) {
       const sqlClass = act.details?.sqlClass
       const stmts = Array.isArray(act.details?.statements) ? (act.details!.statements as string[]) : []
-      if (stmts.some(s => s === 'DROP' || s === 'TRUNCATE')) {
-        return make('deny', 'databricks_destructive_ddl', `Destructive SQL DDL (${stmts.join(',')}) denied`)
-      }
-      if (sqlClass === 'ddl' || stmts.includes('DELETE')) {
+      if (sqlClass === 'ddl' || act.details?.hasDelete === true || act.details?.destructive === true || stmts.includes('DELETE')) {
         return approval.approved
-          ? make('allow', 'databricks_write_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
-          : make('requireApproval', 'databricks_ddl_or_delete', `SQL ${stmts.join(',')} requires human approval`)
+          ? approvedOrIntegrity('databricks_write_approved', approval.approvalRef)
+          : make('requireApproval', 'databricks_ddl_or_delete', `SQL ${stmts.join(',') || String(sqlClass)} requires human approval`)
       }
-      if (sqlClass === 'read' && !safe.dupKeys && safe.bodyComplete && safe.decodeComplete) {
+      if (sqlClass === 'read' && !hasDeleteVerb && !escalatedFromSafe && !bodyIntegrityFailure && safe.bodyComplete && safe.decodeComplete) {
         return make('allow', 'allow_databricks_sql_read')
       }
       if (sqlClass === 'unknown') {
@@ -292,15 +315,18 @@ export function evaluateStage1(
 
     // Microsoft Graph mail send / reply / forward
     if (act.family === 'graph' && ['graph:sendMail', 'graph:send', 'graph:reply', 'graph:replyAll', 'graph:forward'].includes(act.op)) {
-      return approval.approved
-        ? make('allow', 'graph_send_mail_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
-        : make('requireApproval', 'graph_send_mail', 'Outbound email send requires current-epoch human approval')
+      if (!approval.approved) {
+        return make('requireApproval', 'graph_send_mail', 'Outbound email send requires current-epoch human approval')
+      }
+      if (!hasDeleteVerb) {
+        return approvedOrIntegrity('graph_send_mail_approved', approval.approvalRef)
+      }
     }
 
     // Microsoft Graph file delete
     if (act.family === 'graph' && act.op === 'graph:file_delete') {
       return approval.approved
-        ? make('allow', 'graph_file_delete_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
+        ? approvedOrIntegrity('graph_file_delete_approved', approval.approvalRef)
         : make('requireApproval', 'graph_file_delete', 'File deletion requires current-epoch human approval')
     }
 
@@ -313,9 +339,12 @@ export function evaluateStage1(
     if (act.family === 'e1-ais') {
       const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
       if (a === 'W' || act.op.endsWith(':W')) {
-        return approval.approved
-          ? make('allow', 'e1_ais_write_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
-          : make('requireApproval', 'e1_ais_write', 'JD Edwards E1 AIS write action requires human approval')
+        if (!approval.approved) {
+          return make('requireApproval', 'e1_ais_write', 'JD Edwards E1 AIS write action requires human approval')
+        }
+        if (!hasDeleteVerb) {
+          return approvedOrIntegrity('e1_ais_write_approved', approval.approvalRef)
+        }
       }
     }
 
@@ -324,10 +353,10 @@ export function evaluateStage1(
       if (act.coverage === 'opaque-batch') {
         return make('escalate', 'sharepoint_opaque_batch', 'Opaque SharePoint $batch write requires review')
       }
-      if (safe.method === 'DELETE' || safe.method === 'MERGE' || safe.effectiveMethod === 'DELETE' || safe.effectiveMethod === 'MERGE') {
+      if (hasDeleteVerb || safe.method === 'MERGE' || safe.effectiveMethod === 'MERGE') {
         return approval.approved
-          ? make('allow', 'sharepoint_destructive_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
-          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE' ? 'DELETE' : 'MERGE'} requires human approval`)
+          ? approvedOrIntegrity('sharepoint_destructive_approved', approval.approvalRef)
+          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${hasDeleteVerb ? 'DELETE' : 'MERGE'} requires human approval`)
       }
       if ((safe.method === 'PUT' || safe.effectiveMethod === 'PUT') && act.details?.hasIfMatch === false) {
         return make('escalate', 'unguarded_overwrite_no_if_match', 'SharePoint PUT without If-Match ETag')
@@ -342,16 +371,16 @@ export function evaluateStage1(
       if (safe.graphqlOp === 'mixed') {
         return make('escalate', 'graphql_mixed_operation', 'Ambiguous or mixed GraphQL operation')
       }
-      if (safe.graphqlOp === 'query' && !safe.dupKeys && safe.bodyComplete && safe.decodeComplete && !escalatedFromSafe) {
+      if (safe.graphqlOp === 'query' && !hasDeleteVerb && !escalatedFromSafe && !bodyIntegrityFailure && safe.bodyComplete && safe.decodeComplete) {
         return make('allow', 'allow_graphql_query')
       }
     }
   }
 
   // 4. Generic DELETE across any surface (apply stricter rule to BOTH wire method and effectiveMethod so DELETE + override: POST cannot bypass!)
-  if (safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE') {
+  if (hasDeleteVerb) {
     return approval.approved
-      ? make('allow', 'http_delete_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
+      ? approvedOrIntegrity('http_delete_approved', approval.approvalRef)
       : make('requireApproval', 'http_delete', 'HTTP DELETE requires current-epoch human approval')
   }
 
@@ -362,14 +391,8 @@ export function evaluateStage1(
 
   // 6. Integrity/completeness escalations on writes
   if (safe.isWrite) {
-    if (safe.dupKeys) {
-      return make('escalate', 'write_duplicate_json_keys', 'Write payload contained duplicate JSON keys')
-    }
-    if (safe.completeness.transport === 'not-read' && safe.declaredBytes !== 0) {
-      return make('escalate', 'write_body_not_inspected', 'Body-bearing write was not inspected before dispatch')
-    }
-    if (safe.completeness.transport === 'truncated' || (safe.completeness.decode !== 'complete' && safe.completeness.decode !== 'none')) {
-      return make('escalate', 'write_incomplete_body', 'Write body was truncated or failed decoding')
+    if (bodyIntegrityFailure) {
+      return make('escalate', bodyIntegrityFailure.ruleId, bodyIntegrityFailure.reason)
     }
     if (safe.actions.some(a => a.coverage === 'opaque-batch' || a.coverage === 'persisted-query-unknown' || a.coverage === 'unknown')) {
       return make('escalate', 'write_opaque_payload', 'Write payload semantics could not be extracted')
@@ -429,15 +452,19 @@ export class ExecPolicyEngine {
 
   private runShadow(job: () => Promise<void>, maxConcurrent: number) {
     this.shadowActive++
-    void Promise.resolve()
-      .then(job)
-      .then(() => { this.shadowCompleted++ })
-      .catch(() => { this.shadowErrors++ })
-      .finally(() => {
-        this.shadowActive--
-        const next = this.shadowQueue.shift()
-        if (next && this.shadowActive < maxConcurrent) this.runShadow(next, maxConcurrent)
-      })
+    // Defer to macrotask turn (setImmediate) so synchronous hook startup never delays live request forwarding.
+    // Keep setImmediate ref'd so libuv sets poll timeout = 0 and dispatches immediately on the next tick.
+    setImmediate(() => {
+      void Promise.resolve()
+        .then(job)
+        .then(() => { this.shadowCompleted++ })
+        .catch(() => { this.shadowErrors++ })
+        .finally(() => {
+          this.shadowActive--
+          const next = this.shadowQueue.shift()
+          if (next && this.shadowActive < maxConcurrent) this.runShadow(next, maxConcurrent)
+        })
+    })
   }
 
   async evaluate(descriptor: RequestDescriptor, opts: EvaluateOptions = {}): Promise<ExecPolicyDecision> {
@@ -511,10 +538,20 @@ export class ExecPolicyEngine {
         }
         this.enqueueShadow(async () => {
           const ac = new AbortController()
-          const timer = setTimeout(() => ac.abort(), deadlineMs)
-          timer.unref?.()
+          let timer: NodeJS.Timeout | undefined
           try {
-            const verdict = await hook(triageInput, { decisionId, signal: ac.signal, deadlineMs })
+            // Race against deadlineMs so a hook that ignores AbortSignal still releases its shadow worker slot!
+            const verdict = await Promise.race<TriageVerdict>([
+              Promise.resolve().then(() => hook(triageInput, { decisionId, signal: ac.signal, deadlineMs })),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                  ac.abort()
+                  reject(new Error('shadow_timeout'))
+                }, deadlineMs)
+                timer.unref?.()
+              }),
+            ])
+            if (ac.signal.aborted) return
             // Stage 2 cannot override a Stage-1 deny or requireApproval (already guarded above, double-checked here)
             const finalAction: ExecPolicyAction = ['allow', 'deny', 'escalate', 'requireApproval'].includes(verdict?.action) ? verdict.action : 'deny'
             const shadowDecision: ExecPolicyDecision = {
@@ -531,7 +568,7 @@ export class ExecPolicyEngine {
             }
             opts.onShadowDecision?.(shadowDecision)
           } finally {
-            clearTimeout(timer)
+            if (timer) clearTimeout(timer)
           }
         }, cfg.maxConcurrentShadow, cfg.maxShadowQueue)
       }
@@ -651,16 +688,40 @@ export type ReplaySummary = {
   results: ReplayRecordResult[]
 }
 
-function readJsonlSafe(filePath: string): any[] {
-  if (!existsSync(filePath)) return []
-  const raw = readFileSync(filePath, 'utf8')
-  const out: any[] = []
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim()
+function readJsonlStrict(filePath: string): { entries: any[]; malformedLines: number[]; rawBuf?: Buffer } {
+  if (!existsSync(filePath)) return { entries: [], malformedLines: [] }
+  const rawBuf = readFileSync(filePath)
+  const raw = rawBuf.toString('utf8')
+  const entries: any[] = []
+  const malformedLines: number[] = []
+  const lines = raw.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim()
     if (!trimmed) continue
-    try { out.push(JSON.parse(trimmed)) } catch {}
+    try { entries.push(JSON.parse(trimmed)) } catch { malformedLines.push(i + 1) }
   }
-  return out
+  return { entries, malformedLines, rawBuf }
+}
+
+function loadHostBrowserManifestHashes(instId: string, manifestsDir?: string): Map<string, string> | undefined {
+  let dir = manifestsDir
+  if (!dir) {
+    try { dir = join(rfDir(), 'browser-manifests') } catch { return undefined }
+  }
+  if (!dir || !existsSync(dir)) return undefined
+  const hashes = new Map<string, string>()
+  let foundAny = false
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue
+    try {
+      const m = JSON.parse(readFileSync(join(dir, name), 'utf8')) as { inst?: string; file?: string; artifacts?: Record<string, string> }
+      if (m?.inst === instId && m.file && typeof m.artifacts?.[m.file] === 'string') {
+        foundAny = true
+        hashes.set(m.file, m.artifacts[m.file])
+      }
+    } catch {}
+  }
+  return foundAny ? hashes : undefined
 }
 
 function reconstructSafeFromApiCall(e: Entry, seq: number): { safe?: SafeRequestProjection; insufficientReason?: string } {
@@ -742,11 +803,11 @@ function reconstructSafeFromApiCall(e: Entry, seq: number): { safe?: SafeRequest
 
 export async function replayExecPolicy(
   instDir: string,
-  opts?: { triageHook?: TriageHook; mode?: ExecPolicyMode },
+  opts?: { triageHook?: TriageHook; mode?: ExecPolicyMode; instId?: string; manifestsDir?: string },
 ): Promise<ReplaySummary> {
   const mode = opts?.mode ?? 'observe'
   const engine = new ExecPolicyEngine(opts?.triageHook)
-  const instLog = readJsonlSafe(join(instDir, 'log.jsonl')) as Entry[]
+  const instLog = readJsonlStrict(join(instDir, 'log.jsonl')).entries as Entry[]
   const results: ReplayRecordResult[] = []
   const counts: Record<ReplayVerdict, number> = {
     allow: 0,
@@ -788,8 +849,12 @@ export async function replayExecPolicy(
       continue
     }
 
-    // Bound approval lookup strictly to entries BEFORE dispatch (`sent - 1` for writes, else `seq - 1`) so mid-flight signoffs cannot retroactively approve!
-    const uptoSeq = typeof e.sent === 'number' ? Math.max(0, e.sent - 1) : Math.max(0, e.seq - 1)
+    // Bound approval lookup strictly to the persisted admission-time cursor (`policy.atSeq`), falling back to `sent - 1` or `seq - 1`.
+    const uptoSeq = typeof recorded?.atSeq === 'number'
+      ? recorded.atSeq
+      : typeof e.sent === 'number'
+        ? Math.max(0, e.sent - 1)
+        : Math.max(0, e.seq - 1)
     const decision = await engine.evaluate({ safe: recon.safe }, { mode, log: instLog, uptoSeq })
     const agreed = recorded ? decision.action === recorded.action : null
     if (agreed === true) agreements++
@@ -811,13 +876,68 @@ export async function replayExecPolicy(
     })
   }
 
-  // 2. Replay browser/*.jsonl (excluding *.cdp.jsonl)
+  // 2. Replay browser/*.jsonl (excluding *.cdp.jsonl), verifying host SHA-256 manifests when present
   const browserDir = join(instDir, 'browser')
-  if (existsSync(browserDir)) {
-    const files = readdirSync(browserDir).filter(f => f.endsWith('.jsonl') && !f.endsWith('.cdp.jsonl')).sort()
-    for (const file of files) {
-      const records = readJsonlSafe(join(browserDir, file))
-      for (let idx = 0; idx < records.length; idx++) {
+  const instId = opts?.instId ?? basename(instDir)
+  const manifestHashes = loadHostBrowserManifestHashes(instId, opts?.manifestsDir)
+  const diskFiles = existsSync(browserDir)
+    ? readdirSync(browserDir).filter(f => f.endsWith('.jsonl') && !f.endsWith('.cdp.jsonl')).sort()
+    : []
+  const allRelFiles = new Set<string>(diskFiles.map(f => `browser/${f}`))
+  if (manifestHashes) {
+    for (const rel of manifestHashes.keys()) allRelFiles.add(rel)
+  }
+
+  for (const relFile of [...allRelFiles].sort()) {
+    const absPath = join(instDir, relFile)
+    if (manifestHashes) {
+      const expectedSha = manifestHashes.get(relFile)
+      if (!expectedSha) {
+        // Extra unmanifested workspace file cannot inject entries into replay
+        browserCount++
+        counts.insufficient_evidence++
+        results.push({
+          source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+          verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+          insufficientReason: 'unmanifested_browser_log_file',
+        })
+        continue
+      }
+      if (!existsSync(absPath)) {
+        browserCount++
+        counts.insufficient_evidence++
+        results.push({
+          source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+          verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+          insufficientReason: 'missing_manifested_browser_log',
+        })
+        continue
+      }
+      const actualSha = crypto.createHash('sha256').update(readFileSync(absPath)).digest('hex')
+      if (actualSha !== expectedSha) {
+        browserCount++
+        counts.insufficient_evidence++
+        results.push({
+          source: 'browser', file: relFile, index: 0, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+          verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+          insufficientReason: 'browser_log_manifest_mismatch',
+        })
+        continue
+      }
+    }
+
+    const parsed = readJsonlStrict(absPath)
+    for (const badLine of parsed.malformedLines) {
+      browserCount++
+      counts.insufficient_evidence++
+      results.push({
+        source: 'browser', file: relFile, index: badLine, t: '', method: 'UNKNOWN', effectiveMethod: 'UNKNOWN', url: '',
+        verdict: 'insufficient_evidence', ruleId: 'insufficient_evidence', agreed: null,
+        insufficientReason: 'malformed_browser_jsonl_line',
+      })
+    }
+    const records = parsed.entries
+    for (let idx = 0; idx < records.length; idx++) {
         const r = records[idx]
         if (!r || r.rec === '_summary' || r.rec === 'http_end') continue
         browserCount++
@@ -835,7 +955,7 @@ export async function replayExecPolicy(
             counts.insufficient_evidence++
             results.push({
               source: 'browser',
-              file: `browser/${file}`,
+              file: relFile,
               index: r.n ?? idx + 1,
               t,
               method,
@@ -853,7 +973,7 @@ export async function replayExecPolicy(
           counts.allow++
           results.push({
             source: 'browser',
-            file: `browser/${file}`,
+            file: relFile,
             index: r.n ?? idx + 1,
             t,
             method,
@@ -872,7 +992,7 @@ export async function replayExecPolicy(
           counts.insufficient_evidence++
           results.push({
             source: 'browser',
-            file: `browser/${file}`,
+            file: relFile,
             index: r.n ?? idx + 1,
             t,
             method,
@@ -912,7 +1032,7 @@ export async function replayExecPolicy(
         counts[verdict]++
         results.push({
           source: 'browser',
-          file: `browser/${file}`,
+          file: relFile,
           index: r.n ?? idx + 1,
           t,
           method,
@@ -926,7 +1046,6 @@ export async function replayExecPolicy(
           ...(insufficientReason && { insufficientReason }),
         })
       }
-    }
   }
 
   return {

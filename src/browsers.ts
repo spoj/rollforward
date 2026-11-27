@@ -111,11 +111,25 @@ export async function probeCapabilities(): Promise<BrowserCapabilities> {
   if (cachedCaps && Date.now() - cachedCaps.at < 60_000) return cachedCaps.caps;
   try {
     const raw = await browserJson('GET', '/capabilities', undefined, 5_000);
+    if (
+      !raw ||
+      typeof raw !== 'object' ||
+      Array.isArray(raw) ||
+      typeof raw.version !== 'string' ||
+      !raw.version ||
+      typeof raw.auditV2 !== 'number' ||
+      !Number.isInteger(raw.auditV2) ||
+      raw.auditV2 < 0 ||
+      typeof raw.seal !== 'boolean' ||
+      typeof raw.activity !== 'boolean'
+    ) {
+      throw new HttpError(502, 'browser service: malformed /capabilities response');
+    }
     const caps: BrowserCapabilities = {
-      version: typeof raw?.version === 'string' ? raw.version : '0.3.0',
-      auditV2: typeof raw?.auditV2 === 'number' ? raw.auditV2 : 0,
-      seal: raw?.seal === true,
-      activity: raw?.activity === true,
+      version: raw.version,
+      auditV2: raw.auditV2,
+      seal: raw.seal,
+      activity: raw.activity,
     };
     cachedCaps = { at: Date.now(), caps };
     return caps;
@@ -781,9 +795,14 @@ type ShotSpoolState = {
   rollingBytes: number;
 };
 
-function readShotSpool(openId: string): ShotSpoolState {
+function readShotSpool(openId: string, expectedShotCursor = 0): ShotSpoolState {
   const p = join(spoolDirOf(openId), 'shots.json');
-  if (!existsSync(p)) return { published: [], pending: [], rolling: [], rollingBytes: 0 };
+  if (!existsSync(p)) {
+    if (expectedShotCursor > 0) {
+      throw new HttpError(500, `missing browser shot spool index for ${openId} (expected cursor ${expectedShotCursor})`);
+    }
+    return { published: [], pending: [], rolling: [], rollingBytes: 0 };
+  }
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(p, 'utf8'));
@@ -816,9 +835,14 @@ function writeShotSpool(openId: string, state: ShotSpoolState) {
   replaceFile(join(dir, 'shots.json'), JSON.stringify(state));
 }
 
-// Truncate any torn last NDJSON line on restart and return parsed entries + deduplication cursor set.
-function repairJsonlStream(filePath: string): { entries: any[]; seenCursors: Set<number>; maxCursor: number } {
-  if (!existsSync(filePath)) return { entries: [], seenCursors: new Set(), maxCursor: 0 };
+// Truncate any torn last NDJSON line (missing trailing '\n') on restart, fail closed on missing expected spool or corrupt complete lines.
+function repairJsonlStream(filePath: string, expectedCursor = 0): { entries: any[]; seenCursors: Set<number>; maxCursor: number } {
+  if (!existsSync(filePath)) {
+    if (expectedCursor > 0) {
+      throw new HttpError(500, `missing browser audit spool file ${filePath} (expected cursor ${expectedCursor})`);
+    }
+    return { entries: [], seenCursors: new Set(), maxCursor: 0 };
+  }
   const raw = readFileSync(filePath);
   const lastNl = raw.lastIndexOf(10);
   const end = lastNl >= 0 ? lastNl + 1 : 0;
@@ -830,16 +854,19 @@ function repairJsonlStream(filePath: string): { entries: any[]; seenCursors: Set
   let maxCursor = 0;
   for (const line of raw.subarray(0, end).toString('utf8').split('\n')) {
     if (!line.trim()) continue;
+    let obj: any;
     try {
-      const obj = JSON.parse(line);
-      const n = typeof obj?.n === 'number' ? obj.n : undefined;
-      if (n !== undefined) {
-        if (seenCursors.has(n)) continue;
-        seenCursors.add(n);
-        if (n > maxCursor) maxCursor = n;
-      }
-      entries.push(obj);
-    } catch {}
+      obj = JSON.parse(line);
+    } catch {
+      throw new HttpError(500, `corrupt JSONL line in browser audit spool ${filePath}`);
+    }
+    const n = typeof obj?.n === 'number' ? obj.n : undefined;
+    if (n !== undefined) {
+      if (seenCursors.has(n)) continue;
+      seenCursors.add(n);
+      if (n > maxCursor) maxCursor = n;
+    }
+    entries.push(obj);
   }
   return { entries, seenCursors, maxCursor };
 }
@@ -956,9 +983,9 @@ async function doDrainSession(
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const httpPath = join(dir, 'http.jsonl');
   const cdpPath = join(dir, 'cdp.jsonl');
-  const httpState = repairJsonlStream(httpPath);
-  const cdpState = repairJsonlStream(cdpPath);
-  const shotState = readShotSpool(openId);
+  const httpState = repairJsonlStream(httpPath, b.logCursor ?? 0);
+  const cdpState = repairJsonlStream(cdpPath, b.cdpFile ? (b.cdpCursor ?? 0) : 0);
+  const shotState = readShotSpool(openId, b.shotCursor ?? 0);
 
   // Reconcile any direct shots interrupted mid-publication on crash: promote if file+hash exist on disk, else drop from pending so it refetches!
   const closedAlready = inst.log.some(e => e.op === 'close' || e.op === 'abandon');
@@ -982,14 +1009,15 @@ async function doDrainSession(
     if (pendingChanged) writeShotSpool(openId, shotState);
   }
 
-  let logCursor = Math.max(b.logCursor ?? 0, httpState.maxCursor);
-  let cdpCursor = Math.max(b.cdpCursor ?? 0, cdpState.maxCursor);
+  // Resume strictly from durable spool high-water marks so crash recovery never skips unspooled remote records!
+  let logCursor = httpState.maxCursor;
+  let cdpCursor = cdpState.maxCursor;
   const maxSpoolShot = Math.max(
     0,
     ...shotState.published.map(s => s.seq),
     ...shotState.rolling.map(s => s.seq),
   );
-  let shotCursor = Math.max(b.shotCursor ?? 0, maxSpoolShot);
+  let shotCursor = maxSpoolShot;
   const seenShotSeqs = new Set<number>([
     ...shotState.published.map(s => s.seq),
     ...shotState.rolling.map(s => s.seq),
@@ -1009,6 +1037,7 @@ async function doDrainSession(
       const appendedMax = appendSpoolEntries(httpPath, entries, httpState.seenCursors);
       logCursor = Math.max(logCursor, appendedMax, typeof page.nextCursor === 'number' ? page.nextCursor : 0);
     } else if (typeof page.nextCursor === 'number' && page.nextCursor > logCursor) {
+      if (!existsSync(httpPath)) writeFileSync(httpPath, '', { mode: 0o600 });
       logCursor = page.nextCursor;
     }
     b.logCursor = logCursor;
@@ -1043,6 +1072,7 @@ async function doDrainSession(
         const appendedMax = appendSpoolEntries(cdpPath, entries, cdpState.seenCursors);
         cdpCursor = Math.max(cdpCursor, appendedMax, typeof page.nextCursor === 'number' ? page.nextCursor : 0);
       } else if (typeof page.nextCursor === 'number' && page.nextCursor > cdpCursor) {
+        if (!existsSync(cdpPath)) writeFileSync(cdpPath, '', { mode: 0o600 });
         cdpCursor = page.nextCursor;
       }
       b.cdpCursor = cdpCursor;
@@ -1148,6 +1178,7 @@ async function doDrainSession(
 
     if (shotsChanged) writeShotSpool(openId, shotState);
     if (isEnv && typeof resp.nextSeq === 'number' && resp.nextSeq > shotCursor) {
+      if (!existsSync(join(dir, 'shots.json'))) writeShotSpool(openId, shotState);
       shotCursor = resp.nextSeq;
     }
     b.shotCursor = shotCursor;
@@ -1301,16 +1332,24 @@ async function finalizeV2Session(
   if (b.phase !== 'published' && remoteAvailable) {
     try {
       const snap = await browserJson('POST', `/sessions/${id}/seal`, {}, CLOSE_MS);
+      const isNonNegInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+      const g = snap?.gaps;
       if (
         !snap ||
         typeof snap !== 'object' ||
+        Array.isArray(snap) ||
         snap.sealed !== true ||
-        typeof snap.logCursor !== 'number' ||
-        !Number.isFinite(snap.logCursor) ||
-        typeof snap.cdpCursor !== 'number' ||
-        !Number.isFinite(snap.cdpCursor) ||
-        typeof snap.shotCursor !== 'number' ||
-        !Number.isFinite(snap.shotCursor)
+        !('state' in snap) ||
+        !isNonNegInt(snap.logCursor) ||
+        !isNonNegInt(snap.cdpCursor) ||
+        !isNonNegInt(snap.shotCursor) ||
+        !g ||
+        typeof g !== 'object' ||
+        Array.isArray(g) ||
+        !isNonNegInt(g.droppedGets) ||
+        !isNonNegInt(g.droppedCdp) ||
+        !isNonNegInt(g.droppedShots) ||
+        !isNonNegInt(g.refusedFull)
       ) {
         throw new HttpError(502, `malformed /seal response for session ${id}`);
       }
@@ -1321,10 +1360,10 @@ async function finalizeV2Session(
         shot: snap.shotCursor,
       };
       sealGaps = {
-        droppedGets: typeof snap.gaps?.droppedGets === 'number' ? snap.gaps.droppedGets : 0,
-        droppedCdp: typeof snap.gaps?.droppedCdp === 'number' ? snap.gaps.droppedCdp : 0,
-        droppedShots: typeof snap.gaps?.droppedShots === 'number' ? snap.gaps.droppedShots : 0,
-        refusedFull: typeof snap.gaps?.refusedFull === 'number' ? snap.gaps.refusedFull : 0,
+        droppedGets: g.droppedGets,
+        droppedCdp: g.droppedCdp,
+        droppedShots: g.droppedShots,
+        refusedFull: g.refusedFull,
       };
       sealedAt = new Date().toISOString();
       b.phase = 'sealed';
@@ -1353,9 +1392,9 @@ async function finalizeV2Session(
     const dir = spoolDirOf(openId);
     const httpSpoolPath = join(dir, 'http.jsonl');
     const cdpSpoolPath = join(dir, 'cdp.jsonl');
-    const httpRaw = repairJsonlStream(httpSpoolPath).entries as Entry[];
-    const cdpRaw = repairJsonlStream(cdpSpoolPath).entries;
-    const shotState = readShotSpool(openId);
+    const httpRaw = repairJsonlStream(httpSpoolPath, Math.max(b.logCursor ?? 0, sealCursors.log)).entries as Entry[];
+    const cdpRaw = repairJsonlStream(cdpSpoolPath, b.cdpFile ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : 0).entries;
+    const shotState = readShotSpool(openId, Math.max(b.shotCursor ?? 0, sealCursors.shot));
 
     // Evaluate Stage-1 execpolicy over drained browser writes for unified API+browser policy telemetry.
     const { enriched: httpEntries, policySummary } = evaluateBrowserPolicySummary(inst, b.run, httpRaw);

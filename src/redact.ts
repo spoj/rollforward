@@ -80,6 +80,7 @@ export function isTokenShaped(value: string): boolean {
   if (typeof value !== 'string') return false
   if (value.length < 16) return false
   if (NUMERIC_RE.test(value)) return false
+  if (UUID_RE.test(value) || ISO_DATE_RE.test(value) || /^https?:\/\//i.test(value)) return false
   return shannonEntropy(value) >= 3.5
 }
 
@@ -384,12 +385,16 @@ export class SecretVault {
 
 export function normalizePathForAuth(rawPath: string): string {
   // Split on '/' BEFORE percent-decoding so %2F inside a matrix parameter (e.g. /formservice;x=%2Flogin) stays in-segment.
-  // Strip ';...' strictly per segment (fail-closed: a real following '/login' segment is preserved).
+  // Preserve genuine routing segments after empty matrix params (/app;v=/login -> /app/login), while keeping WebLogic E1
+  // AIS `/formservice;x=/login` scoped cleanly to `/formservice` per §6.2.
   const rawSegs = rawPath.split('/')
   const parts: string[] = []
-  for (const raw of rawSegs) {
+  for (let i = 0; i < rawSegs.length; i++) {
+    const raw = rawSegs[i]
     if (!raw) continue
     const preStrip = raw.split(';')[0]
+    const swallowsNext = preStrip.toLowerCase() === 'formservice' && /;[^;=]+=$/.test(raw)
+    if (swallowsNext) i++
     const decoded = safeDecodeURIComponent(preStrip)
     for (const sub of decoded.split('/')) {
       if (!sub || sub === '.') continue
@@ -649,10 +654,22 @@ export function redactJsonValue(
       return v.map(el => walk(el, sensitive, depth + 1))
     }
     if (typeof v === 'object') {
-      const out: Record<string, unknown> = {}
+      const out: Record<string, unknown> = Object.create(null)
       for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
         const childSensitive = sensitive || isSensitiveContainerKey(k) || isSensitiveKey(k)
-        out[k] = walk(child, childSensitive, depth + 1)
+        let outKey = k
+        if (vault) {
+          const sk = vault.scrub(k)
+          if (sk.count > 0) {
+            vaultRedactions += sk.count
+            outKey = '[REDACTED:vault]'
+          }
+        }
+        if (outKey === k) {
+          if (isSensitiveValue(k)) outKey = '[REDACTED]'
+          else if (isDataLikeKey(k)) outKey = '<key>'
+        }
+        out[outKey] = walk(child, childSensitive, depth + 1)
       }
       return out
     }
@@ -801,27 +818,46 @@ export function redactFormBody(raw: string, vault?: SecretVault): { text: string
     if (!pair) return pair
     const eq = pair.indexOf('=')
     if (eq < 0) {
-      if (!vault) return pair
-      const s = vault.scrub(pair)
-      vaultRedactions += s.count
-      return s.text
+      const decP = safeDecodeURIComponent(pair.replace(/\+/g, ' '))
+      if (vault) {
+        const sp1 = vault.scrub(pair)
+        const sp2 = vault.scrub(decP)
+        if (sp1.count > 0 || sp2.count > 0) {
+          vaultRedactions += Math.max(sp1.count, sp2.count)
+          return '[REDACTED:vault]'
+        }
+      }
+      if (isSensitiveValue(decP)) return '[REDACTED]'
+      return pair
     }
     const rawK = pair.slice(0, eq)
     const rawV = pair.slice(eq + 1)
     const decK = safeDecodeURIComponent(rawK.replace(/\+/g, ' '))
     const decV = safeDecodeURIComponent(rawV.replace(/\+/g, ' '))
+    let outK = rawK
+    if (vault) {
+      const sk1 = vault.scrub(rawK)
+      const sk2 = vault.scrub(decK)
+      if (sk1.count > 0 || sk2.count > 0) {
+        vaultRedactions += Math.max(sk1.count, sk2.count)
+        outK = '[REDACTED:vault]'
+      }
+    }
+    if (outK === rawK && isSensitiveValue(decK)) {
+      outK = '[REDACTED]'
+    }
     if (vault) {
       const sv1 = vault.scrub(rawV)
       const sv2 = vault.scrub(decV)
       if (sv1.count > 0 || sv2.count > 0) {
         vaultRedactions += Math.max(sv1.count, sv2.count)
-        return `${rawK}=[REDACTED:vault]`
+        return `${outK}=[REDACTED:vault]`
       }
     }
     if (isSensitiveKey(decK) || isSensitiveValue(decV)) {
-      return `${rawK}=[REDACTED]`
+      return `${outK}=[REDACTED]`
     }
-    return pair
+    return `${outK}=${rawV}`
   })
   return { text: parts.join('&'), vaultRedactions }
 }
@@ -947,23 +983,38 @@ function sanitizeQueryString(
     if (!part) return part
     const eq = part.indexOf('=')
     if (eq < 0) {
-      if (!vault) return part
-      const s = vault.scrub(part)
-      vaultRedactions += s.count
-      return s.text
+      const decPart = safeDecodeURIComponent(part.replace(/\+/g, ' '))
+      if (vault) {
+        const s1 = vault.scrub(part)
+        const s2 = decPart !== part ? vault.scrub(decPart) : { text: decPart, count: 0 }
+        if (s1.count > 0 || s2.count > 0) {
+          vaultRedactions += Math.max(s1.count, s2.count)
+          return '[REDACTED:vault]'
+        }
+      }
+      if (isSensitiveValue(part) || isSensitiveValue(decPart)) return '[REDACTED]'
+      if (projection === 'semantic') {
+        return isDataLikeKey(decPart) ? '[REDACTED]' : '<str>'
+      }
+      return part
     }
     const rawK = part.slice(0, eq)
     const rawV = part.slice(eq + 1)
-    let outK = rawK
-    if (vault) {
-      const sk = vault.scrub(rawK)
-      if (sk.count > 0) {
-        vaultRedactions += sk.count
-        outK = sk.text
-      }
-    }
     const decK = safeDecodeURIComponent(rawK.replace(/\+/g, ' '))
     const decV = safeDecodeURIComponent(rawV.replace(/\+/g, ' '))
+    let outK = rawK
+    if (vault) {
+      const sk1 = vault.scrub(rawK)
+      const sk2 = decK !== rawK ? vault.scrub(decK) : { text: decK, count: 0 }
+      if (sk1.count > 0 || sk2.count > 0) {
+        vaultRedactions += Math.max(sk1.count, sk2.count)
+        outK = '[REDACTED:vault]'
+      }
+    }
+    if (outK === rawK) {
+      if (isSensitiveValue(rawK) || isSensitiveValue(decK)) outK = '[REDACTED]'
+      else if (isDataLikeKey(decK)) outK = '<key>'
+    }
     if (vault) {
       const sv1 = vault.scrub(rawV)
       const sv2 = decV !== rawV ? vault.scrub(decV) : { text: decV, count: 0 }

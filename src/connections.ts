@@ -453,9 +453,20 @@ function logExpired(a: CallRun, login: string, since: string, name: string, runn
   a.inst.append('server', 'expired', { run: a.n, login, name, runner });
 }
 
+function sanitizeLoggedTarget(rawTarget: string, host: string, includeOrigin = false): string {
+  const u = URL.parse(rawTarget, `https://${host}`);
+  if (u) {
+    const san = sanitizeUrl(u, { projection: 'semantic' });
+    const qIdx = san.url.indexOf('?');
+    const sanSearch = qIdx >= 0 ? san.url.slice(qIdx) : '';
+    return includeOrigin ? `${u.origin}${san.path}` : `${san.path}${sanSearch}`;
+  }
+  return sanitizeUrl(rawTarget, { projection: 'semantic' }).url;
+}
+
 export async function call(a: CallRun, host: string, req: IncomingMessage, res: ServerResponse) {
   const method = req.method!;
-  let name = host, path = req.url!, offer = '';
+  let name = host, path = sanitizeLoggedTarget(req.url!, host), offer = '';
   const checkpoint = () => {
     if (a.stopped) throw new HttpError(409, 'run stopped');
     const lent = lender(a.inst, a.n);
@@ -505,9 +516,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   let jsonApi = false;
   try {
     const url = URL.parse(req.url!, `https://${host}`);
-    if (!url) throw new HttpError(403, `invalid request target: ${req.url}`);
+    if (!url) throw new HttpError(403, `invalid request target: ${path}`);
     const link = a.links.get(url.href), s = link ? undefined : own(host);
-    if (link) { name = link.name; path = url.origin + url.pathname; }
+    if (link) { name = link.name; path = sanitizeLoggedTarget(url.href, host, true); }
     // Of the connections that take the host, the one a tick names it under, as a Databricks workspace's warehouse does, or the first.
     const serving = link || s ? [] : connections().filter(c => types[c.type].hosts?.(c).some(h => covers(h, host)));
     jsonApi = !!s || serving.some(c => c.type === 'graph' || c.type === 'databricks');
@@ -517,9 +528,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     jsonApi = !!s || c?.type === 'graph' || c?.type === 'databricks';
     name = link?.name ?? c?.name ?? s?.name ?? host;
     // Sanitize logged path with semantic query-value templating so credentials/PII/prompts in query strings never land in log.jsonl.
-    const sanLogUrl = sanitizeUrl(url, { projection: 'semantic' });
-    const sanSearch = sanLogUrl.url.includes('?') ? sanLogUrl.url.slice(sanLogUrl.url.indexOf('?')) : '';
-    path = link ? `${url.origin}${sanLogUrl.path}` : `${sanLogUrl.path}${sanSearch}`;
+    path = sanitizeLoggedTarget(url.href, host, Boolean(link));
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
@@ -615,6 +624,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       isWrite = descriptor.safe.isWrite;
       const runEntry = Array.isArray(a.inst.log) ? a.inst.log.findLast(e => e.op === 'run' && e.run === a.n) : undefined;
       const runAuth = runEntry?.authority as { epoch?: number; owner?: string; workspace?: string } | undefined;
+      const admissionAtSeq = Array.isArray(a.inst.log) ? (a.inst.log.at(-1)?.seq ?? 0) : 0;
       const ac = new AbortController();
       const onResClose = () => ac.abort();
       res.once('close', onResClose);
@@ -622,6 +632,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       try {
         decision = await defaultExecPolicy.evaluate(descriptor, {
           log: Array.isArray(a.inst.log) ? a.inst.log : undefined,
+          uptoSeq: admissionAtSeq,
           epoch: runAuth?.epoch,
           owner: runAuth?.owner,
           workspace: runAuth?.workspace,
@@ -631,7 +642,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       } finally {
         res.off('close', onResClose);
       }
-      const compact = compactDecision(decision);
+      const compact = { ...compactDecision(decision), atSeq: admissionAtSeq };
       auditMeta = {
         ...(methods.effectiveMethod !== method && { effectiveMethod: methods.effectiveMethod }),
         isWrite: descriptor.safe.isWrite,

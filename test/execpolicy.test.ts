@@ -55,9 +55,10 @@ test('redaction parity: preserves business identifiers, redacts credential keys,
   const san = sanitizeUrl('https://portal.example.com/api/orders?customer=Jane%20Lee&verification_code=123456&page=2', { projection: 'semantic', vault });
   assert.equal(san.url, 'https://portal.example.com/api/orders?customer=<str>&verification_code=[REDACTED]&page=<num>');
 
-  // Matrix parameter bypass check (%2F inside matrix param stays in-segment; real /login segment still caught)
+  // Matrix parameter bypass check (WebLogic E1 formservice;x=/login stays scoped; /app;v=/login preserves /login)
   assert.equal(isAuthUrl('https://erp.example.com/jderest/v2/formservice;x=%2Flogin'), false);
-  assert.equal(isAuthUrl('https://erp.example.com/jderest/v2/formservice;x=/login'), true);
+  assert.equal(isAuthUrl('https://erp.example.com/jderest/v2/formservice;x=/login'), false);
+  assert.equal(isAuthUrl('https://erp.example.com/app;v=/login'), true);
   assert.equal(isAuthUrl('https://erp.example.com/jderest/v2/login'), true);
 });
 
@@ -163,13 +164,26 @@ test('API-native semantic extractors: Microsoft Graph, Databricks SQL, and custo
   assert.equal(teams.safe.actions[0].op, 'graph:teams_message');
 
   // 3. Databricks SQL statement classification
-  assert.deepEqual(classifySqlStatement('/* comment */ WITH cte AS (SELECT 1) SELECT * FROM fin.gl'), { sqlClass: 'read', statements: ['SELECT'], destructive: false });
-  assert.deepEqual(classifySqlStatement('WITH select AS (SELECT 1) DELETE FROM fin.gl'), { sqlClass: 'write', statements: ['DELETE'], destructive: true });
-  assert.deepEqual(classifySqlStatement('WITH RECURSIVE a(x) AS (SELECT 1), b AS (SELECT 2) UPDATE fin.gl SET x = 1'), { sqlClass: 'write', statements: ['UPDATE'], destructive: false });
-  assert.deepEqual(classifySqlStatement('WITH broken AS (SELECT 1'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false });
-  assert.deepEqual(classifySqlStatement("SELECT 'DROP TABLE x' AS literal"), { sqlClass: 'read', statements: ['SELECT'], destructive: false });
-  assert.deepEqual(classifySqlStatement('INSERT INTO fin.gl VALUES (1);'), { sqlClass: 'write', statements: ['INSERT'], destructive: false });
-  assert.deepEqual(classifySqlStatement('SELECT 1; DROP TABLE fin.gl'), { sqlClass: 'ddl', statements: ['SELECT', 'DROP'], destructive: true });
+  assert.deepEqual(classifySqlStatement('/* comment */ WITH cte AS (SELECT 1) SELECT * FROM fin.gl'), { sqlClass: 'read', statements: ['SELECT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('WITH select AS (SELECT 1) DELETE FROM fin.gl'), { sqlClass: 'write', statements: ['DELETE'], destructive: true, hasDropOrTruncate: false, hasDelete: true });
+  assert.deepEqual(classifySqlStatement('WITH RECURSIVE a(x) AS (SELECT 1), b AS (SELECT 2) UPDATE fin.gl SET x = 1'), { sqlClass: 'write', statements: ['UPDATE'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('WITH broken AS (SELECT 1'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('"SECRET_QUOTED_IDENTIFIER" 123'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement("SELECT 'DROP TABLE x' AS literal"), { sqlClass: 'read', statements: ['SELECT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('INSERT INTO fin.gl VALUES (1);'), { sqlClass: 'write', statements: ['INSERT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('SELECT 1; DROP TABLE fin.gl'), { sqlClass: 'ddl', statements: ['SELECT', 'DROP'], destructive: true, hasDropOrTruncate: true, hasDelete: false });
+
+  // >16 statements: DROP or DELETE at statement #17 MUST still set full-input flags!
+  const seventeenDrop = `${'SELECT 1; '.repeat(16)}DROP TABLE fin.gl`;
+  const cls17Drop = classifySqlStatement(seventeenDrop);
+  assert.equal(cls17Drop.statements.length, 16);
+  assert.equal(cls17Drop.hasDropOrTruncate, true);
+  assert.equal(cls17Drop.destructive, true);
+  const seventeenDel = `${'SELECT 1; '.repeat(16)}DELETE FROM fin.gl`;
+  const cls17Del = classifySqlStatement(seventeenDel);
+  assert.equal(cls17Del.statements.length, 16);
+  assert.equal(cls17Del.hasDelete, true);
+  assert.equal(cls17Del.destructive, true);
 
   const dbxRead = buildApiRequestDescriptor({
     connection: 'dbx', connectionType: 'databricks', seq: 9, method: 'POST',
@@ -280,15 +294,39 @@ test('Stage-1 execpolicy deterministic rules: method-override escalation/downgra
   assert.equal(e1Approved.action, 'allow');
   assert.equal(e1Approved.approvalRef, 'c7');
 
-  // Databricks DROP -> always deny even with human signoff!
+  // Databricks DROP -> always deny even with human signoff, including beyond 16-statement display cap!
   const dropDesc = buildApiRequestDescriptor({
     connection: 'dbx', connectionType: 'databricks', seq: 3, method: 'POST',
     url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
     headers: { 'content-type': 'application/json' },
-    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'w1', statement: 'DROP TABLE fin.ledger' })),
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'w1', statement: `${'SELECT 1; '.repeat(16)}DROP TABLE fin.ledger` })),
     bodyComplete: true,
   }).descriptor;
   assert.equal(evaluateStage1(dropDesc.safe, 'enforce', { approved: true, approvalRef: 'c5', recentApprovedProposals: [] }).action, 'deny');
+
+  // Precedence checks: wire DELETE + SQL-read or GraphQL-query MUST NOT bypass http_delete; approved write with unread body MUST escalate write_body_not_inspected!
+  const delSqlRead = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', seq: 22, method: 'DELETE',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json', 'x-http-method-override': 'POST' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'w1', statement: 'SELECT 1' })),
+    bodyComplete: true,
+  }).descriptor;
+  const dDelSql = evaluateStage1(delSqlRead.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
+  assert.equal(dDelSql.action, 'requireApproval');
+  assert.equal(dDelSql.ruleId, 'http_delete');
+
+  const unreadApprovedMail = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 23, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+    headers: { 'content-type': 'application/json', 'content-length': '200' },
+    rawBody: undefined,
+    bodyComplete: false,
+    transport: 'not-read',
+  }).descriptor;
+  const dUnread = evaluateStage1(unreadApprovedMail.safe, 'enforce', { approved: true, approvalRef: 'c9', recentApprovedProposals: [] });
+  assert.equal(dUnread.action, 'escalate');
+  assert.equal(dUnread.ruleId, 'write_body_not_inspected');
 
   // Unguarded file overwrite (PUT .../content without If-Match) -> escalate
   const unguarded = buildApiRequestDescriptor({
@@ -351,6 +389,12 @@ test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on thro
   assert.equal(shadowDec.action, 'allow');
   assert.equal(shadowDec.ruleId, 'stage2_allow', 'Stage-2 ruleId mapped strictly to host-owned closed set');
   assert.equal('raw' in receivedInput, false, 'TriageHook receives ONLY safe projection, never raw');
+
+  // 1b. Shadow hook that ignores AbortSignal still releases its worker slot at deadlineMs!
+  const stuckShadow = new ExecPolicyEngine(() => new Promise(() => {}));
+  await stuckShadow.evaluate(unguarded, { mode: 'shadow', deadlineMs: 30 });
+  await new Promise(r => setTimeout(r, 80));
+  assert.equal(stuckShadow.shadowPending, 0, 'timed-out shadow hook releases worker slot even when ignoring AbortSignal');
 
   // 2. Enforce mode: hook throw -> fail-closed deny with ruleId policy_error
   const throwingEngine = new ExecPolicyEngine(() => { throw new Error('model down'); });
@@ -459,6 +503,16 @@ test('replayExecPolicy deterministically replays saved log.jsonl + browser/*.jso
     assert.equal(summary.counts.requireApproval, 1);
     assert.equal(summary.counts.allow, 1);
     assert.equal(summary.counts.insufficient_evidence, 2);
+
+    // When host manifests exist, replay MUST verify SHA-256 and reject tampered/unmanifested files as insufficient_evidence!
+    const manifestsDir = join(dir, 'manifests');
+    mkdirSync(manifestsDir, { recursive: true });
+    writeFileSync(join(manifestsDir, 'sess1.json'), JSON.stringify({
+      version: 1, inst: 'inst-replay', file: 'browser/run 1 e1.jsonl',
+      artifacts: { 'browser/run 1 e1.jsonl': '0000000000000000000000000000000000000000000000000000000000000000' },
+    }));
+    const tamperedReplay = await replayExecPolicy(dir, { instId: 'inst-replay', manifestsDir });
+    assert.ok(tamperedReplay.results.some(r => r.insufficientReason === 'browser_log_manifest_mismatch'));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
