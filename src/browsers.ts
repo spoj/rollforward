@@ -1465,6 +1465,7 @@ async function finalizeV2Session(
     const all = journal();
     delete all[id];
     setJournal(all);
+    drainLiveCursors.delete(id);
     rmSync(spoolDirOf(openId), { recursive: true, force: true });
     return;
   }
@@ -1753,6 +1754,7 @@ async function finalizeV2Session(
   const all = journal();
   delete all[id];
   setJournal(all);
+  drainLiveCursors.delete(id);
   rmSync(spoolDirOf(openId), { recursive: true, force: true });
 }
 
@@ -2093,6 +2095,7 @@ export async function reap() {
           setJournal(cur);
         }
       } finally {
+        drainLiveCursors.delete(id);
         if (h) {
           held.delete(key);
           h.release();

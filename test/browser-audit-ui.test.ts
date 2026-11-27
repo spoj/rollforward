@@ -106,6 +106,30 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
               ask: 'proposal', run: 1, text: 'Approve sending Q4 pack?',
               execpolicy: { action: 'graph:sendMail', domains: ['partner.test'], workspace: 'w1', maxUses: 1 },
             },
+            {
+              seq: 5, at: '2026-11-27T10:00:07Z', by: 'agent', op: 'comment', thread: 'c5', item: null, ref: null,
+              ask: 'proposal', run: 1, text: 'Approve deleting File A?',
+              execpolicy: {
+                action: 'graph:file_delete',
+                target: '/v1.0/drives/d1/items/01BYE5RZ6QN3K4L8M9N2P5Q7',
+                targetDigest: 'a'.repeat(64),
+                workspace: 'w1',
+                maxUses: 1,
+              },
+            },
+            {
+              seq: 6, at: '2026-11-27T10:00:08Z', by: 'agent', op: 'comment', thread: 'c6', item: null, ref: null,
+              ask: 'proposal', run: 1, text: 'Approve SQL cleanup?',
+              execpolicy: {
+                action: 'databricks:sql',
+                sql: 'DELETE FROM staging WHERE id = :id',
+                parameters: [{ name: 'id', type: 'INT', value: '42' }],
+                sqlContextDigest: 'b'.repeat(64),
+                warehouseId: 'wh1',
+                workspace: 'w1',
+                maxUses: 1,
+              },
+            },
           ],
           standing: {},
           starts: true,
@@ -204,16 +228,18 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   await page.locator('#ba-q').fill('P0411_W0411A');
   assert.equal(await page.locator('#ba-list .ba-card').count(), 1);
 
-  // Close modal, switch back to Conversation tab, and verify verbatim HTML-escaped execpolicy scope renders on the proposal card!
+  // Close modal, switch back to Conversation tab, and verify verbatim HTML-escaped execpolicy scopes render on proposal cards!
   await page.keyboard.press('Escape');
   await page.locator('#log [data-act="audit"]').click();
-  const scopeCard = page.locator('.ep-scope');
-  await scopeCard.waitFor({ state: 'visible' });
-  const scopeText = await scopeCard.textContent() ?? '';
-  assert.match(scopeText, /Approval scope/);
-  assert.match(scopeText, /graph:sendMail/);
-  assert.match(scopeText, /partner\.test/);
-  assert.match(scopeText, /Max uses:\s*1/);
+  await page.locator('.ep-scope').first().waitFor({ state: 'visible' });
+  const allScopesText = (await page.locator('.ep-scope').allTextContents()).join('\n');
+  assert.match(allScopesText, /Approval scope/);
+  assert.match(allScopesText, /graph:sendMail/);
+  assert.match(allScopesText, /partner\.test/);
+  assert.match(allScopesText, /\/v1\.0\/drives\/d1\/items\/01BYE5RZ6QN3K4L8M9N2P5Q7/, 'verbatim unredacted target rendered on card');
+  assert.match(allScopesText, /DELETE FROM staging WHERE id = :id/, 'verbatim SQL rendered on card');
+  assert.match(allScopesText, /"value":"42"/, 'verbatim SQL parameters rendered on card');
+  assert.match(allScopesText, /Max uses:\s*1/);
 
   await page.close();
 });

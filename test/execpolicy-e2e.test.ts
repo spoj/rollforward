@@ -175,10 +175,11 @@ test('end-to-end production approval producer: rf comment --propose --scope -> s
     autonomous: false,
   })).json();
 
-  // Run 1: Agent tries invalid wildcard scope (rejected 400), then submits valid exact-target proposal via `rf comment . --propose --scope`!
+  // Run 1: Agent tries invalid wildcard scope AND forged digest-only scope (both rejected 400), then submits valid exact-target proposal via `rf comment . --propose --scope`!
   const run1: Script = {
     bash: [
       `rf comment . --propose --scope '{"action":"graph:excel_write","target":"/v1.0"}' "Wildcard attempt" 2>&1; echo "WILDCARD_EXIT=$?"`,
+      `rf comment . --propose --scope '{"action":"graph:file_delete","targetDigest":"${'a'.repeat(64)}","targetDisplay":"fake file A"}' "Digest forge attempt" 2>&1; echo "DIGEST_EXIT=$?"`,
       `rf comment . --propose --scope '{"action":"graph:file_delete","target":"/v1.0/drives/d1/items/${ITEM_A}","maxUses":1}' "Approve deleting File A"`,
     ],
     report: 'Proposed deleting File A.',
@@ -191,15 +192,24 @@ test('end-to-end production approval producer: rf comment --propose --scope -> s
   const log1 = await waitRun(inst.id, 1);
 
   assert.match(run1.saw[0] ?? '', /WILDCARD_EXIT=1/, 'server rejected broad wildcard scope');
-  assert.match(run1.saw[1] ?? '', /^proposed c\d+/, 'valid scoped proposal accepted via rf CLI');
+  assert.match(run1.saw[1] ?? '', /DIGEST_EXIT=1/, 'server rejected agent-supplied targetDigest/targetDisplay');
+  assert.match(run1.saw[2] ?? '', /^proposed c\d+/, 'valid scoped proposal accepted via rf CLI');
 
   const prop = log1.find(e => e.op === 'comment' && e.ask === 'proposal' && e.execpolicy);
   assert.ok(prop, 'proposal persisted with validated execpolicy');
   assert.equal(prop.execpolicy.action, 'graph:file_delete');
   assert.equal(prop.execpolicy.workspace, ws.id);
   assert.equal(prop.execpolicy.maxUses, 1);
+  assert.equal(prop.execpolicy.target, `/v1.0/drives/d1/items/${ITEM_A}`, 'verbatim canonical target persisted for signer card');
   assert.match(prop.execpolicy.targetDigest, /^[a-f0-9]{64}$/, 'server computed keyed HMAC targetDigest');
-  assert.equal(prop.execpolicy.target, undefined, 'raw unredacted target not persisted');
+
+  // A non-owner workspace member MUST NOT be able to sign off / strand a scoped execution proposal (403)!
+  const viewerEmail = 'viewer@demo.test';
+  assert.equal((await api('PUT', `/api/workspaces/${ws.id}`, { add: viewerEmail, as: 'member' })).status, 200);
+  const viewerSignIn = await entra.signIn(base, viewerEmail);
+  const viewerCookie = viewerSignIn.headers.getSetCookie().find(c => c.startsWith('rf_session='))!.split(';')[0];
+  const viewerApprove = await api('POST', '/api/messages', { instance: inst.id, id: `c${prop.seq}`, how: 'approve', text: 'Viewer try' }, viewerCookie);
+  assert.equal(viewerApprove.status, 403, 'non-owner cannot approve or strand a scoped execution proposal');
 
   // Run 2 (triggered by owner signoff!):
   // 1. DELETE File B (different real ID, same redacted display path!) -> 403 graph_file_delete!

@@ -6,6 +6,8 @@ import {
   E1_MUTATING_FORM_COMMANDS,
   EXTRACTOR_V,
   SAFE_METHODS,
+  canonicalizeJsonValue,
+  canonicalizeTargetPath,
   classifySqlStatement,
   computeSqlContextDigest,
   computeTargetDigest,
@@ -15,7 +17,7 @@ import {
   type SafeRequestProjection,
   type SemanticAction,
 } from './extract.ts'
-import { REDACT_V, sanitizeUrl } from './redact.ts'
+import { REDACT_V, sanitizeUrl, scrubText } from './redact.ts'
 import { isPerson, messageAuthority } from './messages.ts'
 import { HttpError, openFile, type Entry } from './store.ts'
 import { readJson, rfDir } from './system.ts'
@@ -54,14 +56,17 @@ export type CompactPolicyDecision = {
 export type ApprovalScope = {
   action: string
   target?: string
-  targetDisplay?: string
   targetDigest?: string
   domains?: string[]
+  sql?: string
+  parameters?: unknown
   sqlContextDigest?: string
   warehouseId?: string
   catalog?: string
   schema?: string
   connection?: string
+  host?: string
+  port?: number
   site?: string
   workspace?: string
   maxUses?: number
@@ -177,21 +182,21 @@ const HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0
 const DBX_IDENT_RE = /^[A-Za-z0-9_.-]{1,64}$/
 const MAX_APPROVAL_USES = 20
 
+// Agent-submitted proposal scope keys ONLY: digests and free-text displays are NEVER accepted from the agent;
+// the server always computes both the verbatim display fields and the keyed HMAC digests from exact concrete inputs!
 const ALLOWED_SCOPE_KEYS = new Set([
   'action',
   'target',
-  'targetDisplay',
-  'targetDigest',
   'domains',
   'sql',
   'parameters',
   'warehouseId',
   'catalog',
   'schema',
-  'sqlContextDigest',
   'connection',
   'site',
   'host',
+  'port',
   'workspace',
   'maxUses',
 ])
@@ -210,7 +215,14 @@ function isE1WriteAction(act: SemanticAction): boolean {
   if (act.family !== 'e1-ais') return false
   const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
   if (a === 'W' || a === 'C' || a === 'U' || a === 'D' || /:[WCUD]$/i.test(act.op)) return true
-  if (act.details?.hasMutatingFormAction === true || act.details?.formActionsTruncated === true) return true
+  if (
+    act.details?.hasMutatingFormAction === true ||
+    act.details?.conflictingActions === true ||
+    act.details?.malformedE1Action === true ||
+    act.details?.formActionsTruncated === true
+  ) {
+    return true
+  }
   const formActions = Array.isArray(act.details?.formActions) ? (act.details!.formActions as Array<{ command?: unknown }>) : []
   return formActions.some(fa => typeof fa?.command === 'string' && E1_MUTATING_FORM_COMMANDS.has(fa.command.toLowerCase()))
 }
@@ -242,14 +254,21 @@ function normalizeScopeAction(raw: string): string {
 function isValidExactPathTarget(raw: string): boolean {
   const s = raw.trim()
   if (!s.startsWith('/') || s.length > 2048) return false
-  if (s.includes('*') || s.includes('\0') || s.includes('[REDACTED') || s.includes('..') || /[\r\n\t]/.test(s)) return false
-  const segs = s.split('/').filter(Boolean)
+  if (s.includes('*') || s.includes('\0') || s.includes('[REDACTED') || s.includes('#') || /[\r\n\t]/.test(s)) return false
+  const qIdx = s.indexOf('?')
+  const pathOnly = qIdx >= 0 ? s.slice(0, qIdx) : s
+  if (pathOnly.includes('..')) return false
+  const segs = pathOnly.split('/').filter(Boolean)
   // Reject broad prefixes like '/', '/v1.0', '/beta', '/v1.0/me', '/_api'
   if (segs.length < 2) return false
   const lower0 = segs[0].toLowerCase()
   if ((lower0 === 'v1.0' || lower0 === 'beta') && segs.length < 3) return false
   if ((lower0 === 'v1.0' || lower0 === 'beta') && segs[1].toLowerCase() === 'me' && segs.length < 4) return false
   return true
+}
+
+function containsRawSecret(s: string): boolean {
+  return scrubText(s).text !== s
 }
 
 function safeHexEqual(a: unknown, b: unknown): boolean {
@@ -259,6 +278,7 @@ function safeHexEqual(a: unknown, b: unknown): boolean {
 }
 
 // Strict server-side validator & canonicalizer for proposal `execpolicy` scopes (used by POST /api/messages & /comment).
+// Rejects agent-supplied digests and displays; always derives both verbatim display fields and keyed HMAC digests on the server.
 export function validateAndNormalizeApprovalScope(
   raw: unknown,
   ctx: {
@@ -316,6 +336,14 @@ export function validateAndNormalizeApprovalScope(
     site = obj.site
   }
 
+  let port: number | undefined
+  if (obj.port !== undefined) {
+    if (typeof obj.port !== 'number' || !Number.isInteger(obj.port) || obj.port < 1 || obj.port > 65535) {
+      throw new HttpError(400, 'execpolicy port must be an integer between 1 and 65535')
+    }
+    port = obj.port
+  }
+
   if (action === 'graph:sendMail') {
     if (!Array.isArray(obj.domains) || obj.domains.length === 0 || obj.domains.length > 16) {
       throw new HttpError(400, 'graph:sendMail scope requires 1..16 explicit recipient domains')
@@ -358,29 +386,43 @@ export function validateAndNormalizeApprovalScope(
       }
       schema = obj.schema
     }
-    let sqlContextDigest: string
-    if (typeof obj.sqlContextDigest === 'string' && obj.sqlContextDigest.trim()) {
-      if (!HEX_64_RE.test(obj.sqlContextDigest.trim())) {
-        throw new HttpError(400, 'databricks:sql sqlContextDigest must be a 64-char hex HMAC digest')
-      }
-      sqlContextDigest = obj.sqlContextDigest.trim().toLowerCase()
-    } else if (typeof obj.sql === 'string' && obj.sql.trim()) {
-      const cls = classifySqlStatement(obj.sql)
-      if (cls.hasDropOrTruncate) {
-        throw new HttpError(400, 'DROP, TRUNCATE, INSERT OVERWRITE, and REPLACE WHERE are unconditionally denied and cannot be approved')
-      }
-      sqlContextDigest = computeSqlContextDigest({
-        sql: obj.sql,
-        parameters: obj.parameters,
-        warehouseId,
-        catalog,
-        schema,
-      }, ctx.hmacKey)
-    } else {
-      throw new HttpError(400, 'databricks:sql scope requires exact sql (with parameters/catalog/schema) or sqlContextDigest')
+    if (typeof obj.sql !== 'string' || !obj.sql.trim() || obj.sql.length > 8192) {
+      throw new HttpError(400, 'databricks:sql scope requires an exact SQL statement (1..8192 chars)')
     }
+    const sqlTrimmed = obj.sql.trim()
+    if (containsRawSecret(sqlTrimmed)) {
+      throw new HttpError(400, 'execpolicy SQL scope must not contain raw secrets or credentials')
+    }
+    const cls = classifySqlStatement(sqlTrimmed)
+    if (cls.hasDropOrTruncate) {
+      throw new HttpError(400, 'DROP, TRUNCATE, INSERT OVERWRITE, and REPLACE WHERE are unconditionally denied and cannot be approved')
+    }
+    let canonicalParams: unknown
+    if (obj.parameters !== undefined) {
+      try {
+        canonicalParams = canonicalizeJsonValue(obj.parameters)
+      } catch {
+        throw new HttpError(400, 'databricks:sql parameters exceed maximum nesting depth or size')
+      }
+      const serializedParams = JSON.stringify(canonicalParams)
+      if (!serializedParams || serializedParams.length > 8192) {
+        throw new HttpError(400, 'databricks:sql parameters exceed maximum length (8192 chars)')
+      }
+      if (containsRawSecret(serializedParams)) {
+        throw new HttpError(400, 'execpolicy SQL parameters must not contain raw secrets or credentials')
+      }
+    }
+    const sqlContextDigest = computeSqlContextDigest({
+      sql: sqlTrimmed,
+      ...(obj.parameters !== undefined && { parameters: canonicalParams }),
+      warehouseId,
+      catalog,
+      schema,
+    }, ctx.hmacKey)
     return {
       action,
+      sql: sqlTrimmed,
+      ...(obj.parameters !== undefined && { parameters: canonicalParams }),
       sqlContextDigest,
       ...(warehouseId && { warehouseId }),
       ...(catalog && { catalog }),
@@ -392,27 +434,22 @@ export function validateAndNormalizeApprovalScope(
   }
 
   if (action === 'e1_ais_write') {
-    let target: string | undefined
-    if (obj.target !== undefined) {
-      if (typeof obj.target !== 'string' || !E1_FORM_NAME_RE.test(obj.target.trim())) {
-        throw new HttpError(400, 'e1_ais_write target must be a concrete E1 form name (no wildcards or paths)')
-      }
-      target = obj.target.trim()
+    if (typeof obj.target !== 'string' || !E1_FORM_NAME_RE.test(obj.target.trim())) {
+      throw new HttpError(400, 'e1_ais_write scope requires a concrete E1 form name target (no wildcards or paths)')
     }
-    let targetDigest: string | undefined
-    if (obj.targetDigest !== undefined) {
-      if (typeof obj.targetDigest !== 'string' || !HEX_64_RE.test(obj.targetDigest.trim())) {
-        throw new HttpError(400, 'e1_ais_write targetDigest must be a 64-char hex HMAC digest')
+    const target = obj.target.trim()
+    let host: string | undefined
+    if (obj.host !== undefined) {
+      if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+        throw new HttpError(400, 'e1_ais_write host must be a valid hostname')
       }
-      targetDigest = obj.targetDigest.trim().toLowerCase()
-    }
-    if (!target && !targetDigest) {
-      throw new HttpError(400, 'e1_ais_write scope requires target (E1 form name) or targetDigest')
+      host = obj.host.trim().toLowerCase()
     }
     return {
       action,
-      ...(target && { target }),
-      ...(targetDigest && { targetDigest }),
+      target,
+      ...(host && { host }),
+      ...(port !== undefined && { port }),
       ...(site && { site }),
       workspace,
       maxUses,
@@ -420,81 +457,79 @@ export function validateAndNormalizeApprovalScope(
   }
 
   // Path-targeted destructive/write scopes: graph:file_delete, graph:excel_write, sharepoint_destructive_write, http_delete
-  let targetDigest: string | undefined
-  let targetDisplay: string | undefined
-  if (obj.targetDigest !== undefined) {
-    if (typeof obj.targetDigest !== 'string' || !HEX_64_RE.test(obj.targetDigest.trim())) {
-      throw new HttpError(400, `${action} targetDigest must be a 64-char hex HMAC digest`)
-    }
-    targetDigest = obj.targetDigest.trim().toLowerCase()
+  if (typeof obj.target !== 'string' || !isValidExactPathTarget(obj.target)) {
+    throw new HttpError(400, `${action} scope requires an exact concrete target path (no wildcards, redactions, or broad prefixes)`)
   }
-  if (obj.target !== undefined) {
-    if (typeof obj.target !== 'string' || !isValidExactPathTarget(obj.target)) {
-      throw new HttpError(400, `${action} target must be an exact unredacted canonical path (no wildcards or broad prefixes)`)
+  const rawTarget = obj.target.trim()
+  if (containsRawSecret(rawTarget)) {
+    throw new HttpError(400, 'execpolicy target must not contain raw secrets or credentials')
+  }
+  const qIdx = rawTarget.indexOf('?')
+  const rawPathname = qIdx >= 0 ? rawTarget.slice(0, qIdx) : rawTarget
+  const rawSearch = qIdx >= 0 ? rawTarget.slice(qIdx) : ''
+
+  let surface: 'api' | 'browser' = 'api'
+  let connType: string | undefined
+  let host = ''
+  if (action === 'graph:file_delete' || action === 'graph:excel_write') {
+    if (action === 'graph:excel_write' && !rawPathname.toLowerCase().includes('/workbook/')) {
+      throw new HttpError(400, 'graph:excel_write target must be an exact /workbook/... path')
     }
-    const rawPath = obj.target.trim()
-    let surface: 'api' | 'browser' = 'api'
-    let connType: string | undefined
-    let host = ''
-    if (action === 'graph:file_delete' || action === 'graph:excel_write') {
-      if (action === 'graph:excel_write' && !rawPath.toLowerCase().includes('/workbook/')) {
-        throw new HttpError(400, 'graph:excel_write target must be an exact /workbook/... path')
-      }
-      surface = 'api'
-      connType = 'graph'
-      host = 'graph.microsoft.com'
-    } else if (action === 'sharepoint_destructive_write') {
-      if (!rawPath.toLowerCase().includes('/_api/') && !rawPath.toLowerCase().includes('/_vti_bin/')) {
-        throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
-      }
+    surface = 'api'
+    connType = 'graph'
+    host = 'graph.microsoft.com'
+  } else if (action === 'sharepoint_destructive_write') {
+    if (!rawPathname.toLowerCase().includes('/_api/') && !rawPathname.toLowerCase().includes('/_vti_bin/')) {
+      throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
+    }
+    if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+      throw new HttpError(400, 'sharepoint_destructive_write requires a valid host')
+    }
+    host = obj.host.trim().toLowerCase()
+    surface = site ? 'browser' : 'api'
+  } else if (action === 'http_delete') {
+    if (site) {
       if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
-        throw new HttpError(400, 'sharepoint_destructive_write with target requires a valid host')
+        throw new HttpError(400, 'browser http_delete scope requires host')
       }
+      surface = 'browser'
       host = obj.host.trim().toLowerCase()
-      surface = site ? 'browser' : 'api'
-    } else if (action === 'http_delete') {
-      if (site) {
-        if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
-          throw new HttpError(400, 'browser http_delete scope with target requires host')
-        }
-        surface = 'browser'
+    } else if (connection) {
+      surface = 'api'
+      const found = ctx.connections?.find(c => c.name === connection)
+      connType = found?.type
+      if (typeof obj.host === 'string' && HOST_RE.test(obj.host.trim())) {
         host = obj.host.trim().toLowerCase()
-      } else if (connection) {
-        surface = 'api'
-        const found = ctx.connections?.find(c => c.name === connection)
-        connType = found?.type
-        if (typeof obj.host === 'string' && HOST_RE.test(obj.host.trim())) {
-          host = obj.host.trim().toLowerCase()
-        } else if (found?.type === 'service') {
-          host = `${connection}.rf.internal`
-        } else if (found?.type === 'graph') {
-          host = 'graph.microsoft.com'
-        } else {
-          throw new HttpError(400, 'http_delete scope with target requires a valid host or known connection')
-        }
+      } else if (found?.type === 'service') {
+        host = `${connection}.rf.internal`
+      } else if (found?.type === 'graph') {
+        host = 'graph.microsoft.com'
       } else {
-        throw new HttpError(400, 'http_delete scope with target requires connection or site+host')
+        throw new HttpError(400, 'http_delete scope requires a valid host or known connection')
       }
+    } else {
+      throw new HttpError(400, 'http_delete scope requires connection or site+host')
     }
-    const computed = computeTargetDigest({ surface, connectionType: connType, host, rawPathname: rawPath }, ctx.hmacKey)
-    if (targetDigest && targetDigest !== computed) {
-      throw new HttpError(400, 'targetDigest does not match target')
-    }
-    targetDigest = computed
-    targetDisplay = sanitizeUrl(`https://${host}${rawPath}`, { projection: 'semantic' }).path
   }
-  if (!targetDigest) {
-    throw new HttpError(400, `${action} scope requires an exact target path or targetDigest`)
-  }
-  if (typeof obj.targetDisplay === 'string' && obj.targetDisplay.trim() && !targetDisplay) {
-    targetDisplay = obj.targetDisplay.trim().slice(0, 256)
-  }
+
+  const foldGraph = connType === 'graph' || host === 'graph.microsoft.com'
+  const canonicalTarget = canonicalizeTargetPath(rawPathname, foldGraph) + rawSearch
+  const targetDigest = computeTargetDigest({
+    surface,
+    connectionType: connType,
+    host,
+    ...(port !== undefined && { port }),
+    rawPathname,
+    rawSearch,
+  }, ctx.hmacKey)
 
   return {
     action,
+    target: canonicalTarget,
     targetDigest,
-    ...(targetDisplay && { targetDisplay }),
     ...(connection && { connection }),
+    ...(host && { host }),
+    ...(port !== undefined && { port }),
     ...(site && { site }),
     workspace,
     maxUses,
@@ -507,8 +542,10 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   if (scope.site !== undefined && safe.target.site !== scope.site) return false
 
   const actClass = normalizeScopeAction(scope.action)
+  const isDelete = safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE'
 
   if (actClass === 'graph:sendMail') {
+    if (isDelete) return false
     const mailAct = safe.actions.find(a => a.family === 'graph' && ['graph:sendMail', 'graph:send', 'graph:reply', 'graph:replyAll', 'graph:forward'].includes(a.op))
     if (!mailAct) return false
     // Fail closed unless the extractor proved complete delivery recipient coverage!
@@ -533,6 +570,8 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   }
 
   if (actClass === 'graph:excel_write') {
+    // Never let an excel_write approval unlock an HTTP DELETE on the same workbook path!
+    if (isDelete) return false
     const xlAct = safe.actions.find(a => a.family === 'graph' && a.op === 'graph:excel_write')
     if (!xlAct) return false
     return safeHexEqual(xlAct.details?.targetDigest, scope.targetDigest)
@@ -546,15 +585,20 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   }
 
   if (actClass === 'e1_ais_write') {
+    if (isDelete) return false
     const e1Act = safe.actions.find(a => isE1WriteAction(a))
     if (!e1Act) return false
-    if (scope.targetDigest !== undefined) {
-      return safeHexEqual(e1Act.details?.targetDigest, scope.targetDigest)
+    const hasTarget = typeof scope.target === 'string' && scope.target.trim().length > 0
+    const hasDigest = scope.targetDigest !== undefined
+    if (!hasTarget && !hasDigest) return false
+    // Enforce EVERY supplied E1 constraint (never short-circuit on targetDigest while ignoring target form name!).
+    if (hasTarget) {
+      if (!E1_FORM_NAME_RE.test(scope.target!.trim()) || e1Act.resource !== scope.target!.trim()) return false
     }
-    if (typeof scope.target === 'string' && E1_FORM_NAME_RE.test(scope.target.trim())) {
-      return e1Act.resource === scope.target.trim()
+    if (hasDigest) {
+      if (!safeHexEqual(e1Act.details?.targetDigest, scope.targetDigest)) return false
     }
-    return false
+    return true
   }
 
   if (actClass === 'sharepoint_destructive_write') {
@@ -564,7 +608,7 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   }
 
   if (actClass === 'http_delete') {
-    if (safe.method !== 'DELETE' && safe.effectiveMethod !== 'DELETE') return false
+    if (!isDelete) return false
     const actDigest = safe.actions.find(a => typeof a.details?.targetDigest === 'string')?.details?.targetDigest
     return safeHexEqual(actDigest, scope.targetDigest)
   }

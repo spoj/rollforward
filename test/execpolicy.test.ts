@@ -747,8 +747,8 @@ test('R2 security hardening: HMAC target/SQL digests, complete mail recipients, 
     bodyComplete: true, decodeComplete: true, completeness: e1Long.completeness, actions: e1Long.actions,
   }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
 
-  // If-Match: * and W/"etag" are rejected as unguarded overwrites!
-  for (const badEtag of ['*', ' * ', 'W/"e1"', 'w/"e1"', '""']) {
+  // If-Match: *, W/"etag", and unquoted arbitrary text are rejected as unguarded overwrites!
+  for (const badEtag of ['*', ' * ', 'W/"e1"', 'w/"e1"', '""', 'unquoted-etag']) {
     const fw = buildApiRequestDescriptor({
       connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',
       url: new URL('https://graph.microsoft.com/v1.0/drives/d1/items/i1/content'),
@@ -758,6 +758,179 @@ test('R2 security hardening: HMAC target/SQL digests, complete mail recipients, 
     assert.equal(fw.safe.actions[0].details?.hasIfMatch, false, `If-Match ${badEtag} must be rejected`);
     assert.equal(evaluateStage1(fw.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'unguarded_overwrite_no_if_match');
   }
+});
+
+test('R3 convergence: verbatim approval faithfulness, exact query/port/method HMAC binding, OData permanentDelete, DeleteByIds, E1 multi-location, Spark FROM-first OVERWRITE, and short MIME', () => {
+  const hmacKey = Buffer.alloc(32, 0x77);
+
+  // 1. Agent-supplied targetDigest / targetDisplay / sqlContextDigest, raw secrets, and deep parameters MUST be rejected with 400!
+  let deep: any = { x: 1 };
+  for (let i = 0; i < 25; i++) deep = { nested: deep };
+  for (const bad of [
+    { action: 'graph:file_delete', targetDigest: 'a'.repeat(64) },
+    { action: 'graph:file_delete', targetDigest: 'a'.repeat(64), targetDisplay: '/v1.0/drives/d1/items/i1 (old draft)' },
+    { action: 'databricks:sql', sqlContextDigest: 'b'.repeat(64), warehouseId: 'wh1' },
+    { action: 'e1_ais_write', targetDigest: 'c'.repeat(64) },
+    { action: 'databricks:sql', sql: 'DELETE FROM t WHERE k = :k', parameters: deep, warehouseId: 'wh1' },
+    { action: 'databricks:sql', sql: "DELETE FROM t WHERE tok = 'sk-1234567890abcdefghij123456'", warehouseId: 'wh1' },
+    { action: 'http_delete', connection: 'erp', target: '/AP/items?sig=ABCDEFGHIJKLMNOPQRSTUVWX' },
+  ]) {
+    assert.throws(
+      () => validateAndNormalizeApprovalScope(bad, { workspace: 'w', connections: [{ name: 'erp', type: 'service' }], hmacKey }),
+      (err: any) => err?.status === 400,
+      `must reject with 400: ${JSON.stringify(bad).slice(0, 80)}`,
+    );
+  }
+
+  // Server-derived verbatim target & SQL + parameters are persisted distinctly!
+  const scopeA = validateAndNormalizeApprovalScope(
+    { action: 'graph:file_delete', target: '/v1.0/drives/d1/items/01BYE5RZ6QN3K4L8M9N2P5Q7', maxUses: 1 },
+    { workspace: 'w', hmacKey },
+  );
+  const scopeB = validateAndNormalizeApprovalScope(
+    { action: 'graph:file_delete', target: '/v1.0/drives/d1/items/01K7QW2M4X9B1C3D5F7H8J2Z9', maxUses: 1 },
+    { workspace: 'w', hmacKey },
+  );
+  assert.equal(scopeA.target, '/v1.0/drives/d1/items/01BYE5RZ6QN3K4L8M9N2P5Q7');
+  assert.equal(scopeB.target, '/v1.0/drives/d1/items/01K7QW2M4X9B1C3D5F7H8J2Z9');
+  assert.notEqual(scopeA.target, scopeB.target);
+  assert.notEqual(scopeA.targetDigest, scopeB.targetDigest);
+
+  const sqlScope = validateAndNormalizeApprovalScope(
+    { action: 'databricks:sql', sql: 'DELETE FROM staging WHERE id = :id', parameters: [{ name: 'id', value: '42', type: 'INT' }], warehouseId: 'wh1', catalog: 'prod', schema: 'fin' },
+    { workspace: 'w', hmacKey },
+  );
+  assert.equal(sqlScope.sql, 'DELETE FROM staging WHERE id = :id');
+  assert.equal(JSON.stringify(sqlScope.parameters), JSON.stringify([{ name: 'id', type: 'INT', value: '42' }]));
+  assert.match(sqlScope.sqlContextDigest!, /^[a-f0-9]{64}$/);
+
+  // 2. Exact-target HMAC binds query string, port, trailing slash, Graph-only version folding, and method/action!
+  const q1 = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', rawPathname: '/AP/records', rawSearch: '?id=5' }, hmacKey);
+  const q2 = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', rawPathname: '/AP/records', rawSearch: '?all=true' }, hmacKey);
+  const qPort = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', port: 8443, rawPathname: '/AP/records', rawSearch: '?id=5' }, hmacKey);
+  const qSlash = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', rawPathname: '/AP/records/', rawSearch: '?id=5' }, hmacKey);
+  const svcUpper = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', rawPathname: '/V1.0/records' }, hmacKey);
+  const svcLower = computeTargetDigest({ surface: 'api', connectionType: 'service', host: 'erp.rf.internal', rawPathname: '/v1.0/records' }, hmacKey);
+  assert.notEqual(q1, q2, '?id=5 vs ?all=true produce different targetDigests');
+  assert.notEqual(q1, qPort, 'port difference changes targetDigest');
+  assert.notEqual(q1, qSlash, 'trailing slash changes targetDigest');
+  assert.notEqual(svcUpper, svcLower, 'non-Graph service does NOT fold /V1.0 version prefix');
+
+  // SQL canonicalization distinguishes absent parameters vs null parameters and preserves own __proto__ key!
+  const sqlAbsent = computeSqlContextDigest({ sql: 'DELETE FROM t' }, hmacKey);
+  const sqlNull = computeSqlContextDigest({ sql: 'DELETE FROM t', parameters: null }, hmacKey);
+  assert.notEqual(sqlAbsent, sqlNull, 'absent vs null parameters produce different sqlContextDigests');
+  const protoA = JSON.parse('{"__proto__":{"a":1},"b":2}');
+  const protoB = JSON.parse('{"b":2}');
+  assert.notEqual(
+    computeSqlContextDigest({ sql: 'DELETE FROM t', parameters: protoA }, hmacKey),
+    computeSqlContextDigest({ sql: 'DELETE FROM t', parameters: protoB }, hmacKey),
+    'own __proto__ key is preserved in SQL canonicalization',
+  );
+
+  // graph:excel_write approval MUST NOT unlock HTTP DELETE on the same workbook path!
+  const xlPath = '/v1.0/drives/d1/items/i1/workbook/worksheets/Sheet1';
+  const xlScope = validateAndNormalizeApprovalScope({ action: 'graph:excel_write', target: xlPath, maxUses: 1 }, { workspace: 'w', hmacKey });
+  const xlPatch = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 1, method: 'PATCH',
+    url: new URL(`https://graph.microsoft.com${xlPath}`), headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ name: 'Sheet2' })), bodyComplete: true,
+  }).descriptor;
+  const xlDelete = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 2, method: 'DELETE',
+    url: new URL(`https://graph.microsoft.com${xlPath}`), headers: {}, bodyComplete: true,
+  }).descriptor;
+  const xlLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Update sheet', execpolicy: xlScope },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  assert.equal(findCurrentEpochApproval(xlLog, { owner: 'alice@demo.test', workspace: 'w', safe: xlPatch.safe }).approved, true, 'excel_write scope allows PATCH');
+  assert.equal(findCurrentEpochApproval(xlLog, { owner: 'alice@demo.test', workspace: 'w', safe: xlDelete.safe }).approved, false, 'excel_write scope NEVER unlocks DELETE');
+
+  // E1 scope with BOTH target AND targetDigest enforces BOTH (never short-circuit on targetDigest alone)!
+  const e1Req = extractSemantic({
+    url: new URL('https://erp.example.com/jderest/v2/formservice'), sanitizedPath: '/jderest/v2/formservice',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+    reqType: 'application/json', hmacKey,
+    decodedBuf: Buffer.from(JSON.stringify({ formName: 'P0411_W0411B', formServiceAction: 'W' })),
+    bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  const e1Safe = {
+    descV: 1 as const, redactV: 1 as const, extractorV: 1 as const, surface: 'browser' as const, target: { site: 'e1' },
+    seq: 1, t: '', kind: 'http' as const, scheme: 'https', authority: 'erp.example.com', path: '/jderest/v2/formservice',
+    url: 'https://erp.example.com/jderest/v2/formservice', method: 'POST', effectiveMethod: 'POST', methodSource: 'wire' as const,
+    isWrite: true, prefixBytes: 50, bodyComplete: true, decodeComplete: true, completeness: e1Req.completeness, actions: e1Req.actions,
+  };
+  const e1MismatchLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    {
+      seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Post P0411A',
+      execpolicy: { action: 'e1_ais_write', target: 'P0411_W0411A', targetDigest: e1Req.actions[0].details?.targetDigest as string, workspace: 'w', maxUses: 1 },
+    },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  assert.equal(findCurrentEpochApproval(e1MismatchLog, { owner: 'alice@demo.test', workspace: 'w', safe: e1Safe }).approved, false, 'E1 scope enforces BOTH target formName AND targetDigest');
+
+  // 3. Keyed OData mailbox permanentDelete + SharePoint DeleteByIds
+  for (const path of [
+    "/v1.0/me/messages('AAMk123')/permanentDelete",
+    "/v1.0/users/u1/mailFolders('inbox')/messages('m1')/permanentDelete",
+  ]) {
+    const d = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'graph', hmacKey, seq: 1, method: 'POST',
+      url: new URL(`https://graph.microsoft.com${path}`), headers: {}, bodyComplete: true,
+    }).descriptor;
+    assert.equal(d.safe.actions[0].op, 'graph:file_delete', `keyed OData permanentDelete classified: ${path}`);
+    assert.equal(evaluateStage1(d.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'graph_file_delete');
+  }
+  const spByIds = extractSemantic({
+    url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+    sanitizedPath: '/sites/fin/_api/web/RecycleBin/DeleteByIds',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: {}, bodyComplete: true,
+    transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(spByIds.actions[0].op, 'sharepoint:delete', 'SharePoint RecycleBin/DeleteByIds classified as destructive');
+
+  // 4. E1 multi-location action inspection (empty outer formActions + nested formRequest, conflicting scalar actions, batchformservice formRequests[])
+  for (const [label, body, ep] of [
+    ['empty outer + nested formRequest DoAction', { formName: 'P0411_W0411A', formActions: [], formRequest: { formActions: [{ command: 'DoAction', controlID: '12' }] } }, '/jderest/v2/formservice'],
+    ['conflicting action R vs formServiceAction W', { formName: 'P0411_W0411A', action: 'R', formServiceAction: 'W' }, '/jderest/v2/formservice'],
+    ['batchformservice formRequests[] DoAction', { formRequests: [{ formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] }] }, '/jderest/v2/batchformservice'],
+  ] as const) {
+    const e1 = extractSemantic({
+      url: new URL(`https://erp.example.com${ep}`), sanitizedPath: ep,
+      method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+      reqType: 'application/json', decodedBuf: Buffer.from(JSON.stringify(body)),
+      bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+    });
+    const dec = evaluateStage1({
+      descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'e1' }, seq: 1, t: '', kind: 'http',
+      scheme: 'https', authority: 'erp.example.com', path: ep, url: `https://erp.example.com${ep}`,
+      method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
+      bodyComplete: true, decodeComplete: true, completeness: e1.completeness, actions: e1.actions,
+    }, 'enforce', { approved: false, recentApprovedProposals: [] });
+    assert.equal(dec.ruleId, 'e1_ais_write', `E1 multi-location must gate: ${label}`);
+  }
+
+  // 5. Spark FROM-first INSERT OVERWRITE -> unconditional deny databricks_destructive_ddl!
+  const fromOverwrite = 'FROM src INSERT OVERWRITE TABLE prod.gl SELECT *';
+  const foCls = classifySqlStatement(fromOverwrite);
+  assert.equal(foCls.hasDropOrTruncate, true, 'FROM-first INSERT OVERWRITE flags hasDropOrTruncate');
+  const foDesc = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement: fromOverwrite })),
+    bodyComplete: true,
+  }).descriptor;
+  const foDec = evaluateStage1(foDesc.safe, 'enforce', { approved: true, approvalRef: 'c1', recentApprovedProposals: [] });
+  assert.equal(foDec.action, 'deny');
+  assert.equal(foDec.ruleId, 'databricks_destructive_ddl');
+
+  // 6. Short unterminated MIME (<8 KiB with no \r\n\r\n or \n\n) -> complete: false!
+  const shortUnterminated = Buffer.from('From: alice@demo.test\r\nTo: bob@allowed.test').toString('base64');
+  assert.equal(extractMimeRecipientDomains(shortUnterminated).complete, false, 'unterminated short MIME must be incomplete');
 });
 
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {

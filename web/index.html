@@ -623,7 +623,7 @@ function logText(e) {
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
 }
 
-const canDecideProposal = e => !data.staleProposals?.includes(e.seq) && (!e.noteFor || data.owner.by === me.email);
+const canDecideProposal = e => !data.staleProposals?.includes(e.seq) && ((!e.noteFor && !e.execpolicy) || data.owner.by === me.email);
 
 // Threads and expired logins that need you, with nonblocking note notices alongside.
 function renderNeeds() {
@@ -834,16 +834,19 @@ function execPolicyScopeHtml(s) {
   const rows = [
     ['Action', s.action],
     ...(Array.isArray(s.domains) && s.domains.length ? [['Domains', s.domains.join(', ')]] : []),
-    ...(s.targetDisplay ? [['Target', s.targetDisplay]] : s.target ? [['Target', s.target]] : []),
-    ...(s.targetDigest ? [['Target digest', s.targetDigest]] : []),
-    ...(s.sqlContextDigest ? [['SQL context digest', s.sqlContextDigest]] : []),
+    ...(s.target ? [['Target', s.target]] : []),
+    ...(s.sql ? [['SQL', s.sql]] : []),
+    ...(s.parameters !== undefined ? [['Parameters', JSON.stringify(s.parameters)]] : []),
     ...(s.warehouseId ? [['Warehouse', s.warehouseId]] : []),
     ...(s.catalog ? [['Catalog', s.catalog]] : []),
     ...(s.schema ? [['Schema', s.schema]] : []),
     ...(s.connection ? [['Connection', s.connection]] : []),
+    ...(s.host ? [['Host', s.port ? `${s.host}:${s.port}` : s.host]] : []),
     ...(s.site ? [['Site', s.site]] : []),
     ...(s.workspace ? [['Workspace', s.workspace]] : []),
     ['Max uses', String(s.maxUses ?? 1)],
+    ...(s.targetDigest ? [['Target digest', s.targetDigest]] : []),
+    ...(s.sqlContextDigest ? [['SQL context digest', s.sqlContextDigest]] : []),
   ];
   return `<div class="ep-scope"><div class="ep-scope-h">Approval scope</div>${rows.map(([k, v]) => `<div><span class="ep-k">${esc(k)}:</span> <code>${esc(String(v))}</code></div>`).join('')}</div>`;
 }
@@ -865,7 +868,7 @@ function postHtml(t, p, depth, flat = false) {
   const quote = parent ? `<a class="up" data-act="cref" data-inst="${esc(cur.i.id)}" data-seq="${parent.seq}">\u21a9 ${who(parent.by)} c${parent.seq}: ${esc(firstLine(parent.text))}</a>` : '';
   const gone = p.withdrawn && `withdrawn: ${esc(p.withdrawn.text)}${p.withdrawn.see ? ` \u00b7 see ${cref(p.withdrawn.see, `c${p.withdrawn.see}`)}` : ''}`;
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
-  if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25BE</button>${head}${hhmm(p.at)}${chip}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
+  if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}${chip}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
   let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"${p.noteFor ? ' data-note-proposal' : ''}>${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}${quote}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${chip}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`

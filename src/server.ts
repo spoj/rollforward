@@ -1769,6 +1769,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (!run || away || ask !== 'proposal') {
         throw new HttpError(400, 'execpolicy scope is allowed only on an agent proposal in its own instance');
       }
+      if (who && who !== run.runner) {
+        throw new HttpError(400, 'scoped execution proposals must wait on the series owner');
+      }
       validatedScope = validateAndNormalizeApprovalScope(execpolicy, {
         workspace: t.series[inst.seriesId].workspace,
         connections: connections(),
@@ -1834,6 +1837,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         const s = seriesSettings(inst.series()), workspace = tree().series[inst.seriesId].workspace;
         if (!currentMessage(inst.log, ask, { by: s.owner ?? '', epoch: s.epoch, workspace }))
           throw new HttpError(409, 'the proposal is from an earlier series authority');
+        if (ask.execpolicy && by !== s.owner) {
+          throw new HttpError(403, 'only the current series owner can decide a scoped execution proposal');
+        }
         if (ask.noteFor) {
           if (by !== s.owner || ask.noteEpoch !== s.epoch) throw new HttpError(403, 'only the current series owner can decide a proposal linked to a note');
           if (!seriesConversation(inst.seriesId).notes.some(n => n.id === ask.noteFor && (n.anchor?.inst ?? inst.id) === inst.id
