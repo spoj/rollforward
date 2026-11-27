@@ -18,7 +18,7 @@ process.env.RF_WAKE_TICK_MS = '50';
 process.env.RF_MIN_FREE_GB = '0';
 const entra = await idp();
 Object.assign(process.env, entra.env('http://127.0.0.1:1'));
-const { active, byToken, cancelWakes, correct, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
+const { active, byToken, cancelWakes, correct, fire, held, kick, message, recover, remove, resolveFor, setWake, startWaking, view, wakes, wakesOf, weekly } = await import('../src/waker.ts');
 const { authority, personDir, saveLogin, signOut } = await import('../src/logins.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 const tmp = mkdtempSync(join(tmpdir(), 'rf-wake-')), alice = 'alice@demo.test';
@@ -844,4 +844,45 @@ test('recover cleans git locks on closed instances too, and a confirm 401 after 
   } finally {
     globalThis.fetch = fetchWas;
   }
+});
+
+test('recurring unauthorized wakes coalesce into one pending request per (series, target) or (series, label)', () => {
+  saveTree({ ...tree(), series: { ...tree().series, sdedup: { name: 'Dedup Series', workspace: 'w' } } });
+  mkdirSync(join(tmp, 'series', 'sdedup'), { recursive: true });
+  ownSeries('sdedup', alice, [], false);
+  const inst = createInstance('sdedup', '2026-11', alice);
+  const allDays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const past = new Date(Date.now() - 3_600_000).toISOString();
+  // Schedule in the future so immediate is false, then move stored `at` to the past before fire().
+  const wk = setWake(inst.id, { at: future, days: allDays, from: alice, text: 'check' });
+  for (let i = 0; i < 3; i++) {
+    const w = readJson<ReturnType<typeof wakes>>('wakes.json', { pending: {}, fired: {}, requests: {} });
+    w.pending[wk.id].at = past;
+    writeJson('wakes.json', w);
+    fire();
+  }
+  assert.equal(Object.values(wakes().requests).filter(r => r.series === 'sdedup' && r.target === inst.id).length, 1);
+
+  // Series-level wakes targeting the same label also coalesce instead of stacking duplicates.
+  const sw = setWake('sdedup', { at: future, label: '2026-12', days: allDays, from: alice, text: 'next' });
+  for (let i = 0; i < 2; i++) {
+    const w = readJson<ReturnType<typeof wakes>>('wakes.json', { pending: {}, fired: {}, requests: {} });
+    w.pending[sw.id].at = past;
+    w.pending[sw.id].label = '2026-12';
+    writeJson('wakes.json', w);
+    fire();
+  }
+  assert.equal(Object.values(wakes().requests).filter(r => r.series === 'sdedup' && !r.target && r.label === '2026-12').length, 1);
+
+  // Distinct one-off unauthorized requests for the same instance are preserved, not dropped.
+  const one1 = setWake(inst.id, { at: future, from: 'bob@demo.test', text: 'first ask' });
+  const one2 = setWake(inst.id, { at: new Date(Date.now() + 90_000_000).toISOString(), from: 'bob@demo.test', text: 'second ask' });
+  const w4 = readJson<ReturnType<typeof wakes>>('wakes.json', { pending: {}, fired: {}, requests: {} });
+  w4.pending[one1.id].at = past;
+  w4.pending[one2.id].at = past;
+  writeJson('wakes.json', w4);
+  fire();
+  const texts = Object.values(wakes().requests).filter(r => r.series === 'sdedup' && r.target === inst.id).map(r => r.text);
+  assert.ok(texts.includes('first ask') && texts.includes('second ask'), 'distinct one-off requests kept');
 });

@@ -1127,7 +1127,9 @@ export function fire() {
     if (!authorized) {
       advanceWake(w, id, wake);
       changed = true;
-      w.requests[days ? newId() : id] = { series: targetSeries, label: label ?? instance(target).label, ...(!t.series[target] && { target }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      const reqTarget = t.series[target] ? undefined : target, reqLabel = label ?? instance(target).label;
+      const dup = !!days && Object.values(w.requests).some(r => r.series === targetSeries && (reqTarget ? r.target === reqTarget : !r.target && r.label === reqLabel));
+      if (!dup) w.requests[days ? newId() : id] = { series: targetSeries, label: reqLabel, ...(reqTarget && { target: reqTarget }), from: wake.from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
       continue;
     }
     const lease = authority(targetSeries);
@@ -1159,7 +1161,8 @@ export function fire() {
     w.fired[target] = now;
     if (!canStart) {
       if (inst) console.log(`a wake found ${named(t, inst.seriesId)}/${inst.label} ${inst.doc.status}, so it woke nothing`);
-      else w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
+      else if (!days || !Object.values(w.requests).some(r => r.series === target && !r.target && r.label === label!))
+        w.requests[newId()] = { series: target, label: label!, from, at: now, ...(wake.inst && { inst: wake.inst }), ...(wake.text && { text: wake.text }) };
     } else {
       const skippedChecks = skippedOf(wake, now);
       const wakeText = recurringBackstop

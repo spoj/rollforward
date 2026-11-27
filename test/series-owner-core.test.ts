@@ -319,8 +319,8 @@ for (const [from, autonomous] of [[bob, true], [alice, false]] as const) for (co
   assert.equal(first[1].target, series ? undefined : inst.id);
   fire();
   assert.equal(wakes().pending[wake.id].at, new Date(2000, 0, 11, 8).toISOString());
-  assert.equal(Object.keys(wakes().requests).length, 2);
-  assert.deepEqual(wakes().requests[first[0]], first[1], 'each occurrence retains its own request');
+  assert.equal(Object.keys(wakes().requests).length, series ? 2 : 1);
+  assert.deepEqual(wakes().requests[first[0]], first[1], series ? 'each dated period retains its own request' : 'repeated instance occurrences coalesce into the pending request');
   assert.equal(inst.log.some(e => e.op === 'wake' || e.op === 'run'), false);
 });
 
