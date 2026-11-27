@@ -15,7 +15,7 @@ import { pushed, skills } from './skills.ts';
 import { AGENT, commit, committed, forget } from './git.ts';
 import { authority, logins, ownerOf, runnerAt, sameAuthority } from './logins.ts';
 import { confirm } from './entra.ts';
-import { pruneGrants } from './grants.ts';
+import { grants, pruneGrants } from './grants.ts';
 import { abortCalls, connections, drainCalls, hasCalls, loginOf, types } from './connections.ts';
 import { runWakeCheck } from './wake-check.ts';
 import { binds, conversation, currentMessage, isPerson, openNotes, type Note } from './messages.ts';
@@ -184,10 +184,17 @@ export function message(inst: Instance, n: number, entries: Entry[], first = fal
   const asks = first ? inst.asking(by).filter(e => currentMessage(inst.log, e, { by, epoch: lease.epoch, workspace: lease.workspace })) : [];
   const series = open.filter(e => !e.anchor), here = open.filter(e => e.anchor);
   const owner = first ? asPerson(by) : null;
+  const untickedApproved = first && by && lease.workspace
+    ? [...new Set(
+        Object.values(grants())
+          .filter(g => g.state === 'approved' && g.person === by && g.workspace === lease.workspace && Object.hasOwn(sites, g.site) && !ticked.includes(`web:${g.site}`))
+          .map(g => g.site),
+      )].sort()
+    : [];
   const skipped = entries.filter(e => e.op === 'wake' && e.skippedChecks && typeof e.skippedChecks === 'object')
     .map(e => e.skippedChecks as SkippedChecks);
   return `Instance ${inst.label}, run ${n}.`
-    + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}` : '')
+    + (first ? ` Its series owner and captured execution person is ${who(by)}, who delegates ${ticked.map(delegated).join(', ') || 'no login'} to you. Approvals from an earlier authority epoch are history, not authorization for this owner.${lease.autonomous && owner && can(owner, 'wake-check') ? ' Your series owner has the wake-check capability.' : ''}${untickedApproved.length ? ` Unticked approved websites in this workspace: ${untickedApproved.join(', ')} (names only; ask them to tick what you need).` : ''}` : '')
     + (first && set.length ? ` Pending wakes: ${set.map(k => `${k.id}, ${k.target === inst.id ? 'waking this instance' : `starting ${k.label}`} at ${k.at}${k.days ? `, then each ${k.days.join(', ')}` : ''}, from ${k.from}${k.request ? ', a request' : ''}${k.text ? `, saying ${JSON.stringify(k.text)}` : ''}${k.check ? `, check ${k.check}${k.deadline ? ` with deadline ${k.deadline}` : ''}${k.maxStaleMin ? `, max-stale ${k.maxStaleMin}m` : ''}${k.backstopHours ? `, backstop ${k.backstopHours}h` : ''}${k.skipCount ? ` (${k.skipCount} skipped since ${k.skipSince})` : ''}` : ''}`).join('; ')}.` : '')
     + (fixed.length ? ` Corrections on earlier instances: ${fixed.join('; ')}.` : '')
     + (asks.length ? ` Pending ${asks.length === 1 ? 'reply' : 'replies'}: ${asks.map(e => `c${e.seq}, ${e.ask === 'proposal' ? 'proposal' : 'question'} for ${who((e.to as string | undefined) ?? by)}, ${JSON.stringify(e.text)}`).join('; ')}.` : '')

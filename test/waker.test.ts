@@ -94,7 +94,7 @@ test("a service prefix is lent at its private address in the run's first message
   saveLogin(alice, { ...loginOf(c), since: '' } as never);
   ownSeries('s5', alice, ['drop:AP/'], true);
   const inst = createInstance('s5', 'Service', alice);
-  assert.match(message(inst, 1, inst.log, true), /who delegates drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\) to you\. Approvals from an earlier authority epoch are history, not authorization for this owner\. New log entries:/);
+  assert.match(message(inst, 1, inst.log, true), /who delegates drop:AP\/ \(AP\/ at https:\/\/drop\.rf\.internal\/\) to you\. Approvals from an earlier authority epoch are history, not authorization for this owner\. Unticked approved websites in this workspace: portal \(names only; ask them to tick what you need\)\. New log entries:/);
   assert.deepEqual(view(inst).env, {});
   signOut(alice, 'drop');
   removeConnection('drop');
@@ -885,4 +885,41 @@ test('recurring unauthorized wakes coalesce into one pending request per (series
   fire();
   const texts = Object.values(wakes().requests).filter(r => r.series === 'sdedup' && r.target === inst.id).map(r => r.text);
   assert.ok(texts.includes('first ask') && texts.includes('second ask'), 'distinct one-off requests kept');
+});
+
+test('first run message lists series owner unticked approved workspace websites by name only', () => {
+  saveTree({ ...tree(), series: { ...tree().series, sunticked: { name: 'Sites Series', workspace: 'w' } } });
+  mkdirSync(join(tmp, 'series', 'sunticked'), { recursive: true });
+  ownSeries('sunticked', alice, ['web:ticked-site'], false);
+  mkdirSync(personDir(alice), { recursive: true });
+  writeFileSync(join(personDir(alice), 'websites.json'), JSON.stringify({
+    'ticked-site': { url: 'https://ticked.example.com/app', hosts: [], writeback: true, added: '2026-11-01T00:00:00Z' },
+    'erp-portal': { url: 'https://secret-erp.internal/login?token=abc', hosts: [], writeback: true, header: 'x-secret-hdr', added: '2026-11-01T00:00:00Z' },
+    'pending-site': { url: 'https://pending.example.com', hosts: [], writeback: true, added: '2026-11-01T00:00:00Z' },
+    'other-ws-site': { url: 'https://other.example.com', hosts: [], writeback: true, added: '2026-11-01T00:00:00Z' },
+  }));
+  const prevGrants = readJson<Record<string, unknown>>('grants.json', {});
+  try {
+    writeJson('grants.json', {
+      g1: { workspace: 'w', person: alice, site: 'ticked-site', reason: 'r', at: '', state: 'approved' },
+      g2: { workspace: 'w', person: alice, site: 'erp-portal', reason: 'r', at: '', state: 'approved' },
+      g3: { workspace: 'w', person: alice, site: 'pending-site', reason: 'r', at: '', state: 'pending' },
+      g4: { workspace: 'm', person: alice, site: 'other-ws-site', reason: 'r', at: '', state: 'approved' },
+      g5: { workspace: 'w', person: 'bob@demo.test', site: 'bobs-site', reason: 'r', at: '', state: 'approved' },
+    });
+    const inst = createInstance('sunticked', '2026-11', alice);
+    const lease = authority(inst);
+    const firstMsg = message(inst, 1, inst.log, true, [], lease);
+    assert.match(firstMsg, /Unticked approved websites in this workspace: erp-portal/);
+    assert.ok(!firstMsg.includes('secret-erp.internal'), 'no URL for unticked site');
+    assert.ok(!firstMsg.includes('x-secret-hdr'), 'no header/secret leaked');
+    assert.ok(!firstMsg.includes('pending-site'), 'pending site excluded');
+    assert.ok(!firstMsg.includes('other-ws-site'), 'other workspace site excluded');
+    assert.ok(!firstMsg.includes('bobs-site'), 'other person site excluded');
+    // Subsequent non-first messages omit the header & unticked list
+    const laterMsg = message(inst, 1, inst.log, false, [], lease);
+    assert.ok(!laterMsg.includes('Unticked approved websites'));
+  } finally {
+    writeJson('grants.json', prevGrants);
+  }
 });
