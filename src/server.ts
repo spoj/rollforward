@@ -2104,9 +2104,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const host = decodeURIComponent(url.pathname.split('/')[2]).toLowerCase();
         if (!letIn()[host]) throw new HttpError(404, `${host} isn't one admins let websites reach: they are ${Object.keys(letIn()).join(', ') || 'none'}`);
         setLetIn([host], me.email, false);
-        await revokeInternalHosts([host]);
-        act(me.email, { op: 'internal', hosts: [host], let: false });
-        await closeUnlent();
+        try {
+          await revokeInternalHosts([host]);
+          act(me.email, { op: 'internal', hosts: [host], let: false });
+        } finally {
+          await closeUnlent();
+        }
       } else if (req.method !== 'GET') throw new HttpError(405, 'GET lists them, DELETE /internal/HOST takes one out');
       send(res, 200, letIn());
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
@@ -2209,8 +2212,8 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
       const change = await json(req);
-      await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req));
-      if (change.via !== undefined || change.internal !== undefined) await closeUnlent();
+      try { await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req)); }
+      finally { if (change.via !== undefined || change.internal !== undefined) await closeUnlent(); }
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), await closeUnlent(), 'ok'));

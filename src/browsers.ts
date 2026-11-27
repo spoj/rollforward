@@ -290,7 +290,7 @@ export async function revokeInternalHosts(hosts: string[]) {
     let changed = false;
     for (const [site, w] of Object.entries(all)) {
       const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
-      const bumped = [...new Set([...hit, ...hosts.filter(h => !throughVpn(w, h) && Object.hasOwn(w.checks ?? {}, h) && w.checks![h].verdict === 'internal')])];
+      const bumped = [...new Set([...hit, ...hosts.filter(h => !throughVpn(w, h) && Object.hasOwn(w.checks ?? {}, h) && ['internal', 'high'].includes(w.checks![h].verdict))])];
       if (!bumped.length) continue;
       all[site] = {
         ...w,
@@ -804,13 +804,13 @@ export class Browsers {
       if (login.expired) throw Object.assign(new HttpError(409, `${email}'s login to ${site} has expired: they sign in to it again on the Logins page, and the instance carries on`), { login: login.id, since: loginGeneration(login) ?? '' });
       const generation = website(email, site).generation ?? 0;
       if (had && (had.email !== email || had.since !== login.since || had.generation !== generation)) throw new HttpError(409, `this run's browser on ${site} has a superseded login`);
-      const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`);
-      if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (website(email, site).generation ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
+      const w = website(email, site), via = await vpnVia(email, w), current = use(this.inst, this.run, `web:${site}`), latest = website(email, site);
+      if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (latest.generation ?? 0) !== generation || latest.via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
       if (this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
       if (had) {
-        const nowAllowed = new Set(allowedHosts(w));
-        if (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(',') || had.allowed.some(h => !nowAllowed.has(h))) {
+        const nowAllowed = new Set(allowedHosts(latest));
+        if (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(latest).join(',') || had.allowed.some(h => !nowAllowed.has(h))) {
           await this.close(site);
           return this.lent(site, quiet);
         }
