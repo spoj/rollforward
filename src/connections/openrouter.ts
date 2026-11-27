@@ -16,10 +16,30 @@ export function answer(content: string) {
   return JSON.parse(content.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1'));
 }
 
+// Cap per-request output reservation so concurrent runs don't hit 402 credit-reservation collisions (e.g. Pi's 128k default).
+export const DEFAULT_MAX_TOKENS_CAP = 65_536;
+export function maxTokensCap(): number {
+  const raw = process.env.RF_OPENROUTER_MAX_TOKENS?.trim();
+  if (!raw) return DEFAULT_MAX_TOKENS_CAP;
+  if (raw === '0') return 0;
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isSafeInteger(n) && n > 0) return n;
+  }
+  return DEFAULT_MAX_TOKENS_CAP;
+}
+
 export function check({ method, url, json, body }: Request): unknown {
   if (!body?.length) return undefined;
   if (typeof json !== 'object' || json === null) throw new HttpError(403, `${method} ${url.pathname}: its body is a JSON object, sent as application/json, which goes on asking only for providers that don't collect its data`);
-  return { ...json, provider: { ...json.provider, data_collection: 'deny' } };
+  const out: Record<string, unknown> = { ...json, provider: { ...json.provider, data_collection: 'deny' } };
+  const cap = maxTokensCap();
+  if (cap) {
+    for (const field of ['max_tokens', 'max_completion_tokens', 'max_output_tokens'] as const) {
+      if (typeof out[field] === 'number' && Number.isFinite(out[field]) && out[field] > cap) out[field] = cap;
+    }
+  }
+  return out;
 }
 
 // Every answer's usage has its cost, as Responses' has it in its response.

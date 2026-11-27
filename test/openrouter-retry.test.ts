@@ -82,3 +82,31 @@ test('serverCall retries OpenRouter 429 responses respecting Retry-After', async
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('openrouter.check clamps max_tokens fields to RF_OPENROUTER_MAX_TOKENS (default 65536, 0 disables)', async () => {
+  const { check, DEFAULT_MAX_TOKENS_CAP } = await import('../src/connections/openrouter.ts');
+  const prev = process.env.RF_OPENROUTER_MAX_TOKENS;
+  const mk = (json: Record<string, unknown>) => ({ method: 'POST', url: new URL('https://openrouter.ai/api/v1/chat/completions'), json, body: Buffer.from(JSON.stringify(json)) });
+  try {
+    delete process.env.RF_OPENROUTER_MAX_TOKENS;
+    const clamped = check(mk({ model: 'anthropic/claude-opus-5.5', max_tokens: 128000, max_completion_tokens: 90000, max_output_tokens: 4096 })) as Record<string, unknown>;
+    assert.equal(clamped.max_tokens, DEFAULT_MAX_TOKENS_CAP);
+    assert.equal(clamped.max_completion_tokens, DEFAULT_MAX_TOKENS_CAP);
+    assert.equal(clamped.max_output_tokens, 4096);
+    assert.deepEqual(clamped.provider, { data_collection: 'deny' });
+
+    process.env.RF_OPENROUTER_MAX_TOKENS = '32768';
+    const custom = check(mk({ max_tokens: 65536 })) as Record<string, unknown>;
+    assert.equal(custom.max_tokens, 32768);
+
+    process.env.RF_OPENROUTER_MAX_TOKENS = '0';
+    const off = check(mk({ max_tokens: 128000 })) as Record<string, unknown>;
+    assert.equal(off.max_tokens, 128000);
+
+    process.env.RF_OPENROUTER_MAX_TOKENS = '65_536';
+    const invalid = check(mk({ max_tokens: 128000 })) as Record<string, unknown>;
+    assert.equal(invalid.max_tokens, DEFAULT_MAX_TOKENS_CAP);
+  } finally {
+    if (prev === undefined) delete process.env.RF_OPENROUTER_MAX_TOKENS; else process.env.RF_OPENROUTER_MAX_TOKENS = prev;
+  }
+});
