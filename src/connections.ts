@@ -8,6 +8,8 @@ import { lookup } from 'node:dns/promises';
 import { getDomain } from 'tldts';
 import { act, changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import { recordCost } from './costs.ts';
+import { buildApiRequestDescriptor, MAX_PREFIX_BYTES, parseSemanticMethods, type SemanticAction } from './extract.ts';
+import { compactDecision, defaultExecPolicy, type CompactPolicyDecision } from './execpolicy.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, loginGeneration, logins, saveLogin, secret, use, type Offer } from './logins.ts';
@@ -466,8 +468,29 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   // A request that may write, to anything but the server's own services, is logged as it goes too, so a cut leaves it as sent,
   // and a stop waits for its answer.
   let sent: number | undefined, digest: { hash: Hash; size: number } | undefined;
+  let auditMeta: {
+    effectiveMethod?: string;
+    hdr?: Record<string, string>;
+    hdrConflict?: true;
+    actions?: SemanticAction[];
+    bodyShape?: Record<string, string>;
+    policy?: CompactPolicyDecision;
+  } | undefined;
   const log = (status: number, bytes: number, more?: object) => {
-    a.inst.append('agent', 'call', { run: a.n, name, method, path, status, bytes, ...(sent && { sent }), ...(digest && { sha256: digest.hash.copy().digest('hex'), size: digest.size }), ...more });
+    a.inst.append('agent', 'call', {
+      run: a.n, name, method, path, status, bytes,
+      ...(sent && { sent }),
+      ...(digest && { sha256: digest.hash.copy().digest('hex'), size: digest.size }),
+      ...(auditMeta && {
+        ...(auditMeta.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
+        ...(auditMeta.hdr && { hdr: auditMeta.hdr }),
+        ...(auditMeta.hdrConflict && { hdrConflict: true as const }),
+        ...(auditMeta.actions?.length && { actions: auditMeta.actions }),
+        ...(auditMeta.bodyShape && { bodyShape: auditMeta.bodyShape }),
+        ...(auditMeta.policy && { policy: auditMeta.policy }),
+      }),
+      ...more,
+    });
     sending.delete(req);
   };
   let jsonApi = false;
@@ -496,11 +519,12 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     // most any of their hosts takes; a JSON body goes on as the JSON it read, as it rewrote
     // it, never as bytes another parser might read otherwise, such as a key twice. A deployment's service takes any body as bytes,
     // streamed, as a file's content is.
+    const parsedMethods = parseSemanticMethods(method, req.headers);
     const isJson = /json/i.test(String(req.headers['content-type']));
     // A file's content, PUT …/content, streams on as its bytes, a JSON file's too.
     let raw: Buffer | undefined, lastSeg = '';
     try { lastSeg = decodeURIComponent(url.pathname.split('/').pop() ?? '').toLowerCase(); } catch {}
-    if (c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || (method === 'PUT' && isJson && lastSeg !== 'content'))) {
+    if (c?.type !== 'service' && !link && (s || ['POST', 'PATCH'].includes(method) || ['POST', 'PATCH'].includes(parsedMethods.effectiveMethod) || (method === 'PUT' && isJson && lastSeg !== 'content'))) {
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const b of req as AsyncIterable<Buffer>) {
@@ -547,9 +571,76 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     lender(a.inst, a.n);
     if (offer) use(a.inst, a.n, offer);
     if (link) use(a.inst, a.n, link.offer);
-    if (!s && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+
+    // Unified RequestDescriptor + semantic extraction + execpolicy admission for non-LLM API connections (never logging OpenRouter/Exa prompt bodies).
+    const connectionType = link ? 'link' as const : (c?.type as 'graph' | 'databricks' | 'service' | undefined);
+    let isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
+    let prefixTee: { chunks: Buffer[]; bytes: number; truncated: boolean } | undefined;
+    if (!s) {
+      const descUrl = new URL(`${url.origin}${targetPath}${url.search}`);
+      const { descriptor, methods } = buildApiRequestDescriptor({
+        connection: name,
+        connectionType,
+        seq: (a.inst.log?.length ?? 0) + 1,
+        method,
+        url: descUrl,
+        headers: req.headers,
+        rawBody: body,
+        bodyComplete: body !== undefined,
+        transport: body !== undefined ? (body.length <= MAX_PREFIX_BYTES ? 'complete' : 'truncated') : 'not-read',
+      });
+      isWrite = descriptor.safe.isWrite;
+      const runEntry = Array.isArray(a.inst.log) ? a.inst.log.findLast(e => e.op === 'run' && e.run === a.n) : undefined;
+      const runAuth = runEntry?.authority as { epoch?: number; owner?: string; workspace?: string } | undefined;
+      const ac = new AbortController();
+      const onResClose = () => ac.abort();
+      res.once('close', onResClose);
+      let decision;
+      try {
+        decision = await defaultExecPolicy.evaluate(descriptor, {
+          log: Array.isArray(a.inst.log) ? a.inst.log : undefined,
+          epoch: runAuth?.epoch,
+          owner: runAuth?.owner,
+          workspace: runAuth?.workspace,
+          intent: { run: a.n, series: a.inst.seriesId },
+          signal: ac.signal,
+        });
+      } finally {
+        res.off('close', onResClose);
+      }
+      const compact = compactDecision(decision);
+      auditMeta = {
+        ...(methods.effectiveMethod !== method && { effectiveMethod: methods.effectiveMethod }),
+        ...(methods.hdr && { hdr: methods.hdr }),
+        ...(methods.hdrConflict && { hdrConflict: true as const }),
+        ...(descriptor.safe.actions.length && { actions: descriptor.safe.actions }),
+        ...(descriptor.safe.bodyShape && { bodyShape: descriptor.safe.bodyShape }),
+        policy: compact,
+      };
+      if (decision.mode === 'enforce' && decision.action !== 'allow') {
+        log(403, 0, { refused: `blocked by policy: ${decision.ruleId}` });
+        if (res.headersSent) return void res.destroy();
+        // Enforce-mode refusal returns ONLY ruleId (never reasoning oracle text).
+        if (jsonApi) res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(`${JSON.stringify({ error: { code: 'rf_policy', ruleId: decision.ruleId } })}\n`);
+        else res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end(`blocked by policy: ${decision.ruleId}\n`);
+        return;
+      }
+      // Recheck authority after any async execpolicy wait before emitting send or opening upstream.
+      if (a.stopped) throw new HttpError(409, 'run stopped');
+      lender(a.inst, a.n);
+      if (offer) use(a.inst, a.n, offer);
+      if (link) use(a.inst, a.n, link.offer);
+      if (body === undefined && isWrite) {
+        prefixTee = { chunks: [], bytes: 0, truncated: false };
+      }
+    }
+
+    if (!s && isWrite) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
-      sent = a.inst.append('agent', 'send', { run: a.n, name, method, path }).seq;
+      sent = a.inst.append('agent', 'send', {
+        run: a.n, name, method, path,
+        ...(auditMeta?.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
+      }).seq;
       sending.add(req);
     } else if (s) sending.add(req);
     const doneWork = Promise.withResolvers<void>();
@@ -576,10 +667,31 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     try {
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
-        auth, body, digest, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
+        auth, body, digest, prefixTee, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
         beforeRetry: s === openrouter ? verifyModelKey : undefined,
         location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
       });
+      // For streamed non-LLM writes (e.g. service or PUT .../content), extract bodyShape/actions from the <=64KiB tee prefix.
+      if (!s && prefixTee && prefixTee.bytes > 0) {
+        const descUrl = new URL(`${url.origin}${targetPath}${url.search}`);
+        const streamedPrefix = Buffer.concat(prefixTee.chunks);
+        const { descriptor } = buildApiRequestDescriptor({
+          connection: name,
+          connectionType,
+          seq: (a.inst.log?.length ?? 0) + 1,
+          method,
+          url: descUrl,
+          headers: req.headers,
+          rawBody: streamedPrefix,
+          bodyComplete: !prefixTee.truncated && !answer.incomplete,
+          transport: prefixTee.truncated || answer.incomplete ? 'truncated' : 'complete',
+        });
+        auditMeta = {
+          ...auditMeta,
+          ...(descriptor.safe.actions.length && { actions: descriptor.safe.actions }),
+          ...(descriptor.safe.bodyShape && { bodyShape: descriptor.safe.bodyShape }),
+        };
+      }
       // An answer's links go through for this run; what a service's answer cost, whole, in its stream's events, from OpenRouter's
       // generation endpoint, or estimated where none could be learned, adds to the run's as it comes.
       if (c && types[c.type].links && /json/i.test(answer.type)) {
@@ -644,7 +756,9 @@ function maxKeepBytes(): number {
 }
 
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
-  auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number }; keep: boolean;
+  auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number };
+  prefixTee?: { chunks: Buffer[]; bytes: number; truncated: boolean };
+  keep: boolean;
   service?: boolean; retry429?: boolean; beforeRetry?: () => void; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
   return new Promise<{ status: number; bytes: number; type: string; text: string; parsed?: unknown; invalidJson?: boolean; events: any[]; headers: IncomingHttpHeaders; cut?: boolean; incomplete?: boolean; failed?: string }>((ok, fail) => {
@@ -867,7 +981,22 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       });
       if (o.body) up.end(o.body);
       else {
-        if (o.digest) req.on('data', (b: Buffer) => { o.digest!.hash.update(b); o.digest!.size += b.length; });
+        if (o.digest || o.prefixTee) req.on('data', (b: Buffer) => {
+          if (o.digest) { o.digest.hash.update(b); o.digest.size += b.length; }
+          if (o.prefixTee && !o.prefixTee.truncated) {
+            const need = MAX_PREFIX_BYTES - o.prefixTee.bytes;
+            if (b.length <= need) {
+              o.prefixTee.chunks.push(Buffer.from(b));
+              o.prefixTee.bytes += b.length;
+            } else {
+              if (need > 0) {
+                o.prefixTee.chunks.push(Buffer.from(b.subarray(0, need)));
+                o.prefixTee.bytes = MAX_PREFIX_BYTES;
+              }
+              o.prefixTee.truncated = true;
+            }
+          }
+        });
         req.on('error', e => up.destroy(e));
         if (o.digest) up.once('close', () => req.resume());
         req.pipe(up);
