@@ -830,19 +830,23 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 
     if (!s && isWrite) {
       if (c?.type === 'service') digest = { hash: createHash('sha256'), size: 0 };
-      sent = a.inst.append('agent', 'send', {
-        run: a.n, name, method, path,
-        ...(auditMeta?.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
-        ...(auditMeta?.policy?.approvalRef && {
-          approvalRef: auditMeta.policy.approvalRef,
-          decisionId: auditMeta.policy.decisionId,
-        }),
-      }).seq;
-      // Now that the pre-flight `send` durably records the spent approvalRef+decisionId in log.jsonl,
-      // release the in-memory reservation (deduplicated by decisionId if any concurrent request overlaps).
-      if (reservedApproval) {
-        defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
-        reservedApproval = undefined;
+      const hasApproval = Boolean(auditMeta?.policy?.approvalRef);
+      // Durably fsync approval-bearing `send` records BEFORE dialing upstream so host crashes cannot restore spent uses;
+      // if persistence fails, upstream is never dialed and the in-memory reservation is cleanly released.
+      try {
+        sent = a.inst.append('agent', 'send', {
+          run: a.n, name, method, path,
+          ...(auditMeta?.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
+          ...(hasApproval && {
+            approvalRef: auditMeta!.policy!.approvalRef,
+            decisionId: auditMeta!.policy!.decisionId,
+          }),
+        }, hasApproval ? { sync: true } : undefined).seq;
+      } finally {
+        if (reservedApproval) {
+          defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
+          reservedApproval = undefined;
+        }
       }
       sending.add(req);
     } else {

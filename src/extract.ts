@@ -796,48 +796,77 @@ export function getPolicyHmacKey(): Buffer {
   const dir = rfDir()
   if (dir) {
     if (cachedHmacKey && cachedHmacDir === dir) return cachedHmacKey
-    try {
-      cachedHmacKey = crypto.createHmac('sha256', systemKey('seal.key')).update('rf:execpolicy:hmac:v1').digest()
-      cachedHmacDir = dir
-      return cachedHmacKey
-    } catch {
-      // Fall through to ephemeral key if .rf is unavailable in isolated unit tests
-    }
+    // Fail closed when a data root is configured: never silently fall back to a process-local key!
+    cachedHmacKey = crypto.createHmac('sha256', systemKey('seal.key')).update('rf:execpolicy:hmac:v1').digest()
+    cachedHmacDir = dir
+    return cachedHmacKey
   }
   if (!fallbackEphemeralKey) fallbackEphemeralKey = crypto.randomBytes(32)
   return fallbackEphemeralKey
 }
 
-export function canonicalizeTargetPath(rawPathname: string): string {
+export function canonicalizeTargetPath(rawPathname: string, foldGraphVersion = false): string {
   let p = rawPathname.trim()
   if (!p.startsWith('/')) p = '/' + p
-  // Normalize only the Graph API version prefix case (/V1.0/ -> /v1.0/, /BETA/ -> /beta/) while preserving ID case
-  p = p.replace(/^\/(v1\.0|beta)(?=\/|$)/i, (_, v: string) => `/${v.toLowerCase()}`)
-  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
+  // Fold /v1.0 or /beta version prefix case ONLY on Graph connections (never arbitrary services); preserve trailing slashes!
+  if (foldGraphVersion) {
+    p = p.replace(/^\/(v1\.0|beta)(?=\/|$)/i, (_, v: string) => `/${v.toLowerCase()}`)
+  }
   return p
 }
 
+function effectiveAuthority(host: string, port?: string | number, scheme = 'https'): string {
+  const h = host.trim().toLowerCase()
+  const p = port !== undefined && port !== null ? String(port).trim() : ''
+  if (!p) return h
+  if ((scheme === 'https' && p === '443') || (scheme === 'http' && p === '80')) return h
+  return `${h}:${p}`
+}
+
 export function computeTargetDigest(
-  input: { surface: 'browser' | 'api'; connectionType?: string; host: string; rawPathname: string; resourceId?: string },
+  input: {
+    surface: 'browser' | 'api'
+    connectionType?: string
+    host: string
+    port?: string | number
+    scheme?: string
+    rawPathname: string
+    rawSearch?: string
+    resourceId?: string
+  },
   hmacKey?: Buffer,
 ): string {
   const k = hmacKey ?? getPolicyHmacKey()
+  const connType = (input.connectionType ?? '').toLowerCase()
+  const foldGraph = connType === 'graph' || input.host.trim().toLowerCase() === 'graph.microsoft.com'
+  const auth = effectiveAuthority(input.host, input.port, input.scheme ?? 'https')
   const payload = JSON.stringify([
     input.surface,
-    (input.connectionType ?? '').toLowerCase(),
-    input.host.toLowerCase(),
-    canonicalizeTargetPath(input.rawPathname),
+    connType,
+    auth,
+    canonicalizeTargetPath(input.rawPathname, foldGraph),
+    input.rawSearch ?? '',
     input.resourceId ?? '',
   ])
   return crypto.createHmac('sha256', k).update(`target:${payload}`).digest('hex')
 }
 
-function canonicalizeJsonValue(val: unknown): unknown {
+export const MAX_CANONICAL_DEPTH = 16
+const MAX_CANONICAL_NODES = 512
+
+export function canonicalizeJsonValue(val: unknown, depth = 0, state = { nodes: 0 }): unknown {
+  if (depth > MAX_CANONICAL_DEPTH) throw new RangeError(`JSON nesting depth exceeds ${MAX_CANONICAL_DEPTH}`)
+  if (++state.nodes > MAX_CANONICAL_NODES) throw new RangeError(`JSON structure exceeds ${MAX_CANONICAL_NODES} nodes`)
   if (val === null || val === undefined || typeof val !== 'object') return val
-  if (Array.isArray(val)) return val.map(canonicalizeJsonValue)
-  const out: Record<string, unknown> = {}
+  if (Array.isArray(val)) return val.map(v => canonicalizeJsonValue(v, depth + 1, state))
+  const out = Object.create(null) as Record<string, unknown>
   for (const k of Object.keys(val as Record<string, unknown>).sort()) {
-    out[k] = canonicalizeJsonValue((val as Record<string, unknown>)[k])
+    Object.defineProperty(out, k, {
+      value: canonicalizeJsonValue((val as Record<string, unknown>)[k], depth + 1, state),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
   }
   return out
 }
@@ -847,9 +876,11 @@ export function computeSqlContextDigest(
   hmacKey?: Buffer,
 ): string {
   const k = hmacKey ?? getPolicyHmacKey()
+  const hasParameters = input.parameters !== undefined
   const payload = JSON.stringify({
     sql: input.sql.trim(),
-    parameters: input.parameters !== undefined ? canonicalizeJsonValue(input.parameters) : null,
+    hasParameters,
+    ...(hasParameters && { parameters: canonicalizeJsonValue(input.parameters) }),
     warehouseId: input.warehouseId ?? '',
     catalog: input.catalog ?? '',
     schema: input.schema ?? '',
@@ -857,6 +888,8 @@ export function computeSqlContextDigest(
   return crypto.createHmac('sha256', k).update(`sql:${payload}`).digest('hex')
 }
 
+// Strict RFC 9110 strong entity-tag check: every comma-separated member must be a non-empty quoted strong ETag ("..."),
+// rejecting '*', weak W/"...", empty "", and unquoted arbitrary text.
 export function hasStrongIfMatch(rawHeaders: Record<string, string | string[] | undefined>): boolean {
   const raw = rawHeaders['if-match']
   const val = Array.isArray(raw) ? raw.join(',') : typeof raw === 'string' ? raw : ''
@@ -864,7 +897,7 @@ export function hasStrongIfMatch(rawHeaders: Record<string, string | string[] | 
   if (!trimmed || trimmed === '*') return false
   const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean)
   if (!parts.length) return false
-  return parts.every(p => p !== '*' && p !== '""' && !/^W\//i.test(p) && !p.includes('*'))
+  return parts.every(p => p.length > 2 && /^"[^"\r\n]+"$/.test(p))
 }
 
 export const E1_MUTATING_FORM_COMMANDS = new Set([
@@ -1098,41 +1131,30 @@ export function classifySqlStatement(sql: string): SqlClassification {
       verb = stmt[p].text
       mainIdx = p
     }
-    // Check top-level destructive clauses on MERGE and INSERT (including behind CTEs!)
-    if (verb === 'MERGE') {
+    // Scan ALL top-level tokens of EVERY statement (including Spark FROM-first multi-insert `FROM src INSERT OVERWRITE ...`)
+    // for destructive clauses regardless of leading verb!
+    {
       let d = 0
       let prevWord = ''
-      for (let k = mainIdx + 1; k < stmt.length; k++) {
+      let sawInsert = verb === 'INSERT'
+      for (let k = mainIdx; k < stmt.length; k++) {
         const tk = stmt[k]
         if (tk.kind === 'lparen') { d++; prevWord = '' }
         else if (tk.kind === 'rparen') { if (d > 0) d--; prevWord = '' }
         else if (d === 0 && tk.kind === 'word') {
+          if (tk.text === 'INSERT') sawInsert = true
+          if (prevWord === 'INSERT' && tk.text === 'OVERWRITE') {
+            hasOverwriteOrReplaceWhere = true
+          }
+          if (sawInsert && prevWord === 'REPLACE' && tk.text === 'WHERE') {
+            hasOverwriteOrReplaceWhere = true
+          }
           if (prevWord === 'THEN' && tk.text === 'DELETE') {
             hasMergeDelete = true
           }
           prevWord = tk.text
         } else if (d === 0) {
           prevWord = ''
-        }
-      }
-    } else if (verb === 'INSERT') {
-      if (stmt[mainIdx + 1]?.kind === 'word' && stmt[mainIdx + 1].text === 'OVERWRITE') {
-        hasOverwriteOrReplaceWhere = true
-      } else {
-        let d = 0
-        let prevWord = ''
-        for (let k = mainIdx + 1; k < stmt.length; k++) {
-          const tk = stmt[k]
-          if (tk.kind === 'lparen') { d++; prevWord = '' }
-          else if (tk.kind === 'rparen') { if (d > 0) d--; prevWord = '' }
-          else if (d === 0 && tk.kind === 'word') {
-            if (prevWord === 'REPLACE' && tk.text === 'WHERE') {
-              hasOverwriteOrReplaceWhere = true
-            }
-            prevWord = tk.text
-          } else if (d === 0) {
-            prevWord = ''
-          }
         }
       }
     }
@@ -1399,15 +1421,8 @@ export function extractMimeRecipientDomains(rawText: string): { domains: string[
     else if (crlfEnd >= 0) headEnd = crlfEnd
     else if (lfEnd >= 0) headEnd = lfEnd
 
-    // Fail closed if the header block did not terminate within MAX_MIME_HEAD_BYTES!
-    let complete = true
-    if (headEnd < 0) {
-      if (hitInputCap || decoded.length > MAX_MIME_HEAD_BYTES) complete = false
-      // Even without a body separator, a valid MIME message with headers must terminate cleanly within cap
-      if (decoded.length >= MAX_MIME_HEAD_BYTES) complete = false
-    } else if (headEnd > MAX_MIME_HEAD_BYTES) {
-      complete = false
-    }
+    // Fail closed whenever the MIME header block does not terminate with \r\n\r\n or \n\n within MAX_MIME_HEAD_BYTES!
+    let complete = headEnd >= 0 && headEnd <= MAX_MIME_HEAD_BYTES
 
     const cut = headEnd >= 0 ? Math.min(headEnd, MAX_MIME_HEAD_BYTES) : Math.min(decoded.length, MAX_MIME_HEAD_BYTES)
     const head = decoded.slice(0, cut)
@@ -1545,7 +1560,7 @@ export type ExtractOutput = {
   rawBodyText?: string
 }
 
-const E1_ENDPOINTS = new Set(['formservice', 'appstack', 'dataservice', 'orchestrator', 'file', 'tokenrequest', 'discover', 'defaultconfig'])
+const E1_ENDPOINTS = new Set(['formservice', 'batchformservice', 'appstack', 'dataservice', 'orchestrator', 'file', 'tokenrequest', 'discover', 'defaultconfig'])
 const STRUCT_IDENT_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,47}$/
 const E1_CONTROL_ID_RE = /^[A-Za-z0-9_.-]{1,32}$/
 const GQL_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]{0,47}$/
@@ -1673,7 +1688,10 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         surface,
         connectionType: input.connectionType,
         host: input.url.hostname,
+        port: input.url.port,
+        scheme: input.url.protocol.replace(/:$/, ''),
         rawPathname: input.url.pathname,
+        rawSearch: input.url.search,
         ...(resourceId && { resourceId }),
       }, input.hmacKey)
     const isGraph = input.connectionType === 'graph' || (input.surface === 'api' && input.url.hostname.toLowerCase() === 'graph.microsoft.com')
@@ -1707,7 +1725,14 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       extractStatus = 'complete'
     } else if (isGraph) {
       const segs = lowerPath.replace(/^\/(?:v1\.0|beta)\//, '').split('/').filter(Boolean)
-      const lastSeg = (segs.at(-1) ?? '').replace(/\(.*$/, '').split('.').pop() ?? ''
+      // Decode & strip OData parenthesized keys (e.g. messages('AAMk...'), mailFolders('inbox')) on intermediate segments
+      // to match Graph connector collection recognition while keeping raw pathname intact for targetDigest!
+      const segCollections = segs.map(s => {
+        let dec = s
+        try { dec = decodeURIComponent(s) } catch {}
+        return dec.toLowerCase().replace(/\(.*$/, '')
+      })
+      const lastSeg = (segCollections.at(-1) ?? '').split('.').pop() ?? ''
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       const eff = input.effectiveMethod
 
@@ -1733,7 +1758,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
-      } else if (input.isWrite && eff === 'POST' && lastSeg === 'messages' && (segs.includes('chats') || segs.includes('channels'))) {
+      } else if (input.isWrite && eff === 'POST' && lastSeg === 'messages' && (segCollections.includes('chats') || segCollections.includes('channels'))) {
         actions.push({
           family: 'graph',
           op: 'graph:teams_message',
@@ -1759,7 +1784,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
-      } else if (input.isWrite && (segs.includes('messages') || segs.includes('mailfolders')) && (eff === 'PATCH' || lastSeg === 'move')) {
+      } else if (input.isWrite && (segCollections.includes('messages') || segCollections.includes('mailfolders')) && (eff === 'PATCH' || lastSeg === 'move')) {
         const fields = obj ? Object.keys(obj).slice(0, 32).map(k => scrubStructuralKey(k, input.vault).key) : []
         actions.push({
           family: 'graph',
@@ -1769,7 +1794,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
-      } else if (input.isWrite && segs.includes('workbook')) {
+      } else if (input.isWrite && segCollections.includes('workbook')) {
         actions.push({
           family: 'graph',
           op: 'graph:excel_write',
@@ -1789,8 +1814,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         extractStatus = 'complete'
       } else if (
         input.isWrite &&
-        (eff === 'DELETE' || input.method === 'DELETE' || lastSeg.split('.').pop() === 'permanentdelete') &&
-        (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares') || segs.includes('messages') || segs.includes('mailfolders'))
+        (eff === 'DELETE' || input.method === 'DELETE' || lastSeg === 'permanentdelete') &&
+        (segCollections.includes('drives') || segCollections.includes('drive') || segCollections.includes('items') || segCollections.includes('shares') || segCollections.includes('messages') || segCollections.includes('mailfolders'))
       ) {
         actions.push({
           family: 'graph',
@@ -1799,7 +1824,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           details: {
             hasIfMatch,
             targetDigest: makeTargetDigest(),
-            ...(lastSeg.split('.').pop() === 'permanentdelete' && { permanentDelete: true }),
+            ...(lastSeg === 'permanentdelete' && { permanentDelete: true }),
           },
           coverage: defaultCov,
         })
@@ -1907,21 +1932,49 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
     // ---- Browser & general HTTP extractors ----
     else if (
       lowerPath.includes('/jderest/') ||
-      (!!obj && typeof obj.formName === 'string' && (Array.isArray(obj.formActions) || typeof obj.formServiceAction === 'string' || 'actionRequest' in obj || 'formRequest' in obj))
+      (!!obj && (
+        (typeof obj.formName === 'string' && (Array.isArray(obj.formActions) || typeof obj.formServiceAction === 'string' || 'actionRequest' in obj || 'formRequest' in obj)) ||
+        Array.isArray(obj.formRequests)
+      ))
     ) {
       const m = /\/jderest\/(?:v\d+\/)?([^/;?]+)/i.exec(input.url.pathname)
       const rawEndpoint = m ? m[1].toLowerCase() : 'ais'
       const endpoint = E1_ENDPOINTS.has(rawEndpoint) ? rawEndpoint : 'ais'
 
       const details: Record<string, unknown> = {}
-      const rawFormName = typeof obj?.formName === 'string'
-        ? obj.formName
-        : typeof (obj?.formRequest as any)?.formName === 'string'
-          ? (obj!.formRequest as any).formName
-          : typeof obj?.targetName === 'string'
-            ? obj.targetName
-            : undefined
+      const candidateContainers: Record<string, unknown>[] = []
+      let malformedE1Action = false
+      if (obj) {
+        candidateContainers.push(obj)
+        for (const subKey of ['actionRequest', 'formRequest'] as const) {
+          if (subKey in obj && obj[subKey] !== undefined && obj[subKey] !== null) {
+            if (typeof obj[subKey] === 'object' && !Array.isArray(obj[subKey])) {
+              candidateContainers.push(obj[subKey] as Record<string, unknown>)
+            } else {
+              malformedE1Action = true
+            }
+          }
+        }
+        if ('formRequests' in obj && obj.formRequests !== undefined && obj.formRequests !== null) {
+          if (Array.isArray(obj.formRequests)) {
+            for (const item of obj.formRequests) {
+              if (item && typeof item === 'object' && !Array.isArray(item)) {
+                candidateContainers.push(item as Record<string, unknown>)
+              } else {
+                malformedE1Action = true
+              }
+            }
+          } else {
+            malformedE1Action = true
+          }
+        }
+      }
 
+      let rawFormName: string | undefined
+      for (const c of candidateContainers) {
+        if (typeof c.formName === 'string') { rawFormName = c.formName; break }
+        if (typeof c.targetName === 'string' && !rawFormName) rawFormName = c.targetName
+      }
       const formIdent = validateStructuralIdent(rawFormName, STRUCT_IDENT_RE, input.vault)
       vaultRedactions += formIdent.vaultRedactions
       if (formIdent.value) details.formName = formIdent.value
@@ -1930,10 +1983,27 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       vaultRedactions += verIdent.vaultRedactions
       if (verIdent.value) details.version = verIdent.value
 
-      const rawAction = typeof obj?.action === 'string' ? obj.action : typeof obj?.formServiceAction === 'string' ? obj.formServiceAction : undefined
-      const actIdent = validateStructuralIdent(rawAction, /^[A-Za-z][A-Za-z0-9_-]{0,23}$/, input.vault)
+      // Inspect EVERY supported E1 scalar action location (action AND formServiceAction across outer, formRequest, actionRequest, formRequests[]).
+      const scalarActionValues: string[] = []
+      for (const c of candidateContainers) {
+        for (const k of ['action', 'formServiceAction'] as const) {
+          if (k in c && c[k] !== undefined && c[k] !== null) {
+            if (typeof c[k] === 'string' && c[k].trim()) {
+              scalarActionValues.push(c[k].trim())
+            } else {
+              malformedE1Action = true
+            }
+          }
+        }
+      }
+      const normalizedScalars = [...new Set(scalarActionValues.map(s => s.toUpperCase()))]
+      const conflictingActions = normalizedScalars.length > 1
+      const mutatingScalar = scalarActionValues.find(s => ['W', 'C', 'U', 'D'].includes(s.toUpperCase()))
+      const primaryScalar = mutatingScalar ?? scalarActionValues[0]
+      const actIdent = validateStructuralIdent(primaryScalar, /^[A-Za-z][A-Za-z0-9_-]{0,23}$/, input.vault)
       vaultRedactions += actIdent.vaultRedactions
       if (actIdent.value) details.action = actIdent.value
+      if (conflictingActions) details.conflictingActions = true
 
       const targetTypeIdent = validateStructuralIdent(obj?.targetType, STRUCT_IDENT_RE, input.vault)
       vaultRedactions += targetTypeIdent.vaultRedactions
@@ -1943,22 +2013,38 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       vaultRedactions += dsTypeIdent.vaultRedactions
       if (dsTypeIdent.value) details.dataServiceType = dsTypeIdent.value
 
-      const rawActions = Array.isArray(obj?.formActions)
-        ? obj.formActions
-        : Array.isArray((obj?.actionRequest as any)?.formActions)
-          ? (obj!.actionRequest as any).formActions
-          : Array.isArray((obj?.formRequest as any)?.formActions)
-            ? (obj!.formRequest as any).formActions
-            : undefined
-      if (rawActions) {
-        // Evaluate mutation flag across the FULL decoded formActions array BEFORE slicing to 32 for audit brevity!
-        const hasMutatingFormAction = rawActions.some(a => {
-          if (!a || typeof a !== 'object') return false
+      // Collect ALL formActions arrays across EVERY container so an empty outer array NEVER masks nested actions!
+      const allRawActions: unknown[] = []
+      let sawFormActionsField = false
+      for (const c of candidateContainers) {
+        if ('formActions' in c && c.formActions !== undefined && c.formActions !== null) {
+          sawFormActionsField = true
+          if (Array.isArray(c.formActions)) {
+            for (const a of c.formActions) allRawActions.push(a)
+          } else {
+            malformedE1Action = true
+          }
+        }
+      }
+      if (sawFormActionsField) {
+        // Evaluate mutation and malformed-entry flags across the FULL combined formActions list BEFORE slicing to 32!
+        let hasMutatingFormAction = false
+        for (const a of allRawActions) {
+          if (!a || typeof a !== 'object' || Array.isArray(a)) {
+            malformedE1Action = true
+            continue
+          }
           const cmd = (a as Record<string, unknown>).command
-          return typeof cmd === 'string' && E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())
-        })
+          if (typeof cmd !== 'string' || !cmd.trim()) {
+            malformedE1Action = true
+            continue
+          }
+          if (E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())) {
+            hasMutatingFormAction = true
+          }
+        }
         if (hasMutatingFormAction) details.hasMutatingFormAction = true
-        const summarized = rawActions.slice(0, 32).map(a => {
+        const summarized = allRawActions.slice(0, 32).map(a => {
           if (!a || typeof a !== 'object') return { command: 'unknown' }
           const rec = a as Record<string, unknown>
           const item: Record<string, string> = {}
@@ -1971,8 +2057,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           return item
         })
         details.formActions = summarized
-        if (rawActions.length > 32) details.formActionsTruncated = true
+        if (allRawActions.length > 32) details.formActionsTruncated = true
       }
+      if (malformedE1Action) details.malformedE1Action = true
 
       if (input.isWrite) details.targetDigest = makeTargetDigest(formIdent.value)
 
@@ -2005,7 +2092,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         })
         extractStatus = 'opaque'
       } else {
-        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyid|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(lowerPath)
+        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(lowerPath)
         const details: Record<string, unknown> = {
           hasIfMatch,
           hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
