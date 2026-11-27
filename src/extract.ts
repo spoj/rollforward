@@ -845,6 +845,16 @@ export function decodePathSegmentsStrict(rawPathname: string): { segments: strin
   return { segments, decodedPath: '/' + segments.join('/'), invalidEncoding }
 }
 
+// Detect Node's JSON.rawJSON(...) lossless numeric leaves so they are never mistaken for plain JSON records!
+function isRawJsonLeaf(v: unknown): v is { rawJSON: string } {
+  return typeof (JSON as unknown as { isRawJSON?: (x: unknown) => boolean }).isRawJSON === 'function' &&
+    (JSON as unknown as { isRawJSON: (x: unknown) => boolean }).isRawJSON(v) === true
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v && typeof v === 'object' && !Array.isArray(v) && !isRawJsonLeaf(v))
+}
+
 // Unified strict SharePoint DeleteByIds selector validator shared between proposal validation and runtime extraction.
 export function validateSharePointDeleteIds(
   rawIds: unknown,
@@ -860,6 +870,16 @@ export function validateSharePointDeleteIds(
       sId = item.trim()
     } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
       sId = String(item)
+    } else if (isRawJsonLeaf(item)) {
+      const rawNum = String(item.rawJSON)
+      if (!/^-?(?:0|[1-9]\d*)$/.test(rawNum)) {
+        return { ok: false, reason: 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)' }
+      }
+      const n = Number(rawNum)
+      if (!Number.isSafeInteger(n) || String(n) !== rawNum) {
+        return { ok: false, reason: 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)' }
+      }
+      sId = rawNum
     } else {
       return { ok: false, reason: 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)' }
     }
@@ -1680,6 +1700,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
     }
   }
 
+  const isDatabricksSqlSubmit =
+    input.isWrite &&
+    (input.connectionType === 'databricks' || (input.surface === 'api' && input.url.hostname.toLowerCase().endsWith('.azuredatabricks.net'))) &&
+    input.url.pathname.toLowerCase().replace(/\/+$/, '') === '/api/2.0/sql/statements'
+
   try {
     const rawBuf = input.decodedBuf ?? Buffer.alloc(0)
     const decodeRes = input.decodeResult
@@ -1691,9 +1716,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
     if (input.isLive && !reasons.includes('live')) reasons.push('live')
 
     if (decodeRes && !decodeRes.ok) {
-      const actions: SemanticAction[] = input.isWrite
-        ? [{ family: input.connectionType && input.connectionType !== 'link' ? input.connectionType : 'rest', op: `rest:${input.effectiveMethod}`, resource: input.sanitizedPath, coverage: 'unknown' }]
-        : []
+      const actions: SemanticAction[] = isDatabricksSqlSubmit
+        ? [{ family: 'databricks', op: 'databricks:sql_unknown', resource: input.sanitizedPath, details: { sqlClass: 'unknown', uninspectable: true }, coverage: 'unknown' }]
+        : input.isWrite
+          ? [{ family: input.connectionType && input.connectionType !== 'link' ? input.connectionType : 'rest', op: `rest:${input.effectiveMethod}`, resource: input.sanitizedPath, coverage: 'unknown' }]
+          : []
       return {
         actions,
         completeness: { transport: input.transport, decode: decodeRes.budgetExceeded ? 'truncated' : 'error', extract: 'none', ...(reasons.length && { reasons }) },
@@ -1761,18 +1788,19 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
     let graphqlOp: GraphqlOp | undefined
     let extractStatus: Completeness['extract'] = 'none'
 
-    const obj = isJson && parsedJson && typeof parsedJson === 'object' && !Array.isArray(parsedJson)
-      ? (parsedJson as Record<string, unknown>)
+    const obj = isJson && isPlainRecord(parsedJson)
+      ? parsedJson
       : undefined
+    let omitSampleBody = false
 
     // ---- API-native extractors (surface === 'api') ----
     const surface: 'browser' | 'api' = input.surface ?? 'browser'
     const decodedPathInfo = decodePathSegmentsStrict(input.url.pathname)
     const decodedLowerPath = decodedPathInfo.decodedPath.toLowerCase()
-    const makeTargetDigest = (resourceId?: string, bodySelector?: string) =>
+    const makeTargetDigest = (resourceId?: string, bodySelector?: string, connTypeOverride?: string) =>
       computeTargetDigest({
         surface,
-        connectionType: input.connectionType,
+        connectionType: connTypeOverride !== undefined ? connTypeOverride : input.connectionType,
         host: input.url.hostname,
         port: input.url.port,
         scheme: input.url.protocol.replace(/:$/, ''),
@@ -1941,6 +1969,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         const cls = stmtRaw
           ? classifySqlStatement(stmtRaw)
           : { sqlClass: 'unknown' as const, statements: [], destructive: false, hasDropOrTruncate: false, hasDelete: false }
+        const uninspectableSql = !stmtRaw || structuredJsonParseFailed || !fullyIntact || isBinary
         const details: Record<string, unknown> = {
           sqlClass: cls.sqlClass,
           statements: cls.statements,
@@ -1949,6 +1978,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(cls.hasDelete && { hasDelete: true }),
           ...(cls.hasMergeDelete && { hasMergeDelete: true }),
           ...(cls.ambiguous && { ambiguous: true }),
+          ...(uninspectableSql && { uninspectable: true }),
         }
         const wh = validateStructuralIdent(obj?.warehouse_id, DBX_IDENT_RE, input.vault, true)
         vaultRedactions += wh.vaultRedactions
@@ -2032,7 +2062,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
             hasIfMatch,
             ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
-            ...(input.isWrite && { targetDigest: makeTargetDigest() }),
+            ...(input.isWrite && { targetDigest: makeTargetDigest(undefined, undefined, 'sharepoint') }),
           },
           coverage: 'opaque-batch',
         })
@@ -2040,6 +2070,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       } else {
         const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
         const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
+        if (isDeleteByIds) omitSampleBody = true
         let bodySelector: string | undefined
         let selectedIdCount: number | undefined
         let bodySelectionIncomplete = false
@@ -2071,7 +2102,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
           ...(bodySelectionIncomplete && { bodySelectionIncomplete: true }),
           ...(selectedIdCount !== undefined && { selectedIdCount }),
-          ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector) }),
+          ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector, 'sharepoint') }),
         }
         if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
         const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
@@ -2088,22 +2119,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         })
         extractStatus = decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'opaque' : fullyIntact ? 'complete' : 'partial'
       }
-    } else if (isService) {
-      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
-      actions.push({
-        family: 'service',
-        op: `service:${input.effectiveMethod}`,
-        resource: input.sanitizedPath,
-        details: { ...(hasIfMatch && { hasIfMatch: true }), ...(input.isWrite && { targetDigest: makeTargetDigest() }) },
-        coverage: isBinary || structuredJsonParseFailed ? 'partial' : defaultCov,
-      })
-      extractStatus = isBinary || structuredJsonParseFailed ? 'opaque' : fullyIntact ? 'complete' : 'partial'
-    }
-
-    // ---- Browser & general HTTP extractors ----
-    else if (
+    } else if (
+      // Explicit E1 /jderest/ routes take precedence ahead of generic `isService` fallback!
       decodedLowerPath.includes('/jderest/') ||
-      (!!obj && (
+      (decodedPathInfo.invalidEncoding && decodePathSegmentsStrict(decodedPathInfo.decodedPath).decodedPath.toLowerCase().includes('/jderest/')) ||
+      (!isService && !!obj && (
         (typeof obj.formName === 'string' && (Array.isArray(obj.formActions) || typeof obj.formServiceAction === 'string' || 'actionRequest' in obj || 'formRequest' in obj)) ||
         Array.isArray(obj.formRequests)
       ))
@@ -2129,7 +2149,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         const containers: Record<string, unknown>[] = [unit]
         for (const subKey of ['actionRequest', 'formRequest'] as const) {
           if (subKey in unit && unit[subKey] !== undefined) {
-            if (unit[subKey] !== null && typeof unit[subKey] === 'object' && !Array.isArray(unit[subKey])) {
+            if (isPlainRecord(unit[subKey])) {
               containers.push(unit[subKey] as Record<string, unknown>)
             } else {
               malformedE1Action = true
@@ -2180,11 +2200,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             if (Array.isArray(c.formActions)) {
               for (const a of c.formActions) {
                 allRawActions.push(a)
-                if (!a || typeof a !== 'object' || Array.isArray(a)) {
+                if (!isPlainRecord(a)) {
                   malformedE1Action = true
                   continue
                 }
-                const cmd = (a as Record<string, unknown>).command
+                const cmd = a.command
                 if (typeof cmd !== 'string' || !cmd.trim()) {
                   malformedE1Action = true
                   continue
@@ -2210,8 +2230,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         if ('formRequests' in obj && obj.formRequests !== undefined) {
           if (Array.isArray(obj.formRequests)) {
             for (const item of obj.formRequests) {
-              if (item && typeof item === 'object' && !Array.isArray(item)) {
-                inspectE1Unit(item as Record<string, unknown>)
+              if (isPlainRecord(item)) {
+                inspectE1Unit(item)
               } else {
                 malformedE1Action = true
               }
@@ -2222,8 +2242,12 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         } else if (endpoint === 'batchformservice' && input.isWrite) {
           malformedE1Action = true
         }
-      } else if (parsedJson !== undefined || structuredJsonParseFailed) {
-        // Non-object JSON body (e.g. top-level JSON array or primitive) on an E1 endpoint is malformed!
+      } else if (
+        parsedJson !== undefined ||
+        structuredJsonParseFailed ||
+        (input.isWrite && (endpoint === 'formservice' || endpoint === 'batchformservice' || endpoint === 'dataservice'))
+      ) {
+        // Empty, non-object (array/number/primitive), or unparseable JSON body on an E1 write endpoint is malformed!
         malformedE1Action = true
       }
 
@@ -2255,8 +2279,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       if (sawFormActionsField) {
         if (hasMutatingFormAction) details.hasMutatingFormAction = true
         const summarized = allRawActions.slice(0, 32).map(a => {
-          if (!a || typeof a !== 'object') return { command: 'unknown' }
-          const rec = a as Record<string, unknown>
+          if (!isPlainRecord(a)) return { command: 'unknown' }
+          const rec = a
           const item: Record<string, string> = {}
           const cmd = validateStructuralIdent(rec.command, STRUCT_IDENT_RE, input.vault)
           vaultRedactions += cmd.vaultRedactions
@@ -2283,6 +2307,16 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         coverage: defaultCov,
       })
       extractStatus = fullyIntact ? 'complete' : 'partial'
+    } else if (isService) {
+      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
+      actions.push({
+        family: 'service',
+        op: `service:${input.effectiveMethod}`,
+        resource: input.sanitizedPath,
+        details: { ...(hasIfMatch && { hasIfMatch: true }), ...(input.isWrite && { targetDigest: makeTargetDigest() }) },
+        coverage: isBinary || structuredJsonParseFailed ? 'partial' : defaultCov,
+      })
+      extractStatus = isBinary || structuredJsonParseFailed ? 'opaque' : fullyIntact ? 'complete' : 'partial'
     } else if (
       lowerPath.includes('/graphql') ||
       (obj && (typeof obj.query === 'string' || (obj.extensions && typeof obj.extensions === 'object' && 'persistedQuery' in (obj.extensions as Record<string, unknown>)))) ||
@@ -2434,7 +2468,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         reqOmitted = 'auth-url'
       } else if (isBinary) {
         reqOmitted = 'binary'
-      } else if (input.projection === 'semantic') {
+      } else if (input.projection === 'semantic' || omitSampleBody) {
         reqOmitted = 'policy-profile'
       } else if (structuredJsonParseFailed) {
         reqOmitted = 'policy-profile'
@@ -2491,9 +2525,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
     }
   } catch {
     return {
-      actions: input.isWrite
-        ? [{ family: input.surface === 'api' ? 'api' : 'rest', op: `${input.surface === 'api' ? 'api' : 'rest'}:${input.effectiveMethod}`, resource: input.sanitizedPath, coverage: 'unknown' }]
-        : [],
+      actions: isDatabricksSqlSubmit
+        ? [{ family: 'databricks', op: 'databricks:sql_unknown', resource: input.sanitizedPath, details: { sqlClass: 'unknown', uninspectable: true }, coverage: 'unknown' }]
+        : input.isWrite
+          ? [{ family: input.surface === 'api' ? 'api' : 'rest', op: `${input.surface === 'api' ? 'api' : 'rest'}:${input.effectiveMethod}`, resource: input.sanitizedPath, coverage: 'unknown' }]
+          : [],
       completeness: {
         transport: input.transport,
         decode: input.decodeResult?.decode ?? 'none',

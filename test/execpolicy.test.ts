@@ -1186,6 +1186,154 @@ test('R4 final convergence: E1 host/port authority & batch per-form binding, Sha
   assert.equal(wideMergeDec.ruleId, 'databricks_destructive_ddl');
 });
 
+test('R6 Astra convergence: DeleteByIds sample omission & numeric rawJSON parity, E1 plain-record & empty-body & service precedence, SharePoint service signoff digest parity, mail/SQL authority rejection, and terminal uninspectable SQL deny', async () => {
+  const hmacKey = Buffer.alloc(32, 0xa5);
+
+  // 1. Astra P1-1: SharePoint DeleteByIds omits reqBody in BOTH semantic and semantic+samples (valid AND malformed selectors) -> zero raw ID leakage!
+  for (const projection of ['semantic', 'semantic+samples'] as const) {
+    for (const [label, body] of [
+      ['valid selector', JSON.stringify({ ids: ['record-blue-secret-1'] })],
+      ['malformed selector', JSON.stringify({ ids: ['record-blue-secret-2'], extra: 'bad' })],
+    ] as const) {
+      const desc = buildApiRequestDescriptor({
+        connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+        url: new URL('https://sp-svc.rf.internal/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+        headers: { 'content-type': 'application/json' },
+        rawBody: Buffer.from(body),
+        bodyComplete: true, projection,
+      }).descriptor;
+      assert.equal(desc.safe.reqBody, undefined, `DeleteByIds reqBody must be omitted (${projection} / ${label})`);
+      assert.equal(desc.safe.reqOmitted, 'policy-profile');
+      assert.equal(JSON.stringify(desc.safe).includes('record-blue-secret'), false, `zero raw ID leakage across full safe projection (${projection} / ${label})`);
+    }
+  }
+
+  // 2. Astra P1-2: Empty E1 form/batch POST body & JSON.rawJSON numeric containers all escalate e1_ais_ambiguous_or_malformed!
+  for (const [label, ep, rawBody] of [
+    ['empty batchformservice POST', '/jderest/v2/batchformservice', Buffer.alloc(0)],
+    ['empty formservice POST', '/jderest/v2/formservice', Buffer.alloc(0)],
+    ['numeric top-level JSON', '/jderest/v2/batchformservice', Buffer.from('123')],
+    ['numeric formRequest container alongside valid write', '/jderest/v2/formservice', Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formServiceAction: 'W', formRequest: 123 }))],
+    ['numeric actionRequest container alongside valid write', '/jderest/v2/formservice', Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formServiceAction: 'W', actionRequest: 42 }))],
+    ['numeric formRequests[] entry alongside valid write', '/jderest/v2/batchformservice', Buffer.from(JSON.stringify({ formRequests: [99, { formName: 'P0411_W0411A', formServiceAction: 'W' }] }))],
+    ['numeric formActions[] entry', '/jderest/v2/formservice', Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formActions: [7, { command: 'DoAction', controlID: '12' }] }))],
+  ] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'e1-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+      url: new URL(`https://e1-svc.rf.internal${ep}`),
+      headers: rawBody.length ? { 'content-type': 'application/json' } : {},
+      rawBody,
+      bodyComplete: true,
+    }).descriptor;
+    assert.equal(desc.safe.actions[0].family, 'e1-ais', `explicit /jderest/ beats service fallback (${label})`);
+    assert.equal(desc.safe.actions[0].details?.malformedE1Action, true, `must flag malformedE1Action (${label})`);
+    const dec = evaluateStage1(desc.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] });
+    assert.equal(dec.ruleId, 'e1_ais_ambiguous_or_malformed', `must escalate (${label})`);
+  }
+
+  // 3. Astra P1-3: Valid E1 write over a `service` connection classifies as e1-ais and gates with e1_ais_write!
+  const svcE1Write = buildApiRequestDescriptor({
+    connection: 'e1-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://e1-svc.rf.internal/jderest/v2/formservice'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formServiceAction: 'W' })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(svcE1Write.safe.actions[0].family, 'e1-ais');
+  assert.equal(evaluateStage1(svcE1Write.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
+
+  // 4. Astra P1-4 + Astra P2: SharePoint DeleteByIds (with numeric safe-integer ID 42!) & recycle() over `service` connection match approved proposal digest end-to-end!
+  const spSvcIdsScope = validateAndNormalizeApprovalScope({
+    action: 'sharepoint_destructive_write',
+    connection: 'sp-svc',
+    host: 'sp-svc.rf.internal',
+    target: '/sites/fin/_api/web/RecycleBin/DeleteByIds',
+    ids: [42, 'id-a'],
+    maxUses: 1,
+  }, { workspace: 'w', hmacKey });
+  assert.deepEqual(spSvcIdsScope.ids, ['42', 'id-a']);
+  const spSvcLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete 2 items via service', execpolicy: spSvcIdsScope },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
+  ];
+  const spSvcReq = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['id-a', 42] })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(spSvcReq.safe.actions[0].details?.bodySelectionIncomplete, undefined, 'JSON.rawJSON integer 42 normalized identically to proposal');
+  const spSvcApproval = findCurrentEpochApproval(spSvcLog, { owner: 'alice@demo.test', workspace: 'w', safe: spSvcReq.safe });
+  assert.equal(spSvcApproval.approved, true, 'SharePoint DeleteByIds over service matches signed proposal digest');
+  assert.equal(evaluateStage1(spSvcReq.safe, 'enforce', spSvcApproval).ruleId, 'sharepoint_destructive_approved');
+
+  const spSvcRecycleScope = validateAndNormalizeApprovalScope({
+    action: 'sharepoint_destructive_write',
+    connection: 'sp-svc',
+    host: 'sp-svc.rf.internal',
+    target: "/sites/fin/_api/web/lists/getbytitle('Docs')/items(7)/recycle()",
+    maxUses: 1,
+  }, { workspace: 'w', hmacKey });
+  const spSvcRecycleLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Recycle item 7', execpolicy: spSvcRecycleScope },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
+  ];
+  const spSvcRecycleReq = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL("https://sp-svc.rf.internal/sites/fin/_api/web/lists/getbytitle('Docs')/items(7)/recycle()"),
+    headers: {},
+    rawBody: Buffer.alloc(0),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(findCurrentEpochApproval(spSvcRecycleLog, { owner: 'alice@demo.test', workspace: 'w', safe: spSvcRecycleReq.safe }).approved, true, 'SharePoint recycle() over service matches signed proposal');
+
+  // 5. Astra P1-5: Explicitly reject host/port/site on graph:sendMail and databricks:sql scopes (400)!
+  for (const bad of [
+    { action: 'graph:sendMail', domains: ['partner.test'], host: 'graph.microsoft.com' },
+    { action: 'graph:sendMail', domains: ['partner.test'], port: 443 },
+    { action: 'databricks:sql', sql: 'DELETE FROM t WHERE id = 1', host: 'adb-1.azuredatabricks.net' },
+    { action: 'databricks:sql', sql: 'DELETE FROM t WHERE id = 1', port: 443 },
+  ]) {
+    assert.throws(
+      () => validateAndNormalizeApprovalScope(bad, { workspace: 'w', hmacKey }),
+      (err: any) => err?.status === 400,
+      `must reject unsupported authority field on ${bad.action}`,
+    );
+  }
+
+  // 6. Astra P1-6: Uninspectable Databricks SQL (deeply nested JSON hitting V8 reviver stack limit, truncated body, or missing statement) -> terminal Stage-1 deny (Stage-2 NEVER invoked)!
+  const deepArrayJson = `{"warehouse_id":"wh1","statement":"MERGE INTO prod.gl t USING s ON t.id=s.id WHEN MATCHED THEN DELETE","parameters":${'['.repeat(6000)}1${']'.repeat(6000)}}`;
+  const deepDropDesc = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(deepArrayJson),
+    bodyComplete: true,
+  }).descriptor;
+  assert.ok(deepDropDesc.safe.completeness.reasons?.includes('json-parse-failed'), 'deep nesting must actually trigger parseJsonSafe failure');
+  let stage2Called = false;
+  const permissiveEngine = new ExecPolicyEngine(() => { stage2Called = true; return { action: 'allow' }; });
+  const deepDropDec = await permissiveEngine.evaluate(deepDropDesc, { mode: 'enforce' });
+  assert.equal(deepDropDec.action, 'deny', 'uninspectable deeply-nested SQL submission must be a terminal Stage-1 deny');
+  assert.equal(deepDropDec.ruleId, 'databricks_sql_uninspectable');
+  assert.equal(stage2Called, false, 'permissive Stage-2 hook MUST NOT be called on terminal uninspectable SQL deny');
+
+  const truncSqlDesc = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 2, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement: 'SELECT 1' })),
+    bodyComplete: false,
+  }).descriptor;
+  const truncSqlDec = await permissiveEngine.evaluate(truncSqlDesc, { mode: 'enforce' });
+  assert.equal(truncSqlDec.action, 'deny');
+  assert.equal(truncSqlDec.ruleId, 'databricks_sql_uninspectable');
+  assert.equal(stage2Called, false, 'Stage-2 MUST NOT be called on truncated SQL deny');
+});
+
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
   const unguarded = buildApiRequestDescriptor({
     connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',

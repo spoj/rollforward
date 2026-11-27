@@ -354,6 +354,9 @@ export function validateAndNormalizeApprovalScope(
   }
 
   if (action === 'graph:sendMail') {
+    if (obj.host !== undefined || port !== undefined || site !== undefined) {
+      throw new HttpError(400, 'graph:sendMail scope does not accept host, port, or site')
+    }
     if (!Array.isArray(obj.domains) || obj.domains.length === 0 || obj.domains.length > 16) {
       throw new HttpError(400, 'graph:sendMail scope requires 1..16 explicit recipient domains')
     }
@@ -374,6 +377,9 @@ export function validateAndNormalizeApprovalScope(
   }
 
   if (action === 'databricks:sql') {
+    if (obj.host !== undefined || port !== undefined || site !== undefined) {
+      throw new HttpError(400, 'databricks:sql scope does not accept host, port, or site')
+    }
     let warehouseId: string | undefined
     if (obj.warehouseId !== undefined) {
       if (typeof obj.warehouseId !== 'string' || !DBX_IDENT_RE.test(obj.warehouseId)) {
@@ -460,6 +466,7 @@ export function validateAndNormalizeApprovalScope(
     return {
       action,
       target,
+      ...(connection && { connection }),
       ...(host && { host }),
       ...(port !== undefined && { port }),
       ...(site && { site }),
@@ -507,6 +514,7 @@ export function validateAndNormalizeApprovalScope(
     }
     host = obj.host.trim().toLowerCase()
     surface = site ? 'browser' : 'api'
+    connType = 'sharepoint'
     const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedTargetLower)
     if (isDeleteByIds) {
       const parsed = validateSharePointDeleteIds(obj.ids, containsRawSecret)
@@ -922,7 +930,8 @@ export function evaluateStage1(
       ? make('escalate', bodyIntegrityFailure.ruleId, bodyIntegrityFailure.reason)
       : make('allow', ruleId, 'Approved by current-epoch human signoff', approvalRef)
 
-  // 3a. Unconditional action-level denies first (DROP/TRUNCATE/INSERT OVERWRITE/REPLACE WHERE/MERGE...THEN DELETE always deny!)
+  // 3a. Unconditional action-level denies first (DROP/TRUNCATE/INSERT OVERWRITE/REPLACE WHERE/MERGE...THEN DELETE,
+  //     and uninspectable Databricks SQL submissions that cannot be verified free of mandatory-deny statements!)
   for (const act of safe.actions) {
     if (act.family === 'databricks' && act.op.startsWith('databricks:sql_')) {
       const stmts = Array.isArray(act.details?.statements) ? (act.details!.statements as string[]) : []
@@ -932,6 +941,9 @@ export function evaluateStage1(
         stmts.some(s => s === 'DROP' || s === 'TRUNCATE')
       ) {
         return make('deny', 'databricks_destructive_ddl', `Destructive SQL (${stmts.join(',') || 'DROP/TRUNCATE/MERGE DELETE'}) denied`)
+      }
+      if (act.details?.uninspectable === true) {
+        return make('deny', 'databricks_sql_uninspectable', 'Uninspectable Databricks SQL statement denied')
       }
     }
   }
