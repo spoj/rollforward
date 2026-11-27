@@ -471,16 +471,32 @@ test('concurrent route change or website replacement rejects pending internal, a
   await assert.rejects(allowHost(admin, 'portal', 'sub.internal.test', email, undefined, wildRev), { status: 409 });
   assert.equal(Boolean(letIn()['sub.internal.test']), false, 'stale Waiting Allow for a wildcard-covered host must not enroll it');
 
-  // ABA: Allow -> Revoke internal host increments per-host rev so a stale Waiting Allow cannot restore global internal access
+  // ABA: Allow -> Revoke internal host increments per-host rev on all sites with that internal check so no stale Waiting Allow can restore global access
+  await addSite(email, 'portal2', 'https://other.review.test/');
   changeWebsite(email, 'portal', { checks: { ...websitesOf(email).portal.checks, '10.9.8.12': { verdict: 'internal', why: 'It is at an internal address.' } } });
+  changeWebsite(email, 'portal2', { checks: { '10.9.8.12': { verdict: 'internal', why: 'It is at an internal address.' } } });
   const abaRev = siteRevision(email, 'portal', websitesOf(email).portal, '10.9.8.12');
+  const abaRev2 = siteRevision(email, 'portal2', websitesOf(email).portal2, '10.9.8.12');
   await allowHost(admin, 'portal', '10.9.8.12', email, undefined, abaRev);
   assert.equal(Boolean(letIn()['10.9.8.12']), true);
   setLetIn(['10.9.8.12'], admin.email, false);
   await revokeInternalHosts(['10.9.8.12']);
   assert.equal(websitesOf(email).portal.checks?.['10.9.8.12']?.verdict, 'internal');
   await assert.rejects(allowHost(admin, 'portal', '10.9.8.12', email, undefined, abaRev), { status: 409 });
-  assert.equal(Boolean(letIn()['10.9.8.12']), false, 'stale Waiting Allow after Allow+Revoke ABA must not restore global internal access');
+  await assert.rejects(allowHost(admin, 'portal2', '10.9.8.12', email, undefined, abaRev2), { status: 409 });
+  assert.equal(Boolean(letIn()['10.9.8.12']), false, 'stale Waiting Allow on a second website after global revocation must not restore internal access');
+
+  // In-flight setSite --internal true cannot undo a concurrent global revocation of one of its hosts
+  await allowHost(admin, 'portal', '10.9.8.15', email);
+  assert.equal(Boolean(letIn()['10.9.8.15']), true);
+  const revokes: Promise<void>[] = [];
+  await setSite(admin, 'portal', { internal: true }, email, () => {
+    setLetIn(['10.9.8.15'], admin.email, false);
+    revokes.push(revokeInternalHosts(['10.9.8.15']));
+  });
+  await Promise.all(revokes);
+  assert.equal(Boolean(letIn()['10.9.8.15']), false, 'in-flight setSite internal approval must not re-enroll a host revoked during DNS lookup');
+  assert.equal(websitesOf(email).portal.checks?.['10.9.8.15']?.verdict, 'internal');
 
   // Internal revocation during in-flight startSignIn POST /sessions closes the session and rejects sign-in
   await addSite(email, 'intrasign', 'https://10.9.8.13/');

@@ -2238,7 +2238,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       else await allowHost(me, site, host, person, () => recheckRequest(req), data.siteRev);
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), await closeUnlent(), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
+      try { await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])); } finally { await closeUnlent(); }
+      send(res, 200, 'ok');
+    }
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
       const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();
       if (websitesOf(me.email)[site]?.via && !can(me, 'vpn')) throw new HttpError(403, 'vpn capability required to open a VPN-routed website sign-in');

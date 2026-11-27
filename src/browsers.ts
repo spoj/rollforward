@@ -254,12 +254,14 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   if (change.internal === undefined) return;
   const next = website(person, name), let_ = change.internal === true || change.internal === 'true', siteKey = `${person} ${name}`, beforeGen = websiteGenerations.get(siteKey);
   const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
+  const beforeHostRevs = Object.fromEntries(candidates.map(h => [h, Object.hasOwn(next.hostRevs ?? {}, h) ? next.hostRevs![h] : 0]));
   const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   recheck?.();
   const latest = website(person, name);
   if (latest.url !== next.url || latest.via !== next.via || latest.added !== next.added || (latest.generation ?? 0) !== (next.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
     throw new HttpError(409, `${name} changed while updating internal access; retry`);
-  const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
+  const hostRev = (h: string) => Object.hasOwn(latest.hostRevs ?? {}, h) ? latest.hostRevs![h] : 0;
+  const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && hostRev(h) === beforeHostRevs[h] && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
   setLetIn(effective, by.email, let_);
   if (!let_) await revokeInternalHosts(effective);
   else {
@@ -288,15 +290,18 @@ export async function revokeInternalHosts(hosts: string[]) {
     let changed = false;
     for (const [site, w] of Object.entries(all)) {
       const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
-      if (!hit.length) continue;
+      const bumped = [...new Set([...hit, ...hosts.filter(h => !throughVpn(w, h) && Object.hasOwn(w.checks ?? {}, h) && w.checks![h].verdict === 'internal')])];
+      if (!bumped.length) continue;
       all[site] = {
         ...w,
-        hosts: w.hosts.filter(h => !hit.includes(h)),
-        checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
-        hostRevs: bumpHostRevs(w.hostRevs, hit),
+        ...(hit.length && {
+          hosts: w.hosts.filter(h => !hit.includes(h)),
+          checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+        }),
+        hostRevs: bumpHostRevs(w.hostRevs, bumped),
       };
       changed = true;
-      const id = email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+      const id = hit.length && email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
       if (id) live.push([id, email, site]);
     }
     if (changed) replaceFile(file, JSON.stringify(all, null, 1));
@@ -406,7 +411,7 @@ export async function removeHost(email: string, site: string, host: string) {
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [host]) });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-  if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
+  if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) }).catch(() => endSignIn(email, id, false));
 }
 
 // The hosts a person's website doesn't reach, of those asked for.
@@ -803,9 +808,12 @@ export class Browsers {
       if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (website(email, site).generation ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
       if (this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
-      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(',') || had.allowed.some(h => !allowedHosts(w).includes(h)))) {
-        await this.close(site);
-        return this.lent(site, quiet);
+      if (had) {
+        const nowAllowed = new Set(allowedHosts(w));
+        if (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(',') || had.allowed.some(h => !nowAllowed.has(h))) {
+          await this.close(site);
+          return this.lent(site, quiet);
+        }
       }
       return { email, login, had, via };
     } catch (e) {

@@ -787,7 +787,7 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
     res.statusCode = 404; res.end('not found');
   });
   await new Promise<void>(ok => srv.listen(0, '127.0.0.1', ok));
-  t.after(() => srv.close());
+  t.after(() => { srv.closeAllConnections?.(); srv.close(); });
   const home = join(tmp, 'home-waiting-cli');
   mkdirSync(join(home, '.config'), { recursive: true });
   const port = (srv.address() as { port: number }).port;
