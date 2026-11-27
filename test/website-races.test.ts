@@ -49,8 +49,8 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, siteRevision, startSignIn, websitesOf } = await import('../src/browsers.ts');
-const { letIn, upstreams } = await import('../src/connections.ts');
+const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeHost, removeSite, revokeInternalHosts, setSite, siteRevision, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { letIn, setLetIn, upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
 upstreams['openrouter.ai'] = base;
@@ -448,7 +448,7 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
 
   // Stale siteRev captured before a site replacement rejects Allow (even for internal host) and Keep blocked with 409
-  const staleRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  const staleRev = siteRevision(email, 'portal', websitesOf(email).portal, '10.9.8.9');
   replaceSite('https://fourth.review.test/');
   await assert.rejects(allowHost(admin, 'portal', '10.9.8.9', email, undefined, staleRev), { status: 409 });
   assert.equal(Boolean(letIn()['10.9.8.9']), false, 'stale Allow must not enroll internal host in global internal.json');
@@ -457,7 +457,7 @@ test('concurrent route change or website replacement rejects pending internal, a
 
   // Two admins race on the same Waiting item: Keep blocked wins, stale Waiting Allow with same siteRev fails 409
   changeWebsite(email, 'portal', { checks: { '10.9.8.10': { verdict: 'internal', why: 'It is at an internal address.' } } });
-  const waitingRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  const waitingRev = siteRevision(email, 'portal', websitesOf(email).portal, '10.9.8.10');
   await assert.rejects(allowHost(admin, 'portal', '10.9.8.10', email, () => {
     void refuseHost(admin, 'portal', '10.9.8.10', email, undefined, waitingRev);
   }, waitingRev), { status: 409 });
@@ -466,10 +466,32 @@ test('concurrent route change or website replacement rejects pending internal, a
 
   // If a host becomes covered by a wildcard while Waiting is open, a stale Waiting Allow must fail 409 without global enrollment
   changeWebsite(email, 'portal', { checks: { ...websitesOf(email).portal.checks, 'sub.internal.test': { verdict: 'internal', why: 'It is at an internal address.' } } });
-  const wildRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  const wildRev = siteRevision(email, 'portal', websitesOf(email).portal, 'sub.internal.test');
   changeWebsite(email, 'portal', { hosts: [...websitesOf(email).portal.hosts, '*.internal.test'] });
   await assert.rejects(allowHost(admin, 'portal', 'sub.internal.test', email, undefined, wildRev), { status: 409 });
   assert.equal(Boolean(letIn()['sub.internal.test']), false, 'stale Waiting Allow for a wildcard-covered host must not enroll it');
+
+  // ABA: Allow -> Revoke internal host increments per-host rev so a stale Waiting Allow cannot restore global internal access
+  changeWebsite(email, 'portal', { checks: { ...websitesOf(email).portal.checks, '10.9.8.12': { verdict: 'internal', why: 'It is at an internal address.' } } });
+  const abaRev = siteRevision(email, 'portal', websitesOf(email).portal, '10.9.8.12');
+  await allowHost(admin, 'portal', '10.9.8.12', email, undefined, abaRev);
+  assert.equal(Boolean(letIn()['10.9.8.12']), true);
+  setLetIn(['10.9.8.12'], admin.email, false);
+  await revokeInternalHosts(['10.9.8.12']);
+  assert.equal(websitesOf(email).portal.checks?.['10.9.8.12']?.verdict, 'internal');
+  await assert.rejects(allowHost(admin, 'portal', '10.9.8.12', email, undefined, abaRev), { status: 409 });
+  assert.equal(Boolean(letIn()['10.9.8.12']), false, 'stale Waiting Allow after Allow+Revoke ABA must not restore global internal access');
+
+  // Internal revocation during in-flight startSignIn POST /sessions closes the session and rejects sign-in
+  await addSite(email, 'intrasign', 'https://10.9.8.13/');
+  setLetIn(['10.9.8.13'], admin.email, true);
+  const opening = pause(t, 'POST /sessions');
+  const starting = assert.rejects(startSignIn(email, 'intrasign', ''), { status: 409 });
+  await opening.seen.promise;
+  setLetIn(['10.9.8.13'], admin.email, false);
+  await revokeInternalHosts(['10.9.8.13']);
+  opening.release.resolve();
+  await starting;
 
   // Concurrent addSite for the same name must not let the second overwrite the first
   const [r1, r2] = await Promise.allSettled([addSite(email, 'dup', 'https://first.review.test/'), addSite(email, 'dup', 'https://second.review.test/')]);

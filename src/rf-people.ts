@@ -672,26 +672,27 @@ if (cmd === 'login' && url) {
   } else {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
-  const refusedByHost = new Map<string, { path: string; since: string; t: number; run: number; site: string; siteRev?: string; person: string; host: string; why: string; count: number }>();
+  const refusedByHost = new Map<string, { path: string; since: string; t: number; run: number; site: string; rev?: string; person: string; host: string; why: string; count: number }>();
   for (const w of all) if (!w.archived) for (const x of w.series) if (!x.archived) for (const i of x.instances) for (const r of i.refused ?? []) for (const h of r.hosts ?? []) {
-    const key = `${r.login}\0${r.site}\0${h}`, c = r.counts?.[h] ?? r.count ?? 1, hostAt = r.ats?.[h] ?? r.at ?? '', t = Date.parse(hostAt) || 0;
+    const key = `${r.login}\0${r.site}\0${h}`, c = r.counts?.[h] ?? r.count ?? 1, hostAt = r.ats?.[h] ?? r.at ?? '', t = Date.parse(hostAt) || 0, rev = r.revs?.[h] ?? r.siteRev;
     const prev = refusedByHost.get(key);
-    if (!prev) refusedByHost.set(key, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, site: r.site, ...(r.siteRev && { siteRev: r.siteRev }), person: r.login, host: h, why: r.why?.[h] ?? '', count: c });
+    if (!prev) refusedByHost.set(key, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, site: r.site, ...(rev && { rev }), person: r.login, host: h, why: r.why?.[h] ?? '', count: c });
     else {
       prev.count += c;
-      if (t > prev.t || (t === prev.t && (r.run ?? 0) >= prev.run)) Object.assign(prev, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, ...(r.siteRev && { siteRev: r.siteRev }), why: r.why?.[h] || prev.why });
+      if (t > prev.t || (t === prev.t && (r.run ?? 0) >= prev.run)) Object.assign(prev, { path: `${w.name}/${x.name}/${i.label}`, since: hostAt, t, run: r.run, ...(rev && { rev }), why: r.why?.[h] || prev.why });
     }
   }
-  const refusedRows = new Map<string, { path: string; since: string; t: number; run: number; site: string; siteRev?: string; person: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
+  const refusedRows = new Map<string, { path: string; since: string; t: number; run: number; site: string; person: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string>; revs: Record<string, string> }>();
   for (const h of refusedByHost.values()) {
     const rowKey = `${h.person}\0${h.site}\0${h.path}\0${h.run}`;
     let row = refusedRows.get(rowKey);
-    if (!row) refusedRows.set(rowKey, row = { path: h.path, since: h.since, t: h.t, run: h.run, site: h.site, ...(h.siteRev && { siteRev: h.siteRev }), person: h.person, hosts: [], why: {}, counts: {}, ats: {} });
-    else if (h.t > row.t) { row.since = h.since; row.t = h.t; if (h.siteRev) row.siteRev = h.siteRev; }
+    if (!row) refusedRows.set(rowKey, row = { path: h.path, since: h.since, t: h.t, run: h.run, site: h.site, person: h.person, hosts: [], why: {}, counts: {}, ats: {}, revs: {} });
+    else if (h.t > row.t) { row.since = h.since; row.t = h.t; }
     row.hosts.push(h.host);
     if (h.why) row.why[h.host] = h.why;
     row.counts[h.host] = h.count;
     if (h.since) row.ats[h.host] = h.since;
+    if (h.rev) row.revs[h.host] = h.rev;
   }
   const rows = [
     ...s.ownership.map(s => ({ kind: 'owner', path: s.path, text: s.text })),
@@ -700,7 +701,7 @@ if (cmd === 'login' && url) {
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
-    ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, ...(r.siteRev && { siteRev: r.siteRev }), hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, ats: r.ats, text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
+    ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, ats: r.ats, ...(Object.keys(r.revs).length && { revs: r.revs }), text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
     ...all.filter(w => !w.archived).flatMap(w => w.series.filter(x => !x.archived).flatMap(x => x.instances.filter(i => i.wrong && i.owner === me.email).map(i => ({ kind: 'correction', path: `${w.name}/${x.name}/${i.label}`, since: i.active, count: i.wrong, text: `${i.wrong} correction${i.wrong === 1 ? '' : 's'} say${i.wrong === 1 ? 's' : ''} it's wrong` })))),
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];

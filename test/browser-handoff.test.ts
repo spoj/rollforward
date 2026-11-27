@@ -79,7 +79,7 @@ Object.assign(process.env, {
   RF_BROWSER_IDLE_MS: String(IDLE_MS),
 });
 
-const { Browsers, keepAlive, reap, upgradeBrowser } = await import('../src/browsers.ts');
+const { Browsers, keepAlive, reap, removeHost, upgradeBrowser } = await import('../src/browsers.ts');
 
 let root = '';
 let runCounter = 0;
@@ -650,4 +650,20 @@ test('keepAlive re-checks fresh expiry after handoff wait and skips POST if auth
   assert.equal(openedStates.length, 0, 'keepAlive must not POST /sessions after keepalive expired during handoff');
   assert.equal(pagesVisited.length, 0);
   assert.equal(runA.bySite.size, 0, 'idle holder still finished its close cleanly');
+});
+
+test('removeHost invalidates open run browsers and destroys active CDP connections via closeUnlent', TEST_OPTS, async () => {
+  setWebsite({ hosts: ['extra.crm.example.com'], checks: { 'extra.crm.example.com': { verdict: 'pass', why: 'Allowed.' } } });
+  const run = track(new Browsers(running('remove-host'), 1));
+  const id = await run.browser('crm');
+  assert.ok(id);
+  const conn = new PassThrough();
+  run.connected('crm', conn);
+
+  await removeHost(alice, 'crm', 'extra.crm.example.com');
+  await run.closeUnlent();
+
+  assert.equal(conn.destroyed, true, 'active CDP connection is cut when an allowed host is removed');
+  assert.equal(run.bySite.size, 0, 'open run browser session is closed when allowed hosts shrink');
+  assert.ok(closedIds.includes(id), 'browser service session was closed');
 });

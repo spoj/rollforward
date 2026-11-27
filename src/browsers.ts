@@ -122,12 +122,17 @@ export const categories = ['company', 'vendor', 'bank', 'government', 'general']
 type Classification = { what: string; category: typeof categories[number]; risk: typeof risks[number] };
 export type Profile = (Classification & { flags: string[]; curated?: true }) | { error: string };
 export const profiles = () => readJson<Record<string, Classification & { by: string; at: string }>>('profiles.json', {});
-export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string; generation?: number };
+export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; hostRevs?: Record<string, number>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
+const bumpHostRevs = (prev: Record<string, number> | undefined, hosts: string[]) => {
+  const next: Record<string, number> = Object.assign(Object.create(null), prev);
+  for (const h of hosts) next[h] = (next[h] ?? 0) + 1;
+  return next;
+};
 export const siteIdentity = (w: Pick<Website, 'url' | 'added'>) =>
   createHash('sha256').update(JSON.stringify([w.url, w.added])).digest('hex').slice(0, 16);
-export const siteRevision = (email: string, site: string, w: Website) =>
-  createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, websiteGenerations.get(`${email} ${site}`) ?? 0])).digest('hex').slice(0, 16);
+export const siteRevision = (email: string, site: string, w: Website, host = '') =>
+  createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, host ? (Object.hasOwn(w.hostRevs ?? {}, host) ? w.hostRevs![host] : 0) : 0, websiteGenerations.get(`${email} ${site}`) ?? 0])).digest('hex').slice(0, 16);
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
 // By name, a person's: none is Object's, such as constructor.
 export const websitesOf = (email: string): Record<string, Website> => Object.assign(Object.create(null), existsSync(sitesFile(email)) ? JSON.parse(readFileSync(sitesFile(email), 'utf8')) : {});
@@ -181,8 +186,13 @@ export async function startSignIn(email: string, site: string, given: string, ca
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   recheck?.();
   currentSignIn(signing);
-  const id = (await browserJson('POST', '/sessions', { site: { hosts: internalHosts(w), open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
-  try { recheck?.(); currentSignIn(signing); } catch (e) { await close(id); throw e; }
+  const openedInternal = internalHosts(w);
+  const id = (await browserJson('POST', '/sessions', { site: { hosts: openedInternal, open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
+  try {
+    recheck?.();
+    const now = currentSignIn(signing);
+    if (internalHosts(now).join(',') !== openedInternal.join(',')) throw new HttpError(409, 'This sign-in was superseded; sign in again.');
+  } catch (e) { await close(id); throw e; }
   signIns.set(id, signing);
   return id;
 }
@@ -236,7 +246,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   saveWebsites(person, { ...websitesOf(person), [name]: { url: w.url, hosts: w.hosts, writeback: x.writeback !== false && x.writeback !== 'false', added: w.added, generation: viaChanged ? (w.generation ?? 0) + 1 : w.generation,
     ...(x.header && { header: String(x.header) }), ...(x.via && { via: String(x.via) }),
     ...(x.keepalive !== undefined && { keepalive: String(x.keepalive) }), ...(every && { every: Number(every[1]) * (every[2] === 'h' ? 60 : 1) }),
-    ...(w.profile && { profile: w.profile }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
+    ...(w.profile && { profile: w.profile }), ...(w.hostRevs && { hostRevs: w.hostRevs }), ...(w.checks && { checks: viaChanged ? Object.fromEntries(Object.entries(w.checks).filter(([h, c]) => c.verdict === 'refused' || !vpnHosts(w.url).some(p => covers(p, h)))) : w.checks }) } });
   if (viaChanged) {
     const key = `${person} ${name}`;
     websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
@@ -258,6 +268,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
       changeWebsite(person, name, {
         hosts: [...new Set([...latest.hosts, ...passed.filter(h => h !== new URL(latest.url).hostname)])],
         checks: { ...latest.checks, ...Object.fromEntries(passed.map(h => [h, { verdict: 'pass' as const, why: 'An admin allowed this internal host.' }])) },
+        hostRevs: bumpHostRevs(latest.hostRevs, passed),
       });
       changes.emit('change', 'tree');
     }
@@ -282,6 +293,7 @@ export async function revokeInternalHosts(hosts: string[]) {
         ...w,
         hosts: w.hosts.filter(h => !hit.includes(h)),
         checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+        hostRevs: bumpHostRevs(w.hostRevs, hit),
       };
       changed = true;
       const id = email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
@@ -340,7 +352,7 @@ export function removeSite(email: string, name: string) {
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
 export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void, expectedRev?: string) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
-  const before = website(email, site), beforeRev = siteRevision(email, site, before), h = host.trim().toLowerCase();
+  const before = website(email, site), h = host.trim().toLowerCase(), beforeRev = siteRevision(email, site, before, h);
   if (expectedRev !== undefined) {
     if (beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
     if (reached(before).some(p => covers(p, h)) || !Object.hasOwn(before.checks ?? {}, h) || !['high', 'internal'].includes(before.checks![h].verdict))
@@ -350,11 +362,11 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   await checkHost(h, routed || inside);
   recheck?.();
   const w = website(email, site);
-  if (siteRevision(email, site, w) !== beforeRev)
+  if (siteRevision(email, site, w, h) !== beforeRev)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   if (expectedRev !== undefined && (reached(w).some(p => covers(p, h)) || !Object.hasOwn(w.checks ?? {}, h) || !['high', 'internal'].includes(w.checks![h].verdict)))
     throw new HttpError(409, `${h} is no longer waiting on a decision; refresh and retry`);
-  changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
+  changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [h]) });
   if (inside && !letIn()[h]) {
     setLetIn([h], by.email, true);
     act(by.email, { op: 'internal', person: email, site, hosts: [h], let: true });
@@ -369,7 +381,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
 // Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
 export async function refuseHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void, expectedRev?: string) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins decide website hosts');
-  const before = website(email, site), beforeRev = siteRevision(email, site, before), h = host.trim().toLowerCase();
+  const before = website(email, site), h = host.trim().toLowerCase(), beforeRev = siteRevision(email, site, before, h);
   if (expectedRev !== undefined) {
     if (beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
     if (!Object.hasOwn(before.checks ?? {}, h) || !['high', 'internal'].includes(before.checks![h].verdict))
@@ -379,12 +391,12 @@ export async function refuseHost(by: Me, site: string, host: string, email = by.
   if (!Object.hasOwn(before.checks ?? {}, h)) await checkHost(h, true);
   recheck?.();
   const w = website(email, site);
-  if (siteRevision(email, site, w) !== beforeRev)
+  if (siteRevision(email, site, w, h) !== beforeRev)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   if (expectedRev !== undefined && (!Object.hasOwn(w.checks ?? {}, h) || !['high', 'internal'].includes(w.checks![h].verdict)))
     throw new HttpError(409, `${h} is no longer waiting on a decision; refresh and retry`);
   if (reached(w).some(p => covers(p, h))) throw new HttpError(409, `${site} already reaches ${h}`);
-  changeWebsite(email, site, { checks: { ...w.checks, [h]: { verdict: 'refused', why: 'An admin kept it blocked.' } } });
+  changeWebsite(email, site, { checks: { ...w.checks, [h]: { verdict: 'refused', why: 'An admin kept it blocked.' } }, hostRevs: bumpHostRevs(w.hostRevs, [h]) });
   changes.emit('change', 'tree');
 }
 
@@ -392,7 +404,7 @@ export async function refuseHost(by: Me, site: string, host: string, email = by.
 export async function removeHost(email: string, site: string, host: string) {
   const w = website(email, site);
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
-  changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } } });
+  changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [host]) });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
 }
@@ -752,7 +764,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; allowed: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -791,7 +803,7 @@ export class Browsers {
       if (this.ended || current.email !== email || current.login.since !== login.since || current.login.expired || (website(email, site).generation ?? 0) !== generation || website(email, site).via !== w.via) throw new HttpError(409, `this run's login to ${site} changed while connecting`);
       if (this.bySite.get(site) !== had) return this.lent(site, quiet);
       if (!approved(site, email, tree().series[this.inst.seriesId]?.workspace)) throw Object.assign(new HttpError(403, `${email}'s grant to use ${site} was revoked; this run goes on without it`), { refused: true });
-      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(','))) {
+      if (had && (had.via?.token !== via?.token || had.via?.url !== via?.url || had.internal.join(',') !== internalHosts(w).join(',') || had.allowed.some(h => !allowedHosts(w).includes(h)))) {
         await this.close(site);
         return this.lent(site, quiet);
       }
@@ -866,10 +878,10 @@ export class Browsers {
           throw e;
         }
       } : undefined;
-      const internal = w ? internalHosts(w) : [], opening = w ? openSession(w, 7200, state, via, this.run > 0) : printer().then(id => ({ id, shots: undefined }));
+      const internal = w ? internalHosts(w) : [], allowed = w ? allowedHosts(w) : [], opening = w ? openSession(w, 7200, state, via, this.run > 0) : printer().then(id => ({ id, shots: undefined }));
       const ready = opening.then(async ({ id, shots: shotsPath }) => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`, siteId = w ? siteIdentity(w) : undefined;
-        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, siteId, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
+        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; allowed: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, siteId, source, conns: 0, via, internal, allowed, shotsPath, shotSeq: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         if (shotsPath && !this.cutted) {

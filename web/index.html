@@ -1377,12 +1377,12 @@ function waiting() {
       }
 
       if (me.role === 'admin') for (const r of i.refused ?? []) for (const x of r.hosts ?? []) {
-        const key = `${r.login}\0${r.site}\0${x}`, c = r.counts?.[x] ?? r.count ?? 1, hostAt = r.ats?.[x] ?? r.at ?? '', t = Date.parse(hostAt) || 0;
+        const key = `${r.login}\0${r.site}\0${x}`, c = r.counts?.[x] ?? r.count ?? 1, hostAt = r.ats?.[x] ?? r.at ?? '', t = Date.parse(hostAt) || 0, rev = r.revs?.[x] ?? r.siteRev ?? '';
         const prev = refusedByHost.get(key);
-        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: hostAt, t, login: r.login, site: r.site, siteRev: r.siteRev ?? '', host: x, why: r.why?.[x] ?? '', count: c });
+        if (!prev) refusedByHost.set(key, { w, s, i, run: r.run, at: hostAt, t, login: r.login, site: r.site, siteRev: rev, host: x, why: r.why?.[x] ?? '', count: c });
         else {
           prev.count += c;
-          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: hostAt, t, siteRev: r.siteRev || prev.siteRev, why: r.why?.[x] || prev.why });
+          if (t > prev.t || (t === prev.t && (r.run ?? 0) >= (prev.run ?? 0))) Object.assign(prev, { w, s, i, run: r.run, at: hostAt, t, siteRev: rev || prev.siteRev, why: r.why?.[x] || prev.why });
         }
       }
       if (i.wrong && i.owner === me.email) { out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`); actionable++; }

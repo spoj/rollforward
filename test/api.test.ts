@@ -872,21 +872,21 @@ test('refused hosts deduplicate per (login, site, host) with counts and admins c
 
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false, siteRev: 123 }))).status, 400);
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false, siteRev: 'stale-rev' }))).status, 409);
-  const currentRev = rows[0].siteRev;
-  assert.equal(typeof currentRev, 'string');
-  assert.equal(currentRev.length, 16);
+  const revs = Object.fromEntries(rows.flatMap((r: any) => Object.entries(r.revs ?? {}))) as Record<string, string>;
+  assert.equal(typeof revs['files.example.net'], 'string');
+  assert.equal(revs['files.example.net'].length, 16);
 
   // Admin keeps both high and internal hosts blocked; stays refused and leaves Waiting on you
-  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'FILES.EXAMPLE.NET', allow: false, siteRev: currentRev }))).status, 200);
-  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: true, siteRev: currentRev }))).status, 409, 'a stale Waiting Allow cannot undo Keep blocked');
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'FILES.EXAMPLE.NET', allow: false, siteRev: revs['files.example.net'] }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: true, siteRev: revs['files.example.net'] }))).status, 409, 'a stale Waiting Allow cannot undo Keep blocked');
   assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false }))).status, 200, 'direct keep blocked is idempotent');
   assert.deepEqual((await json(`/logins/sites?person=${bob}`))[site].checks['files.example.net'], { verdict: 'refused', why: 'An admin kept it blocked.' });
   assert.deepEqual((await refused(admin)).flatMap((r: any) => r.hosts), ['intra.acme.localhost', 'later.example.net']);
 
   const internalBefore = existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '';
-  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', allow: false, siteRev: currentRev }))).status, 200);
-  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', siteRev: currentRev }))).status, 409, 'stale Waiting Allow on a kept-blocked internal host fails 409');
-  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'later.example.net', allow: false, siteRev: currentRev }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', allow: false, siteRev: revs['intra.acme.localhost'] }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', siteRev: revs['intra.acme.localhost'] }))).status, 409, 'stale Waiting Allow on a kept-blocked internal host fails 409');
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'later.example.net', allow: false, siteRev: revs['later.example.net'] }))).status, 200);
   assert.deepEqual(await refused(admin), [], 'kept-blocked hosts leave Waiting on you');
   assert.equal(existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '', internalBefore, 'keeping an internal host blocked never enrolls it in internal.json');
 

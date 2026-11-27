@@ -319,38 +319,39 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
     // Only admins decide hosts: those rated high or internal, with why, for a week, deduplicated per (login, site, host).
     refused: (() => {
       if (me.role !== 'admin') return [];
-      const byHost = new Map<string, { at: string; t: number; run: number; site: string; siteRev: string; login: string; host: string; count: number; why: string }>();
+      const byHost = new Map<string, { at: string; t: number; run: number; site: string; rev: string; login: string; host: string; count: number; why: string }>();
       for (const e of k.refused) {
         if (!fresh(e.at) || !e.login) continue;
         const w = websitesOf(e.login)[e.site];
         if (!w) continue;
         const t = Date.parse(e.at) || 0;
         if (e.siteId ? siteIdentity(w) !== e.siteId : (w.added && t < (Date.parse(w.added) || 0))) continue;
-        const checks = w.checks ?? {}, siteRev = siteRevision(e.login, e.site, w);
+        const checks = w.checks ?? {};
         const hosts = unreached(e.login, e.site, Object.keys(e.hosts)).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
         if (!hosts.length) continue;
         for (const h of hosts) {
-          const n = Math.max(1, Number(e.hosts[h]) || 1);
+          const n = Math.max(1, Number(e.hosts[h]) || 1), rev = siteRevision(e.login, e.site, w, h);
           const key = `${e.login}\0${e.site}\0${h}`, prev = byHost.get(key);
-          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, siteRev, login: e.login, host: h, count: n, why: checks[h].why });
+          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, rev, login: e.login, host: h, count: n, why: checks[h].why });
           else {
             prev.count += n;
             if (t > prev.t || (t === prev.t && e.run >= prev.run)) { prev.at = e.at; prev.t = t; prev.run = e.run; }
             prev.why = checks[h].why;
-            prev.siteRev = siteRev;
+            prev.rev = rev;
           }
         }
       }
-      const byRow = new Map<string, { at: string; t: number; run: number; site: string; siteRev: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string> }>();
+      const byRow = new Map<string, { at: string; t: number; run: number; site: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number>; ats: Record<string, string>; revs: Record<string, string> }>();
       for (const h of byHost.values()) {
         const key = `${h.login}\0${h.site}\0${h.run}`;
         let row = byRow.get(key);
-        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, siteRev: h.siteRev, login: h.login, hosts: [], why: {}, counts: {}, ats: {} });
+        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, login: h.login, hosts: [], why: {}, counts: {}, ats: {}, revs: {} });
         else if (h.t > row.t) { row.at = h.at; row.t = h.t; }
         row.hosts.push(h.host);
         row.why[h.host] = h.why;
         row.counts[h.host] = h.count;
         row.ats[h.host] = h.at;
+        row.revs[h.host] = h.rev;
       }
       return [...byRow.values()].map(({ t: _, ...r }) => ({ ...r, count: Math.max(...Object.values(r.counts)) }));
     })(),
@@ -2237,7 +2238,7 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       else await allowHost(me, site, host, person, () => recheckRequest(req), data.siteRev);
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), await closeUnlent(), 'ok'));
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
       const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();
       if (websitesOf(me.email)[site]?.via && !can(me, 'vpn')) throw new HttpError(403, 'vpn capability required to open a VPN-routed website sign-in');
