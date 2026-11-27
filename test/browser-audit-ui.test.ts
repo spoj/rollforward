@@ -57,13 +57,17 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
         dupKeys: true,
         policy: { decisionId: 'd1', mode: 'observe', action: 'requireApproval', ruleId: 'e1_ais_write', policyVersion: 'v1' },
       },
+      {
+        n: 3, rec: 'http_end', ref: 1, t: '2026-11-27T10:00:04.500Z', error: 'upstream_reset', incomplete: true,
+      },
     ],
     cdp: [
       { n: 1, t: '2026-11-27T10:00:02Z', conn: 1, method: 'Runtime.callFunctionOn', severity: 'high', summary: { exprLen: 256 } },
       { n: 2, rec: '_tap.summary', t: '2026-11-27T10:00:05Z', methodCounts: { 'Runtime.callFunctionOn': 1 } },
     ],
     shots: [
-      { seq: 1, at: '2026-11-27T10:00:04Z', url: 'https://erp.example.com/form', trigger: 'write', file: 'browser/run 1 erp s1.jpg', integrity: 'ok' },
+      { seq: 1, at: '2026-11-27T10:00:04Z', url: 'https://erp.example.com/form', trigger: 'write', file: 'browser/run 1 erp s1.jpg', integrity: 'ok', dataUrl: `data:image/jpeg;base64,${tinyJpeg.toString('base64')}` },
+      { seq: 2, at: '2026-11-27T10:00:04.200Z', url: 'https://erp.example.com/tampered', trigger: 'nav', file: 'browser/run 1 erp s2.jpg', integrity: 'tampered' },
     ],
   };
 
@@ -136,17 +140,25 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   await page.locator('.ba-integ.ok').waitFor({ state: 'visible' });
   assert.match(await page.locator('.ba-integ.ok').textContent() ?? '', /Host manifest verified \(3 files\)/);
 
-  // Chronological order: 10:00:01 HTTP GET -> 10:00:02 CDP -> 10:00:03 HTTP POST->DELETE -> 10:00:04 Shot
+  // Chronological order: 10:00:01 HTTP GET (merged http_end error) -> 10:00:02 CDP -> 10:00:03 HTTP POST->DELETE -> 10:00:04 Shot 1 -> 10:00:04.2 Shot 2
   const kinds = await page.locator('#ba-list .ba-card').evaluateAll(els => els.map(e => e.getAttribute('data-kind')));
-  assert.deepEqual(kinds, ['http', 'cdp', 'http', 'shot']);
+  assert.deepEqual(kinds, ['http', 'cdp', 'http', 'shot', 'shot']);
 
-  // Verify override badge, dupKeys red pill, policy badge, high-severity CDP pill
+  // Verified shot uses data: URL (never /files/...) and tampered shot renders ZERO <img> with withheld warning
+  const imgSrcs = await page.locator('#ba-list .ba-shot img').evaluateAll(els => els.map(e => e.getAttribute('src')));
+  assert.equal(imgSrcs.length, 1);
+  assert.ok(imgSrcs[0]?.startsWith('data:image/jpeg;base64,'), 'verified shot uses verified dataUrl');
+
+  // Verify override badge, dupKeys red pill, policy badge, high-severity CDP pill, merged http_end error, and withheld tampered shot
   const listText = await page.locator('#ba-list').textContent() ?? '';
   assert.match(listText, /POST → DELETE/);
   assert.match(listText, /formservice:W/);
   assert.match(listText, /dupKeys/);
   assert.match(listText, /e1_ais_write/);
   assert.match(listText, /high severity/);
+  assert.match(listText, /error:upstream_reset/);
+  assert.match(listText, /incomplete/);
+  assert.match(listText, /Shot tampered — image withheld/);
 
   // Filter chips: Writes | Blocked / Errors | Key | Shots | CDP | All
   await page.locator('[data-act="ba-filter"][data-filter="writes"]').click();
@@ -154,13 +166,13 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   assert.equal(await page.locator('#ba-list .ba-card').first().getAttribute('data-write'), '1');
 
   await page.locator('[data-act="ba-filter"][data-filter="blocked"]').click();
-  assert.equal(await page.locator('#ba-list .ba-card').count(), 0);
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 1, 'late http_end error matches Blocked / Errors');
 
   await page.locator('[data-act="ba-filter"][data-filter="key"]').click();
-  assert.equal(await page.locator('#ba-list .ba-card').count(), 3, 'Key shows write, high-sev CDP, and shot (omits benign GET)');
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 5, 'Key shows error GET, high-sev CDP, write, and shots');
 
   await page.locator('[data-act="ba-filter"][data-filter="shots"]').click();
-  assert.equal(await page.locator('#ba-list .ba-card').count(), 1);
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 2);
   assert.equal(await page.locator('#ba-list .ba-card').first().getAttribute('data-kind'), 'shot');
 
   await page.locator('[data-act="ba-filter"][data-filter="cdp"]').click();
@@ -168,7 +180,7 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   assert.equal(await page.locator('#ba-list .ba-card').first().getAttribute('data-kind'), 'cdp');
 
   await page.locator('[data-act="ba-filter"][data-filter="all"]').click();
-  assert.equal(await page.locator('#ba-list .ba-card').count(), 4);
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 5);
 
   // Text filter narrows results live
   await page.locator('#ba-q').fill('P0411_W0411A');

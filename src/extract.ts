@@ -716,48 +716,25 @@ const SQL_DDL_VERBS = new Set(['DROP', 'CREATE', 'ALTER', 'TRUNCATE', 'REPLACE',
 const SQL_DESTRUCTIVE_VERBS = new Set(['DROP', 'TRUNCATE', 'DELETE'])
 
 export function classifySqlStatement(sql: string): SqlClassification {
-  const statements: string[] = []
+  type Tok = { kind: 'word' | 'lparen' | 'rparen' | 'comma' | 'semi'; text: string }
+  const tokens: Tok[] = []
   let i = 0
   const len = sql.length
-  let curTokens: string[] = []
-  let parenDepth = 0
-
-  const flushStmt = () => {
-    if (!curTokens.length) return
-    let verb = curTokens[0]
-    // Handle CTEs: WITH [RECURSIVE] name AS (...) <verb>
-    if (verb === 'WITH') {
-      // Find the first top-level statement keyword after CTE definitions
-      const main = curTokens.slice(1).find(t =>
-        SQL_READ_VERBS.has(t) || SQL_WRITE_VERBS.has(t) || SQL_DDL_VERBS.has(t),
-      )
-      verb = main ?? 'UNKNOWN'
-    }
-    statements.push(verb)
-    curTokens = []
-  }
 
   while (i < len) {
     const ch = sql[i]
-    // Whitespace
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
-      i++
-      continue
-    }
-    // Line comment --
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') { i++; continue }
     if (ch === '-' && sql[i + 1] === '-') {
       i += 2
       while (i < len && sql[i] !== '\n') i++
       continue
     }
-    // Block comment /* ... */
     if (ch === '/' && sql[i + 1] === '*') {
       i += 2
       while (i < len && !(sql[i] === '*' && sql[i + 1] === '/')) i++
       i += 2
       continue
     }
-    // Single-quoted string literal
     if (ch === "'") {
       i++
       while (i < len) {
@@ -768,9 +745,9 @@ export function classifySqlStatement(sql: string): SqlClassification {
       }
       continue
     }
-    // Double-quoted or backtick identifier
     if (ch === '"' || ch === '`') {
       const q = ch
+      const start = i
       i++
       while (i < len) {
         if (sql[i] === '\\') { i += 2; continue }
@@ -778,15 +755,13 @@ export function classifySqlStatement(sql: string): SqlClassification {
         if (sql[i] === q) { i++; break }
         i++
       }
+      tokens.push({ kind: 'word', text: sql.slice(start, i) })
       continue
     }
-    if (ch === '(') { parenDepth++; i++; continue }
-    if (ch === ')') { if (parenDepth > 0) parenDepth--; i++; continue }
-    if (ch === ';' && parenDepth === 0) {
-      flushStmt()
-      i++
-      continue
-    }
+    if (ch === '(') { tokens.push({ kind: 'lparen', text: '(' }); i++; continue }
+    if (ch === ')') { tokens.push({ kind: 'rparen', text: ')' }); i++; continue }
+    if (ch === ',') { tokens.push({ kind: 'comma', text: ',' }); i++; continue }
+    if (ch === ';') { tokens.push({ kind: 'semi', text: ';' }); i++; continue }
     const c = sql.charCodeAt(i)
     if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) {
       const start = i
@@ -796,14 +771,108 @@ export function classifySqlStatement(sql: string): SqlClassification {
         if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122) || (cc >= 48 && cc <= 57) || cc === 95) i++
         else break
       }
-      if (parenDepth === 0 && curTokens.length < 16) {
-        curTokens.push(sql.slice(start, i).toUpperCase())
-      }
+      tokens.push({ kind: 'word', text: sql.slice(start, i).toUpperCase() })
       continue
     }
     i++
   }
-  flushStmt()
+
+  // Split token stream into top-level statements separated by ';' at parenDepth === 0
+  const rawStmts: Tok[][] = []
+  let cur: Tok[] = []
+  let depth = 0
+  for (const t of tokens) {
+    if (t.kind === 'lparen') depth++
+    else if (t.kind === 'rparen' && depth > 0) depth--
+    if (t.kind === 'semi' && depth === 0) {
+      if (cur.length) rawStmts.push(cur)
+      cur = []
+    } else {
+      cur.push(t)
+    }
+  }
+  if (cur.length) rawStmts.push(cur)
+
+  const skipParenGroup = (arr: Tok[], idx: number): number => {
+    if (arr[idx]?.kind !== 'lparen') return -1
+    let d = 1
+    let p = idx + 1
+    while (p < arr.length && d > 0) {
+      if (arr[p].kind === 'lparen') d++
+      else if (arr[p].kind === 'rparen') d--
+      p++
+    }
+    return d === 0 ? p : -1
+  }
+
+  const statements: string[] = []
+  for (const stmt of rawStmts) {
+    const first = stmt[0]
+    if (!first || first.kind !== 'word') {
+      statements.push('UNKNOWN')
+      continue
+    }
+    let verb = first.text
+    if (verb === 'WITH') {
+      // Strictly parse CTE list: WITH [RECURSIVE] <name> [(cols)] AS [MATERIALIZED|NOT MATERIALIZED] (<subquery>) [, ...] <mainVerb>
+      let p = 1
+      if (stmt[p]?.kind === 'word' && stmt[p].text === 'RECURSIVE') p++
+      let ok = false
+      for (;;) {
+        // CTE name (may be any identifier, even a keyword like `select`!)
+        if (stmt[p]?.kind !== 'word') { ok = false; break }
+        p++
+        // Optional column list (...)
+        if (stmt[p]?.kind === 'lparen') {
+          p = skipParenGroup(stmt, p)
+          if (p < 0) { ok = false; break }
+        }
+        if (stmt[p]?.kind !== 'word' || stmt[p].text !== 'AS') { ok = false; break }
+        p++
+        // Optional NOT MATERIALIZED / MATERIALIZED
+        if (stmt[p]?.kind === 'word' && stmt[p].text === 'NOT') p++
+        if (stmt[p]?.kind === 'word' && stmt[p].text === 'MATERIALIZED') p++
+        // Required CTE subquery (...)
+        if (stmt[p]?.kind !== 'lparen') { ok = false; break }
+        p = skipParenGroup(stmt, p)
+        if (p < 0) { ok = false; break }
+        if (stmt[p]?.kind === 'comma') {
+          p++
+          continue
+        }
+        ok = true
+        break
+      }
+      if (!ok || stmt[p]?.kind !== 'word') {
+        statements.push('UNKNOWN')
+        continue
+      }
+      verb = stmt[p].text
+    }
+    // Defense-in-depth: if any top-level word in the statement after CTEs is a write/DDL verb, never misclassify as read!
+    if (SQL_READ_VERBS.has(verb)) {
+      let d = 0
+      let hasMutatingTopLevel = false
+      for (let k = 1; k < stmt.length; k++) {
+        const tk = stmt[k]
+        if (tk.kind === 'lparen') d++
+        else if (tk.kind === 'rparen' && d > 0) d--
+        else if (d === 0 && tk.kind === 'word' && k > 0 && stmt[k - 1]?.text !== 'AS') {
+          // Only flag unmistakable destructive/DML top-level keywords (not e.g. `ORDER` or column aliases)
+          if (tk.text === 'DELETE' || tk.text === 'DROP' || tk.text === 'TRUNCATE' || tk.text === 'MERGE' || tk.text === 'INSERT' || tk.text === 'UPDATE') {
+            hasMutatingTopLevel = true
+            verb = tk.text
+            break
+          }
+        }
+      }
+      if (hasMutatingTopLevel) {
+        statements.push(verb)
+        continue
+      }
+    }
+    statements.push(verb)
+  }
 
   if (!statements.length) return { sqlClass: 'unknown', statements: [], destructive: false }
 
@@ -1130,7 +1199,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           coverage: isBinary ? 'complete' : defaultCov,
         })
         extractStatus = 'complete'
-      } else if (input.isWrite && eff === 'DELETE' && (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares'))) {
+      } else if (input.isWrite && (eff === 'DELETE' || input.method === 'DELETE') && (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares'))) {
         actions.push({
           family: 'graph',
           op: 'graph:file_delete',

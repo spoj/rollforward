@@ -164,6 +164,9 @@ test('API-native semantic extractors: Microsoft Graph, Databricks SQL, and custo
 
   // 3. Databricks SQL statement classification
   assert.deepEqual(classifySqlStatement('/* comment */ WITH cte AS (SELECT 1) SELECT * FROM fin.gl'), { sqlClass: 'read', statements: ['SELECT'], destructive: false });
+  assert.deepEqual(classifySqlStatement('WITH select AS (SELECT 1) DELETE FROM fin.gl'), { sqlClass: 'write', statements: ['DELETE'], destructive: true });
+  assert.deepEqual(classifySqlStatement('WITH RECURSIVE a(x) AS (SELECT 1), b AS (SELECT 2) UPDATE fin.gl SET x = 1'), { sqlClass: 'write', statements: ['UPDATE'], destructive: false });
+  assert.deepEqual(classifySqlStatement('WITH broken AS (SELECT 1'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false });
   assert.deepEqual(classifySqlStatement("SELECT 'DROP TABLE x' AS literal"), { sqlClass: 'read', statements: ['SELECT'], destructive: false });
   assert.deepEqual(classifySqlStatement('INSERT INTO fin.gl VALUES (1);'), { sqlClass: 'write', statements: ['INSERT'], destructive: false });
   assert.deepEqual(classifySqlStatement('SELECT 1; DROP TABLE fin.gl'), { sqlClass: 'ddl', statements: ['SELECT', 'DROP'], destructive: true });
@@ -219,6 +222,28 @@ test('Stage-1 execpolicy deterministic rules: method-override escalation/downgra
   const d2 = evaluateStage1(escalation.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
   assert.equal(d2.action, 'requireApproval');
   assert.equal(d2.ruleId, 'http_delete');
+
+  // Wire DELETE + X-HTTP-Method-Override: POST MUST still require approval (never downgraded out of http_delete / graph:file_delete!)
+  const delOverride = buildApiRequestDescriptor({
+    connection: 'svc', connectionType: 'service', seq: 20, method: 'DELETE',
+    url: new URL('https://svc.rf.internal/AP/item'),
+    headers: { 'x-http-method-override': 'POST' },
+    bodyComplete: true,
+  }).descriptor;
+  const dDel = evaluateStage1(delOverride.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
+  assert.equal(dDel.action, 'requireApproval');
+  assert.equal(dDel.ruleId, 'http_delete');
+
+  const graphDelOverride = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 21, method: 'DELETE',
+    url: new URL('https://graph.microsoft.com/v1.0/drives/d1/items/i1'),
+    headers: { 'x-http-method-override': 'POST' },
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(graphDelOverride.safe.actions[0].op, 'graph:file_delete');
+  const dGraphDel = evaluateStage1(graphDelOverride.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
+  assert.equal(dGraphDel.action, 'requireApproval');
+  assert.equal(dGraphDel.ruleId, 'graph_file_delete');
 
   // Method override conflict -> deny
   const conflict = parseSemanticMethods('POST', { 'x-http-method': 'DELETE', 'x-method-override': 'PATCH' });
@@ -390,11 +415,13 @@ test('replayExecPolicy deterministically replays saved log.jsonl + browser/*.jso
     const pol1 = compactDecision(evaluateStage1(mailDesc.safe, 'observe', { approved: false, recentApprovedProposals: [] }));
     const logLines = [
       { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
-      { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', status: 202, bytes: 0, actions: mailDesc.safe.actions, completeness: mailDesc.safe.completeness, policy: pol1 },
+      // send at seq 2, signoff arrives mid-flight at seq 4, call finishes at seq 5 -> replay MUST cut off at sent - 1 (seq 1) so signoff does NOT retroactively approve!
+      { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'send', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail' },
       { seq: 3, at: '2026-11-27T01:02:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Approve E1 post', run: 1 },
       { seq: 4, at: '2026-11-27T01:03:00Z', by: 'alice@demo.test', op: 'signoff', on: 3, text: 'Approved' },
+      { seq: 5, at: '2026-11-27T01:03:05Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', isWrite: true, sent: 2, status: 202, bytes: 0, actions: mailDesc.safe.actions, completeness: mailDesc.safe.completeness, policy: pol1 },
       // Legacy API write without actions -> insufficient_evidence
-      { seq: 5, at: '2026-11-27T01:04:00Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/messages', status: 201, bytes: 10 },
+      { seq: 6, at: '2026-11-27T01:04:00Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/messages', status: 201, bytes: 10 },
     ];
     writeFileSync(join(dir, 'log.jsonl'), logLines.map(l => JSON.stringify(l)).join('\n') + '\n');
 

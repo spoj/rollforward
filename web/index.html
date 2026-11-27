@@ -1011,10 +1011,26 @@ function browserAuditItems(ba) {
   for (const s of ba.shots ?? []) {
     items.push({ kind: 'shot', t: s.at ?? '', seq: s.seq ?? 0, data: s });
   }
+  const endsByRef = new Map();
+  for (const e of ba.http ?? []) {
+    if (e && e.rec === 'http_end' && typeof e.ref === 'number') endsByRef.set(e.ref, e);
+  }
   for (const e of ba.http ?? []) {
     if (!e || e.rec === '_summary' || e.rec === 'http_end') continue;
-    const isWrite = e.isWrite === true || !['GET', 'HEAD', 'OPTIONS'].includes(String(e.method ?? 'GET').toUpperCase());
-    items.push({ kind: 'http', isWrite, t: e.t ?? '', seq: e.n ?? e.seq ?? 0, data: e });
+    const end = typeof e.n === 'number' ? endsByRef.get(e.n) : undefined;
+    const merged = end ? {
+      ...e,
+      ...(end.error && !e.error ? { error: end.error } : {}),
+      ...(end.incomplete ? { incomplete: true } : {}),
+      ...(end.liveAtEnd ? { liveAtEnd: true } : {}),
+      ...(typeof end.status === 'number' && !e.status ? { status: end.status } : {}),
+      ...(typeof end.reqBytes === 'number' ? { reqBytes: end.reqBytes } : {}),
+      ...(typeof end.resBytes === 'number' ? { resBytes: end.resBytes } : {}),
+      ...(typeof end.ms === 'number' ? { ms: end.ms } : {}),
+      ...(end.policy && !e.policy ? { policy: end.policy } : {}),
+    } : e;
+    const isWrite = merged.isWrite === true || !['GET', 'HEAD', 'OPTIONS'].includes(String(merged.method ?? 'GET').toUpperCase());
+    items.push({ kind: 'http', isWrite, t: merged.t ?? '', seq: merged.n ?? merged.seq ?? 0, data: merged });
   }
   for (const c of ba.cdp ?? []) {
     if (!c || c.rec === '_tap.summary') continue;
@@ -1026,7 +1042,7 @@ function browserAuditItems(ba) {
 
 function browserAuditRowsHtml(ba) {
   const filter = ba.filter ?? 'all', q = (ba.q ?? '').trim().toLowerCase();
-  const isBlockedOrErr = e => Boolean(e.blocked || e.error || (typeof e.status === 'number' && e.status >= 400));
+  const isBlockedOrErr = e => Boolean(e.blocked || e.error || e.incomplete || (typeof e.status === 'number' && e.status >= 400));
   const items = browserAuditItems(ba).filter(it => {
     if (filter === 'key') {
       const keep = it.kind === 'shot'
@@ -1039,7 +1055,8 @@ function browserAuditRowsHtml(ba) {
     if (filter === 'shots' && it.kind !== 'shot') return false;
     if (filter === 'cdp' && it.kind !== 'cdp') return false;
     if (q) {
-      const hay = JSON.stringify(it.data).toLowerCase();
+      const searchable = it.kind === 'shot' ? { ...it.data, dataUrl: undefined } : it.data;
+      const hay = JSON.stringify(searchable).toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -1049,7 +1066,11 @@ function browserAuditRowsHtml(ba) {
     const ts = it.t ? `<span class="ba-t">${esc(it.t.slice(11, 19))}</span>` : '';
     if (it.kind === 'shot') {
       const s = it.data;
-      return `<div class="ba-card ba-shot" data-kind="shot"><div class="ba-hdr">${ts}<span class="ba-pill">shot #${esc(String(s.seq))}</span>${s.trigger ? `<span class="ba-pill">${esc(s.trigger)}</span>` : ''}${s.integrity && s.integrity !== 'ok' ? `<span class="ba-pill ba-warn">${esc(s.integrity)}</span>` : ''}<span class="ba-url">${esc(s.url || '')}</span></div><div class="ba-shot-img"><img src="${fileUrl(s.file)}" loading="lazy" alt="" data-act="preview" data-file="${esc(s.file)}"></div></div>`;
+      const verified = (!s.integrity || s.integrity === 'ok') && typeof s.dataUrl === 'string' && s.dataUrl.startsWith('data:image/');
+      const imgHtml = verified
+        ? `<div class="ba-shot-img"><img src="${s.dataUrl}" loading="lazy" alt="" data-act="preview" data-file="${esc(s.file)}"></div>`
+        : `<div class="ba-sub"><span class="ba-pill ba-warn">Shot ${esc(s.integrity ?? 'unverified')} \u2014 image withheld</span></div>`;
+      return `<div class="ba-card ba-shot" data-kind="shot"><div class="ba-hdr">${ts}<span class="ba-pill">shot #${esc(String(s.seq))}</span>${s.trigger ? `<span class="ba-pill">${esc(s.trigger)}</span>` : ''}${s.integrity && s.integrity !== 'ok' ? `<span class="ba-pill ba-warn">${esc(s.integrity)}</span>` : ''}<span class="ba-url">${esc(s.url || '')}</span></div>${imgHtml}</div>`;
     }
     if (it.kind === 'cdp') {
       const c = it.data;
@@ -1066,6 +1087,7 @@ function browserAuditRowsHtml(ba) {
     if (e.reqOmitted && e.reqOmitted !== 'policy-profile') warns.push(`omitted:${e.reqOmitted}`);
     if (e.blocked) warns.push(`blocked:${e.blocked}`);
     if (e.error) warns.push(`error:${e.error}`);
+    if (e.incomplete) warns.push('incomplete');
     const acts = Array.isArray(e.actions) && e.actions.length
       ? `<div class="ba-acts">${e.actions.map(a => `<span class="ba-pill">${esc(a.op)}${a.resource ? ` ${esc(a.resource)}` : ''}${a.coverage && a.coverage !== 'complete' ? ` (${esc(a.coverage)})` : ''}</span>`).join('')}</div>` : '';
     const shape = e.bodyShape && Object.keys(e.bodyShape).length

@@ -10,6 +10,7 @@ import { act, changes, isPrivate, key, readJson, tree, writeJson } from './syste
 import { recordCost } from './costs.ts';
 import { buildApiRequestDescriptor, MAX_PREFIX_BYTES, parseSemanticMethods, type SemanticAction } from './extract.ts';
 import { compactDecision, defaultExecPolicy, type CompactPolicyDecision } from './execpolicy.ts';
+import { sanitizeUrl } from './redact.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
 import { lender, loginGeneration, logins, saveLogin, secret, use, type Offer } from './logins.ts';
@@ -470,6 +471,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
   let sent: number | undefined, digest: { hash: Hash; size: number } | undefined;
   let auditMeta: {
     effectiveMethod?: string;
+    isWrite?: boolean;
     hdr?: Record<string, string>;
     hdrConflict?: true;
     actions?: SemanticAction[];
@@ -486,6 +488,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       ...(digest && { sha256: digest.hash.copy().digest('hex'), size: digest.size }),
       ...(auditMeta && {
         ...(auditMeta.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
+        ...(auditMeta.isWrite !== undefined && { isWrite: auditMeta.isWrite }),
         ...(auditMeta.hdr && { hdr: auditMeta.hdr }),
         ...(auditMeta.hdrConflict && { hdrConflict: true as const }),
         ...(auditMeta.actions?.length && { actions: auditMeta.actions }),
@@ -513,7 +516,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const c = serving.find(c => ticked.some(t => t.startsWith(`${loginOf(c).id}:${host}/`))) ?? serving[0];
     jsonApi = !!s || c?.type === 'graph' || c?.type === 'databricks';
     name = link?.name ?? c?.name ?? s?.name ?? host;
-    path = link ? url.origin + url.pathname : url.pathname + url.search;
+    // Sanitize logged path with semantic query-value templating so credentials/PII/prompts in query strings never land in log.jsonl.
+    const sanLogUrl = sanitizeUrl(url, { projection: 'semantic' });
+    const sanSearch = sanLogUrl.url.includes('?') ? sanLogUrl.url.slice(sanLogUrl.url.indexOf('?')) : '';
+    path = link ? `${url.origin}${sanLogUrl.path}` : `${sanLogUrl.path}${sanSearch}`;
     // A target such as //elsewhere/… or https://elsewhere/… would take the request, and the credential put in, to another host, and
     // one such as http://HOST/… to it in the clear.
     if (url.origin !== `https://${host}`) throw new HttpError(403, `${host} takes requests for https://${host}, not ${url.origin}`);
@@ -628,6 +634,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       const compact = compactDecision(decision);
       auditMeta = {
         ...(methods.effectiveMethod !== method && { effectiveMethod: methods.effectiveMethod }),
+        isWrite: descriptor.safe.isWrite,
         ...(methods.hdr && { hdr: methods.hdr }),
         ...(methods.hdrConflict && { hdrConflict: true as const }),
         ...(descriptor.safe.actions.length && { actions: descriptor.safe.actions }),

@@ -319,17 +319,17 @@ export function evaluateStage1(
       }
     }
 
-    // SharePoint DELETE / MERGE / opaque batch / unguarded PUT
+    // SharePoint DELETE / MERGE / opaque batch / unguarded PUT (check BOTH wire method and effectiveMethod!)
     if (act.family === 'sharepoint') {
       if (act.coverage === 'opaque-batch') {
         return make('escalate', 'sharepoint_opaque_batch', 'Opaque SharePoint $batch write requires review')
       }
-      if (safe.effectiveMethod === 'DELETE' || safe.effectiveMethod === 'MERGE') {
+      if (safe.method === 'DELETE' || safe.method === 'MERGE' || safe.effectiveMethod === 'DELETE' || safe.effectiveMethod === 'MERGE') {
         return approval.approved
           ? make('allow', 'sharepoint_destructive_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
-          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${safe.effectiveMethod} requires human approval`)
+          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE' ? 'DELETE' : 'MERGE'} requires human approval`)
       }
-      if (safe.effectiveMethod === 'PUT' && act.details?.hasIfMatch === false) {
+      if ((safe.method === 'PUT' || safe.effectiveMethod === 'PUT') && act.details?.hasIfMatch === false) {
         return make('escalate', 'unguarded_overwrite_no_if_match', 'SharePoint PUT without If-Match ETag')
       }
     }
@@ -348,8 +348,8 @@ export function evaluateStage1(
     }
   }
 
-  // 4. Generic DELETE across any surface
-  if (safe.effectiveMethod === 'DELETE') {
+  // 4. Generic DELETE across any surface (apply stricter rule to BOTH wire method and effectiveMethod so DELETE + override: POST cannot bypass!)
+  if (safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE') {
     return approval.approved
       ? make('allow', 'http_delete_approved', 'Approved by current-epoch human signoff', approval.approvalRef)
       : make('requireApproval', 'http_delete', 'HTTP DELETE requires current-epoch human approval')
@@ -702,7 +702,7 @@ function reconstructSafeFromApiCall(e: Entry, seq: number): { safe?: SafeRequest
   }
 
   const san = sanitizeUrl(pathStr.startsWith('http') ? pathStr : `https://${name}${pathStr.startsWith('/') ? '' : '/'}${pathStr}`, { projection: 'semantic' })
-  const isWrite = !SAFE_METHODS.has(method) || !SAFE_METHODS.has(effectiveMethod)
+  const isWrite = typeof e.isWrite === 'boolean' ? e.isWrite : (!SAFE_METHODS.has(method) || !SAFE_METHODS.has(effectiveMethod))
   const storedComp = e.completeness as SafeRequestProjection['completeness'] | undefined
   if (isWrite && !storedComp) {
     return { insufficientReason: 'api_call_missing_completeness' }
@@ -788,7 +788,9 @@ export async function replayExecPolicy(
       continue
     }
 
-    const decision = await engine.evaluate({ safe: recon.safe }, { mode, log: instLog, uptoSeq: e.seq })
+    // Bound approval lookup strictly to entries BEFORE dispatch (`sent - 1` for writes, else `seq - 1`) so mid-flight signoffs cannot retroactively approve!
+    const uptoSeq = typeof e.sent === 'number' ? Math.max(0, e.sent - 1) : Math.max(0, e.seq - 1)
+    const decision = await engine.evaluate({ safe: recon.safe }, { mode, log: instLog, uptoSeq })
     const agreed = recorded ? decision.action === recorded.action : null
     if (agreed === true) agreements++
     else if (agreed === false) disagreements++

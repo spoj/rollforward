@@ -784,17 +784,30 @@ type ShotSpoolState = {
 function readShotSpool(openId: string): ShotSpoolState {
   const p = join(spoolDirOf(openId), 'shots.json');
   if (!existsSync(p)) return { published: [], pending: [], rolling: [], rollingBytes: 0 };
+  let raw: unknown;
   try {
-    const raw = JSON.parse(readFileSync(p, 'utf8'));
-    return {
-      published: Array.isArray(raw.published) ? raw.published : [],
-      pending: Array.isArray(raw.pending) ? raw.pending : [],
-      rolling: Array.isArray(raw.rolling) ? raw.rolling : [],
-      rollingBytes: typeof raw.rollingBytes === 'number' ? raw.rollingBytes : 0,
-    };
+    raw = JSON.parse(readFileSync(p, 'utf8'));
   } catch {
-    return { published: [], pending: [], rolling: [], rollingBytes: 0 };
+    throw new HttpError(500, `corrupt browser shot spool for ${openId}`);
   }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new HttpError(500, `corrupt browser shot spool for ${openId}`);
+  }
+  const r = raw as Record<string, unknown>;
+  if (
+    !Array.isArray(r.published) ||
+    !Array.isArray(r.rolling) ||
+    (r.pending !== undefined && !Array.isArray(r.pending)) ||
+    (r.rollingBytes !== undefined && typeof r.rollingBytes !== 'number')
+  ) {
+    throw new HttpError(500, `corrupt browser shot spool for ${openId}`);
+  }
+  return {
+    published: r.published as ShotManifestItem[],
+    pending: (r.pending as ShotManifestItem[] | undefined) ?? [],
+    rolling: r.rolling as RollingShotMeta[],
+    rollingBytes: (r.rollingBytes as number | undefined) ?? 0,
+  };
 }
 
 function writeShotSpool(openId: string, state: ShotSpoolState) {
@@ -1288,17 +1301,30 @@ async function finalizeV2Session(
   if (b.phase !== 'published' && remoteAvailable) {
     try {
       const snap = await browserJson('POST', `/sessions/${id}/seal`, {}, CLOSE_MS);
-      state = snap?.state ?? null;
+      if (
+        !snap ||
+        typeof snap !== 'object' ||
+        snap.sealed !== true ||
+        typeof snap.logCursor !== 'number' ||
+        !Number.isFinite(snap.logCursor) ||
+        typeof snap.cdpCursor !== 'number' ||
+        !Number.isFinite(snap.cdpCursor) ||
+        typeof snap.shotCursor !== 'number' ||
+        !Number.isFinite(snap.shotCursor)
+      ) {
+        throw new HttpError(502, `malformed /seal response for session ${id}`);
+      }
+      state = snap.state ?? null;
       sealCursors = {
-        log: typeof snap?.logCursor === 'number' ? snap.logCursor : sealCursors.log,
-        cdp: typeof snap?.cdpCursor === 'number' ? snap.cdpCursor : sealCursors.cdp,
-        shot: typeof snap?.shotCursor === 'number' ? snap.shotCursor : sealCursors.shot,
+        log: snap.logCursor,
+        cdp: snap.cdpCursor,
+        shot: snap.shotCursor,
       };
       sealGaps = {
-        droppedGets: snap?.gaps?.droppedGets ?? 0,
-        droppedCdp: snap?.gaps?.droppedCdp ?? 0,
-        droppedShots: snap?.gaps?.droppedShots ?? 0,
-        refusedFull: snap?.gaps?.refusedFull ?? 0,
+        droppedGets: typeof snap.gaps?.droppedGets === 'number' ? snap.gaps.droppedGets : 0,
+        droppedCdp: typeof snap.gaps?.droppedCdp === 'number' ? snap.gaps.droppedCdp : 0,
+        droppedShots: typeof snap.gaps?.droppedShots === 'number' ? snap.gaps.droppedShots : 0,
+        refusedFull: typeof snap.gaps?.refusedFull === 'number' ? snap.gaps.refusedFull : 0,
       };
       sealedAt = new Date().toISOString();
       b.phase = 'sealed';
@@ -1347,9 +1373,22 @@ async function finalizeV2Session(
     const rollingToFlush: Array<{ meta: ShotManifestItem; buf: Buffer }> = [];
     for (const r of shotState.rolling) {
       const p = join(dir, 'shots', r.spoolName);
-      if (!existsSync(p)) continue;
+      if (!existsSync(p)) {
+        if (remoteAvailable) {
+          throw new HttpError(500, `missing rolling shot ${r.spoolName} in host spool for ${openId}`);
+        }
+        sealGaps = { ...sealGaps, droppedShots: sealGaps.droppedShots + 1, ackGap: sealGaps.ackGap ?? 'missing_rolling_shot' };
+        continue;
+      }
       const buf = readFileSync(p);
       const digest = sha256Hex(buf);
+      if (r.sha256 && digest !== r.sha256) {
+        if (remoteAvailable) {
+          throw new HttpError(500, `corrupt rolling shot ${r.spoolName} in host spool for ${openId}`);
+        }
+        sealGaps = { ...sealGaps, droppedShots: sealGaps.droppedShots + 1, ackGap: sealGaps.ackGap ?? 'corrupt_rolling_shot' };
+        continue;
+      }
       const rel = v2ShotRelPath(b, r.seq);
       const meta: ShotManifestItem = {
         seq: r.seq,
@@ -1417,13 +1456,25 @@ async function finalizeV2Session(
         }
 
         const httpReqs = httpEntries.filter(e => e.rec !== '_summary' && e.rec !== 'http_end');
+        const httpEndsByRef = new Map<number, Entry>();
+        for (const e of httpEntries) {
+          if (e.rec === 'http_end' && typeof e.ref === 'number') httpEndsByRef.set(e.ref, e);
+        }
+        const httpReqNs = new Set(httpReqs.map(e => e.n).filter((n): n is number => typeof n === 'number'));
         const summaryRec = httpEntries.findLast(e => e.rec === '_summary');
         const collapsedGetsCount = summaryRec?.collapsedGets
           ? Object.values(summaryRec.collapsedGets).reduce((acc, v) => acc + (v?.count ?? 0), 0)
           : 0;
         const writes = httpReqs.filter(e => !e.blocked && (e.isWrite ?? !SAFE_METHODS.has(String(e.method ?? 'GET').toUpperCase()))).length;
         const blocked = httpReqs.filter(e => e.blocked).length;
-        const errors = httpReqs.filter(e => !e.blocked && (e.error || e.status >= 400)).length;
+        let errors = httpReqs.filter(e => {
+          if (e.blocked) return false;
+          const end = typeof e.n === 'number' ? httpEndsByRef.get(e.n) : undefined;
+          return Boolean(e.error || e.status >= 400 || end?.error || end?.incomplete);
+        }).length;
+        for (const [ref, end] of httpEndsByRef) {
+          if (!httpReqNs.has(ref) && (end.error || end.incomplete)) errors++;
+        }
         const cdpCount = cdpRaw.filter(e => e.rec !== '_tap.summary').length;
         const hosts: Record<string, number> = Object.create(null);
         for (const h of httpReqs.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) {
@@ -1462,7 +1513,10 @@ async function finalizeV2Session(
   // Phase 5: Acknowledge remote reclamation via DELETE /sessions/:id?sealed=1
   if (remoteAvailable) {
     try {
-      await browserJson('DELETE', `/sessions/${id}?sealed=1`, undefined, CLOSE_MS);
+      const ack = await browserJson('DELETE', `/sessions/${id}?sealed=1`, undefined, CLOSE_MS);
+      if (!ack || typeof ack !== 'object' || (ack as { deleted?: unknown }).deleted !== true) {
+        throw new HttpError(502, `malformed DELETE ?sealed=1 ack for session ${id}`);
+      }
     } catch (e) {
       const upstreamStatus = (e as { upstreamStatus?: number }).upstreamStatus;
       if (upstreamStatus === 404) {
@@ -1571,7 +1625,11 @@ export function readBrowserAudit(inst: Instance, sessionId: string) {
     const res = readVerifiedWorkspaceFile(inst.dir, s.file, expected, MAX_AUDIT_SHOT_BYTES);
     if (res.status === 'missing') missing.push(s.file);
     else if (res.status === 'tampered') tampered.push(s.file);
-    return { ...s, integrity: res.status };
+    return {
+      ...s,
+      integrity: res.status,
+      ...(res.status === 'ok' && res.buf ? { dataUrl: `data:image/jpeg;base64,${res.buf.toString('base64')}` } : {}),
+    };
   });
 
   return {

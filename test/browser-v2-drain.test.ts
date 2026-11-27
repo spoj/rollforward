@@ -19,6 +19,9 @@ let legacyDeleteCalls: string[] = [];
 let openBodies: any[] = [];
 let activityRequests: string[] = [];
 let activity404 = false;
+let malformedSeal = false;
+let malformedDeleteAck = false;
+let includeHttpEndError = false;
 let remoteSessions = new Map<string, {
   sealed: boolean;
   state: unknown;
@@ -98,8 +101,15 @@ const mockService = createServer(async (req, res) => {
 
   if (rest === '/seal' && req.method === 'POST') {
     sealCalls++;
+    if (malformedSeal) {
+      return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true }));
+    }
     if (!sess.sealed) {
       sess.sealed = true;
+      if (includeHttpEndError) {
+        const endN = (sess.http.at(-1)?.n ?? 0) + 1;
+        sess.http.push({ n: endN, rec: 'http_end', ref: 1, t: '2026-11-27T10:00:04Z', error: 'upstream_reset', incomplete: true });
+      }
       // Append _summary & _tap.summary on seal just like rollforward-browser v0.3.0
       const nextLogN = (sess.http.at(-1)?.n ?? 0) + 1;
       sess.http.push({ n: nextLogN, rec: '_summary', t: '2026-11-27T10:00:05Z', collapsedGets: { 'erp.example.com:image': { count: 3, bytes: 900 } }, droppedGets: 0, refusedFullCount: 0, incompleteAtSeal: 0 });
@@ -170,11 +180,15 @@ const mockService = createServer(async (req, res) => {
   }
 
   if (rest === '' && req.method === 'DELETE') {
-    remoteSessions.delete(id);
     if (u.searchParams.get('sealed') === '1') {
+      if (malformedDeleteAck) {
+        return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false }));
+      }
+      remoteSessions.delete(id);
       sealedDeleteCalls.push(id);
       return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ deleted: true }));
     }
+    remoteSessions.delete(id);
     legacyDeleteCalls.push(id);
     return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
       state: sess.state,
@@ -296,6 +310,7 @@ test('v0.3.0 capabilities probe, auditV2 session open, seal -> paginated drain -
   assert.equal(audit.http.length, 3); // 2 entries + _summary
   assert.equal(audit.cdp.length, 3); // 2 entries + _tap.summary
   assert.equal(audit.shots.length, 2);
+  assert.ok(String((audit.shots[0] as any).dataUrl).startsWith('data:image/jpeg;base64,'), 'verified shot includes dataUrl');
 
   // Verify shot events use shotSeq (NEVER overwriting instance log seq) and instance reloads cleanly via openStore!
   const shotEvents = inst.log.filter(e => e.op === 'shot');
@@ -304,14 +319,64 @@ test('v0.3.0 capabilities probe, auditV2 session open, seal -> paginated drain -
   assert.deepEqual(inst.log.map(e => e.seq), inst.log.map((_, idx) => idx + 1), 'instance event log seq remains strictly monotonic 1..N');
   openStore(tmp);
 
-  // Tamper with workspace copy -> integrity check MUST detect mismatch and NOT parse tampered bytes!
+  // Tamper with workspace copy of log AND shot -> integrity check MUST detect mismatch, NOT parse tampered bytes, and omit shot dataUrl!
   const logFile = join(inst.dir, manifests[0].file);
   chmodSync(logFile, 0o644);
   writeFileSync(logFile, '{"tampered":true}\n');
+  const shotFile = join(inst.dir, manifests[0].shots[0].file);
+  chmodSync(shotFile, 0o644);
+  writeFileSync(shotFile, 'tampered-jpeg-bytes');
   const tampered = readBrowserAudit(inst, id);
   assert.equal(tampered.integrity.ok, false);
-  assert.deepEqual(tampered.integrity.tampered, [manifests[0].file]);
+  assert.deepEqual(tampered.integrity.tampered, [manifests[0].file, manifests[0].shots[0].file]);
   assert.deepEqual(tampered.http, [], 'tampered log bytes are not parsed or served');
+  assert.equal(tampered.shots[0].integrity, 'tampered');
+  assert.equal((tampered.shots[0] as any).dataUrl, undefined, 'tampered shot never emits dataUrl');
+  assert.ok(String((tampered.shots[1] as any).dataUrl).startsWith('data:image/jpeg;base64,'));
+});
+
+test('fail-closed spool & protocol checks: corrupt shots.json, malformed /seal, malformed DELETE ack, and http_end late error counting', async () => {
+  resetCapabilitiesCache();
+  capabilities404 = false;
+
+  // 1. Corrupt shots.json fails closed and retains journal + remote session
+  const inst1 = makeInst('v2corrupt');
+  const b1 = new Browsers(inst1, 1);
+  const id1 = await b1.browser('erp');
+  mkdirSync(join(rfDir(), 'browser-spool', id1), { recursive: true });
+  writeFileSync(join(rfDir(), 'browser-spool', id1, 'shots.json'), '{not-valid-json');
+  await assert.rejects(() => b1.close('erp'), /corrupt browser shot spool/);
+  assert.equal(remoteSessions.has(id1), true, 'remote session preserved on corrupt spool');
+  rmSync(join(rfDir(), 'browser-spool', id1, 'shots.json'), { force: true });
+  const r1 = await reap();
+  await r1.closed;
+  assert.equal(remoteSessions.has(id1), false);
+
+  // 2. Malformed /seal response rejects and retains journal + remote session
+  const inst2 = makeInst('v2badseal');
+  const b2 = new Browsers(inst2, 1);
+  const id2 = await b2.browser('erp');
+  malformedSeal = true;
+  await assert.rejects(() => b2.close('erp'), /malformed \/seal response/);
+  malformedSeal = false;
+  assert.equal(remoteSessions.has(id2), true);
+
+  // 3. Malformed DELETE ?sealed=1 ack rejects and retains phase='published' in journal, plus http_end error counted
+  includeHttpEndError = true;
+  malformedDeleteAck = true;
+  const r2 = await reap();
+  await r2.closed;
+  malformedDeleteAck = false;
+  includeHttpEndError = false;
+  const jMid = JSON.parse(readFileSync(join(rfDir(), 'browsers.json'), 'utf8'));
+  assert.equal(jMid[id2]?.phase, 'published', 'published phase retained until DELETE ack returns {deleted:true}');
+  assert.equal(remoteSessions.has(id2), true);
+  assert.equal(inst2.log.find(e => e.op === 'browser' && !e.action)?.errors, 1, 'late http_end error counted on browser entry');
+
+  // Final reap finishes DELETE ?sealed=1 cleanly
+  const r3 = await reap();
+  await r3.closed;
+  assert.equal(remoteSessions.has(id2), false);
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {

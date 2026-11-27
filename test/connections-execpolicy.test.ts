@@ -125,17 +125,23 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   assert.equal((dbxCall.policy as any).action, 'deny');
   assert.equal((dbxCall.policy as any).ruleId, 'databricks_destructive_ddl');
 
-  // Service method-override escalation (GET + X-HTTP-Method-Override: DELETE -> isWrite = true, logs send!)
+  // Service method-override escalation (GET + X-HTTP-Method-Override: DELETE -> isWrite = true, logs send! + query values sanitized)
   const beforeSend = entries.filter(e => e.op === 'send').length;
-  const esc = await sendViaProxy(run, 'erp.rf.internal', 'GET', '/AP/voucher/99', { 'x-http-method-override': 'DELETE' });
+  const esc = await sendViaProxy(run, 'erp.rf.internal', 'GET', '/AP/voucher/99?api_key=RAW_SECRET_KEY&customer=JaneDoe', { 'x-http-method-override': 'DELETE' });
   assert.equal(esc.status, 200);
   assert.equal(entries.filter(e => e.op === 'send').length, beforeSend + 1, 'escalated GET logs pre-flight send');
+  const escSend = entries.findLast(e => e.op === 'send')!;
   const escCall = entries.findLast(e => e.op === 'call')!;
   assert.equal(escCall.effectiveMethod, 'DELETE');
+  assert.equal(escCall.isWrite, true);
   assert.equal((escCall.policy as any).ruleId, 'http_delete');
+  assert.equal(escSend.path, '/AP/voucher/99?api_key=[REDACTED]&customer=<str>');
+  assert.equal(escCall.path, '/AP/voucher/99?api_key=[REDACTED]&customer=<str>');
+  assert.ok(!JSON.stringify(escSend).includes('RAW_SECRET_KEY'));
+  assert.ok(!JSON.stringify(escCall).includes('JaneDoe'));
 
-  // OpenRouter LLM call: zero actions/bodyShape/prompt leakage
-  const or = await sendViaProxy(run, 'openrouter.ai', 'POST', '/api/v1/chat/completions', { 'content-type': 'application/json' }, JSON.stringify({
+  // OpenRouter LLM call: zero actions/bodyShape/prompt leakage AND query params sanitized
+  const or = await sendViaProxy(run, 'openrouter.ai', 'POST', '/api/v1/chat/completions?prompt=QUERY_LEAK_123&token=SECRET_TOK', { 'content-type': 'application/json' }, JSON.stringify({
     model: 'openai/gpt-5-mini',
     messages: [{ role: 'user', content: 'SUPER PRIVATE PROMPT TEXT 998877' }],
   }));
@@ -144,7 +150,10 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   assert.equal(orCall.actions, undefined);
   assert.equal(orCall.bodyShape, undefined);
   assert.equal(orCall.policy, undefined);
+  assert.equal(orCall.path, '/api/v1/chat/completions?prompt=<str>&token=[REDACTED]');
   assert.ok(!JSON.stringify(orCall).includes('SUPER PRIVATE PROMPT TEXT'));
+  assert.ok(!JSON.stringify(orCall).includes('QUERY_LEAK_123'));
+  assert.ok(!JSON.stringify(orCall).includes('SECRET_TOK'));
 
   // Malformed OpenRouter JSON must NOT leak prompt text into log.jsonl via SyntaxError.message!
   const badOr = await sendViaProxy(run, 'openrouter.ai', 'POST', '/api/v1/chat/completions', { 'content-type': 'application/json' }, '{"prompt":"TOP_SECRET_MALFORMED_PROMPT_999"');
