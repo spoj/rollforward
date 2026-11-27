@@ -777,8 +777,8 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
       series: [{
         id: 's1', name: 'Ser', archived: false, requests: [],
         instances: [
-          { id: 'i1', label: 'Jan', refused: [{ at: t3, run: 1, site: 'portal', login: 'bob@demo.test', hosts: ['a.test', 'b.test'], counts: { 'a.test': 2, 'b.test': 1 }, ats: { 'a.test': t1, 'b.test': t3 }, why: { 'a.test': 'File sharing.', 'b.test': 'Internal.' } }] },
-          { id: 'i2', label: 'Feb', refused: [{ at: t2, run: 4, site: 'portal', login: 'bob@demo.test', hosts: ['a.test'], counts: { 'a.test': 5 }, ats: { 'a.test': t2 }, why: { 'a.test': 'File sharing.' } }] },
+          { id: 'i1', label: 'Jan', owner: 'admin@demo.test', wrong: 2, active: t3, refused: [{ at: t3, run: 1, site: 'portal', login: 'bob@demo.test', hosts: ['a.test', 'b.test'], counts: { 'a.test': 2, 'b.test': 1 }, ats: { 'a.test': t1, 'b.test': t3 }, why: { 'a.test': 'File sharing.', 'b.test': 'Internal.' } }] },
+          { id: 'i2', label: 'Feb', owner: 'bob@demo.test', wrong: 1, active: t2, refused: [{ at: t2, run: 4, site: 'portal', login: 'bob@demo.test', hosts: ['a.test'], counts: { 'a.test': 5 }, ats: { 'a.test': t2 }, why: { 'a.test': 'File sharing.' } }] },
         ],
       }],
     }]));
@@ -796,13 +796,16 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
   const w = await runRf(home, ['waiting', '--json']);
   assert.equal(w.code, 0, w.stderr);
   const rows = JSON.parse(w.stdout);
-  assert.equal(rows.length, 2);
-  const aRow = rows.find((r: any) => r.hosts.includes('a.test'));
-  const bRow = rows.find((r: any) => r.hosts.includes('b.test'));
+  assert.equal(rows.length, 3);
+  const aRow = rows.find((r: any) => r.kind === 'refused' && r.hosts.includes('a.test'));
+  const bRow = rows.find((r: any) => r.kind === 'refused' && r.hosts.includes('b.test'));
+  const cRow = rows.find((r: any) => r.kind === 'correction');
   assert.equal(aRow.path, 'WS/Ser/Feb', 'per-host ats links a.test to Feb (t2 > t1)');
   assert.equal(aRow.counts['a.test'], 7, 'counts sum across instances (2 + 5)');
   assert.match(aRow.text, /a\.test \(7×, File sharing\.\)/);
   assert.equal(bRow.path, 'WS/Ser/Jan', 'b.test stays linked to Jan (t3)');
+  assert.equal(cRow.path, 'WS/Ser/Jan', 'only the owner’s wrong corrections appear in rf waiting');
+  assert.equal(cRow.count, 2);
 
   const ref = await runRf(home, ['logins', 'refuse', 'portal', 'a.test', '--person', 'bob@demo.test']);
   assert.equal(ref.code, 0, ref.stderr);

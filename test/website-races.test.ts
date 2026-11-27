@@ -2,7 +2,7 @@ import { after, beforeEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changes, initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
@@ -49,7 +49,7 @@ await new Promise<void>(ok => service.listen(0, '127.0.0.1', ok));
 const base = `http://127.0.0.1:${(service.address() as { port: number }).port}`;
 Object.assign(process.env, { RF_BROWSER_URL: base, RF_BROWSER_KEY: 'browser-key', RF_PUBLIC_URL: 'https://rf.company.test', OPENROUTER_API_KEY: 'server-key' });
 delete process.env.EXA_API_KEY;
-const { addSite, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
+const { addSite, allowHost, changeWebsite, checkWebsite, drainWebsiteChecks, endSignIn, isCheckingWebsite, refuseHost, removeSite, setSite, startSignIn, websitesOf } = await import('../src/browsers.ts');
 const { letIn, upstreams } = await import('../src/connections.ts');
 const { logins, personDir, saveLogin, seal, secret, signOut } = await import('../src/logins.ts');
 const { ask, decide, visible } = await import('../src/grants.ts');
@@ -415,4 +415,35 @@ test('concurrent Keep blocked during setSite internal approval is not overwritte
   assert.equal(after.checks?.['10.9.8.7']?.verdict, 'pass', 'uncontested internal host is still approved');
   assert.equal(Boolean(letIn()['10.9.8.7']), true);
   assert.equal(Boolean(letIn()['10.9.8.8']), false, 'concurrently refused internal host is not enrolled in internal.json');
+});
+
+test('concurrent route change or website replacement rejects pending internal, allow, and keep-blocked updates', async t => {
+  const admin: Me = { email: 'admin@company.test', name: 'Admin', role: 'admin', groups: [] };
+  const owner: Me = { email, name: 'Alice', role: 'user', groups: [] };
+  const prevTunnel = process.env.RF_TUNNEL_URL;
+  process.env.RF_TUNNEL_URL = base;
+  t.after(() => { if (prevTunnel === undefined) delete process.env.RF_TUNNEL_URL; else process.env.RF_TUNNEL_URL = prevTunnel; });
+  writeJson('vpns.json', { corp: { type: 'fortinet', gateway: 'vpn.company.test:443' } });
+  writeJson('capabilities.json', { vpn: [email] });
+  await addSite(email, 'intra', 'https://10.9.8.7/');
+  // Route switches to VPN during setSite internal approval: must fail 409 and never enroll 10.9.8.7 in global internal.json
+  const reroutes: Promise<void>[] = [];
+  await assert.rejects(setSite(admin, 'intra', { internal: true }, email, () => {
+    reroutes.push(setSite(owner, 'intra', { via: 'corp' }, email));
+  }), { status: 409 });
+  await Promise.all(reroutes);
+  assert.equal(Boolean(letIn()['10.9.8.7']), false, 'switched-to-VPN website must not enroll its host in global internal.json');
+
+  const replaceSite = (newUrl: string) => {
+    removeSite(email, 'portal');
+    writeFileSync(join(personDir(email), 'websites.json'), JSON.stringify({ portal: { url: newUrl, hosts: [], writeback: true, added: new Date(Date.now() + 1000).toISOString() } }));
+  };
+  // Website removed and recreated during allowHost and refuseHost: replacement must not inherit decisions meant for the original
+  await portal();
+  await assert.rejects(allowHost(admin, 'portal', 'files.example.net', email, () => replaceSite('https://other.review.test/')), { status: 409 });
+  assert.deepEqual(websitesOf(email).portal.hosts, []);
+  assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
+
+  await assert.rejects(refuseHost(admin, 'portal', 'files.example.net', email, () => replaceSite('https://third.review.test/')), { status: 409 });
+  assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
 });

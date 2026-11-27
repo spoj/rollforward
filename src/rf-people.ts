@@ -701,6 +701,7 @@ if (cmd === 'login' && url) {
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
     ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, ats: r.ats, text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
+    ...all.filter(w => !w.archived).flatMap(w => w.series.filter(x => !x.archived).flatMap(x => x.instances.filter(i => i.wrong && i.owner === me.email).map(i => ({ kind: 'correction', path: `${w.name}/${x.name}/${i.label}`, since: i.active, count: i.wrong, text: `${i.wrong} correction${i.wrong === 1 ? '' : 's'} say${i.wrong === 1 ? 's' : ''} it's wrong` })))),
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));

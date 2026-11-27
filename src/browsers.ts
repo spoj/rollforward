@@ -236,12 +236,14 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
     websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
   }
   if (change.internal === undefined) return;
-  const next = website(person, name), let_ = change.internal === true || change.internal === 'true';
+  const next = website(person, name), let_ = change.internal === true || change.internal === 'true', siteKey = `${person} ${name}`, beforeGen = websiteGenerations.get(siteKey);
   const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
   const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   recheck?.();
   const latest = website(person, name);
-  const effective = let_ ? hosts.filter(h => reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal') : hosts;
+  if (latest.url !== next.url || latest.via !== next.via || latest.added !== next.added || (latest.generation ?? 0) !== (next.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
+    throw new HttpError(409, `${name} changed while updating internal access; retry`);
+  const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
   setLetIn(effective, by.email, let_);
   if (!let_) await revokeInternalHosts(effective);
   else {
@@ -332,10 +334,12 @@ export function removeSite(email: string, name: string) {
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
 export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
-  const before = website(email, site), h = host.trim().toLowerCase(), routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
+  const before = website(email, site), siteKey = `${email} ${site}`, beforeGen = websiteGenerations.get(siteKey), h = host.trim().toLowerCase(), routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
   await checkHost(h, routed || inside);
   recheck?.();
   const w = website(email, site);
+  if (w.url !== before.url || w.via !== before.via || w.added !== before.added || (w.generation ?? 0) !== (before.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
+    throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
   if (inside && !letIn()[h]) {
     setLetIn([h], by.email, true);
@@ -351,11 +355,13 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
 // Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
 export async function refuseHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins decide website hosts');
-  const before = website(email, site), h = host.trim().toLowerCase();
+  const before = website(email, site), siteKey = `${email} ${site}`, beforeGen = websiteGenerations.get(siteKey), h = host.trim().toLowerCase();
   if (!h || h.startsWith('*.')) throw new HttpError(400, `${h || '(empty)'}: name an exact host to keep blocked`);
   if (!Object.hasOwn(before.checks ?? {}, h)) await checkHost(h, true);
   recheck?.();
   const w = website(email, site);
+  if (w.url !== before.url || w.via !== before.via || w.added !== before.added || (w.generation ?? 0) !== (before.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
+    throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   if (reached(w).some(p => covers(p, h))) throw new HttpError(409, `${site} already reaches ${h}`);
   changeWebsite(email, site, { checks: { ...w.checks, [h]: { verdict: 'refused', why: 'An admin kept it blocked.' } } });
   changes.emit('change', 'tree');
@@ -510,7 +516,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   if (inst.log.some(e => e.op === 'close' || e.op === 'abandon')) return;
   mkdirSync(join(inst.dir, 'browser'), { recursive: true });
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
-  const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = {};
+  const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = Object.create(null);
   for (const h of log.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) hosts[h] = (hosts[h] ?? 0) + 1;
   inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
