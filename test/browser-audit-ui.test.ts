@@ -253,7 +253,7 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   assert.match(allScopesText, /\/v1\.0\/drives\/d1\/items\/01BYE5RZ6QN3K4L8M9N2P5Q7/, 'verbatim unredacted target rendered on card');
   assert.match(allScopesText, /DELETE FROM staging WHERE id = :id/, 'verbatim SQL rendered on card');
   assert.match(allScopesText, /"value":"42"/, 'verbatim SQL parameters rendered on card');
-  assert.match(allScopesText, /IDs:\s*id-1, id-2/, 'verbatim DeleteByIds IDs rendered on card');
+  assert.match(allScopesText, /IDs:\s*\["id-1","id-2"\]/, 'unambiguous JSON DeleteByIds IDs rendered on card');
   assert.match(allScopesText, /Max uses:\s*1/);
 
   await page.close();

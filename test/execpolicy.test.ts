@@ -955,22 +955,22 @@ test('R4 final convergence: E1 host/port authority & batch per-form binding, Sha
     { action: 'e1_ais_write', target: 'P0411_W0411A', host: 'erp-a.example.com', port: 443, site: 'e1' },
     { workspace: 'w', hmacKey },
   );
-  assert.equal(e1HostScope.port, undefined, 'default https port 443 normalized');
+  assert.equal(e1HostScope.port, 443, 'explicit port 443 preserved verbatim');
   const e1HostLog: Entry[] = [
     { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
     { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Post on ERP A', execpolicy: e1HostScope },
     { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
   ];
-  const mkE1Safe = (authority: string, body: Record<string, unknown>, ep = '/jderest/v2/formservice') => {
+  const mkE1Safe = (authority: string, body: unknown, ep = '/jderest/v2/formservice', scheme: 'https' | 'http' = 'https') => {
     const ext = extractSemantic({
-      url: new URL(`https://${authority}${ep}`), sanitizedPath: ep,
+      url: new URL(`${scheme}://${authority}${ep}`), sanitizedPath: ep,
       method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
       reqType: 'application/json', hmacKey, decodedBuf: Buffer.from(JSON.stringify(body)),
       bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
     });
     return {
       descV: 1 as const, redactV: 1 as const, extractorV: 1 as const, surface: 'browser' as const, target: { site: 'e1' },
-      seq: 1, t: '', kind: 'http' as const, scheme: 'https', authority, path: ep, url: `https://${authority}${ep}`,
+      seq: 1, t: '', kind: 'http' as const, scheme, authority, path: ep, url: `${scheme}://${authority}${ep}`,
       method: 'POST', effectiveMethod: 'POST', methodSource: 'wire' as const, isWrite: true, prefixBytes: 50,
       bodyComplete: true, decodeComplete: true, completeness: ext.completeness, actions: ext.actions,
     };
@@ -978,7 +978,12 @@ test('R4 final convergence: E1 host/port authority & batch per-form binding, Sha
   assert.equal(
     findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-a.example.com', { formName: 'P0411_W0411A', formServiceAction: 'W' }) }).approved,
     true,
-    'E1 approval matches exact hostA',
+    'E1 approval matches exact hostA on HTTPS 443',
+  );
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-a.example.com', { formName: 'P0411_W0411A', formServiceAction: 'W' }, '/jderest/v2/formservice', 'http') }).approved,
+    false,
+    'E1 approval for port 443 MUST NOT match HTTP port 80!',
   );
   assert.equal(
     findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-b.example.com', { formName: 'P0411_W0411A', formServiceAction: 'W' }) }).approved,
@@ -1097,6 +1102,88 @@ test('R4 final convergence: E1 host/port authority & batch per-form binding, Sha
     bodyComplete: true,
   }).descriptor;
   assert.equal(evaluateStage1(wideSelect.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_databricks_sql_read');
+
+  // 7. R5 Astra P1-2..P1-6 + Opus P2-2 micro-fixes:
+  // 7a. E1 malformed top-level JSON array & null formRequests / formActions escalate e1_ais_ambiguous_or_malformed!
+  for (const [label, payload, ep] of [
+    ['top-level JSON array on batchformservice', [{ formName: 'P0411_W0411A', formServiceAction: 'W' }], '/jderest/v2/batchformservice'],
+    ['null formRequests on batchformservice', { formName: 'P0411_W0411A', formRequests: null }, '/jderest/v2/batchformservice'],
+    ['null formActions on formservice', { formName: 'P0411_W0411A', formActions: null }, '/jderest/v2/formservice'],
+    ['null formRequest on formservice', { formName: 'P0411_W0411A', formRequest: null }, '/jderest/v2/formservice'],
+  ] as const) {
+    const mal = mkE1Safe('erp-a.example.com', payload, ep);
+    assert.equal(mal.actions[0].details?.malformedE1Action, true, `must flag malformedE1Action: ${label}`);
+    assert.equal(evaluateStage1(mal, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed', `must escalate: ${label}`);
+  }
+
+  // 7b. Double percent-encoded SharePoint path (%2572ecycle / %252f) escalates on writes, while GET reads with %2F remain allowed (Opus P2-2)!
+  const doubleEncodedWrite = extractSemantic({
+    url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/lists/items(1)/%2572ecycle()'),
+    sanitizedPath: '/sites/fin/_api/web/lists/items(1)/%2572ecycle()',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: {}, bodyComplete: true,
+    transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(doubleEncodedWrite.actions[0].details?.ambiguousPathEncoding, true, 'double-encoded %2572ecycle flagged ambiguous');
+  const doubleEncWriteDec = evaluateStage1({
+    descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'sp' }, seq: 1, t: '', kind: 'http',
+    scheme: 'https', authority: 'tenant.sharepoint.com', path: '/sites/fin/_api/web/lists/items(1)/%2572ecycle()',
+    url: 'https://tenant.sharepoint.com/sites/fin/_api/web/lists/items(1)/%2572ecycle()',
+    method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 0,
+    bodyComplete: true, decodeComplete: true, completeness: doubleEncodedWrite.completeness, actions: doubleEncodedWrite.actions,
+  }, 'enforce', { approved: false, recentApprovedProposals: [] });
+  assert.equal(doubleEncWriteDec.ruleId, 'sharepoint_incomplete_selector');
+
+  const spGetWithEncodedSlash = extractSemantic({
+    url: new URL("https://tenant.sharepoint.com/sites/fin/_api/web/GetFolderByServerRelativeUrl('%2Fsites%2Ffin')"),
+    sanitizedPath: "/sites/fin/_api/web/GetFolderByServerRelativeUrl('%2Fsites%2Ffin')",
+    method: 'GET', effectiveMethod: 'GET', kind: 'http', rawHeaders: {}, bodyComplete: true,
+    transport: 'complete', isWrite: false, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  const spGetDec = evaluateStage1({
+    descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'sp' }, seq: 1, t: '', kind: 'http',
+    scheme: 'https', authority: 'tenant.sharepoint.com', path: "/sites/fin/_api/web/GetFolderByServerRelativeUrl('%2Fsites%2Ffin')",
+    url: "https://tenant.sharepoint.com/sites/fin/_api/web/GetFolderByServerRelativeUrl('%2Fsites%2Ffin')",
+    method: 'GET', effectiveMethod: 'GET', methodSource: 'wire', isWrite: false, prefixBytes: 0,
+    bodyComplete: true, decodeComplete: true, completeness: spGetWithEncodedSlash.completeness, actions: spGetWithEncodedSlash.actions,
+  }, 'enforce', { approved: false, recentApprovedProposals: [] });
+  assert.equal(spGetDec.action, 'allow', 'SharePoint GET read with %2F server-relative URL must NOT escalate!');
+
+  // 7c. SharePoint destructive route precedence over generic `service` connection AND E1-shaped body!
+  const svcSpDelete = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['secret-token-xyz'] })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(svcSpDelete.safe.actions[0].family, 'sharepoint', 'SharePoint route beats generic service fallback');
+  assert.equal(svcSpDelete.safe.actions[0].op, 'sharepoint:delete');
+  // 7d. Raw DeleteByIds selector strings NEVER leak into safe audit actions[].details!
+  assert.equal('selectedIds' in (svcSpDelete.safe.actions[0].details ?? {}), false, 'runtime selectedIds must NEVER appear in safe audit details');
+  assert.equal(svcSpDelete.safe.actions[0].details?.selectedIdCount, 1);
+  assert.equal(JSON.stringify(svcSpDelete.safe).includes('secret-token-xyz'), false, 'raw DeleteByIds ID string never crosses redaction boundary');
+
+  const spWithE1Body = mkSpDeleteByIds(JSON.stringify({ formName: 'P0411_W0411A', formServiceAction: 'R', ids: ['id-1'] }));
+  assert.equal(spWithE1Body.actions[0].family, 'sharepoint', 'SharePoint URL beats E1-shaped body heuristic');
+  assert.equal(spWithE1Body.actions[0].details?.bodySelectionIncomplete, true, 'competing extra keys fail closed on DeleteByIds');
+  const spOver64Dup = mkSpDeleteByIds(JSON.stringify({ ids: Array.from({ length: 65 }, () => 'id-1') }));
+  assert.equal(spOver64Dup.actions[0].details?.bodySelectionIncomplete, true, '>64 raw entries rejected before dedup');
+
+  // 7e. Unconditionally denied MERGE ... THEN DELETE with 200 parameters (600+ JSON nodes) STILL denies unconditionally!
+  const wideMergeDelete = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({
+      warehouse_id: 'wh1',
+      statement: 'MERGE INTO prod.gl t USING staging s ON t.id = s.id WHEN MATCHED THEN DELETE',
+      parameters: Array.from({ length: 200 }, (_, i) => ({ name: `p${i}`, value: String(i), type: 'INT' })),
+    })),
+    bodyComplete: true,
+  }).descriptor;
+  const wideMergeDec = evaluateStage1(wideMergeDelete.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] });
+  assert.equal(wideMergeDec.action, 'deny', 'wide MERGE ... THEN DELETE must NEVER downgrade to escalation');
+  assert.equal(wideMergeDec.ruleId, 'databricks_destructive_ddl');
 });
 
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {

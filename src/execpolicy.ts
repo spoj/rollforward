@@ -15,6 +15,7 @@ import {
   effectiveAuthority,
   isValidEmailDomain,
   parseSemanticMethods,
+  validateSharePointDeleteIds,
   type RequestDescriptor,
   type SafeRequestProjection,
   type SemanticAction,
@@ -456,12 +457,11 @@ export function validateAndNormalizeApprovalScope(
     if (port !== undefined && !host) {
       throw new HttpError(400, 'execpolicy port requires host')
     }
-    const normPort = port === 443 ? undefined : port
     return {
       action,
       target,
       ...(host && { host }),
-      ...(normPort !== undefined && { port: normPort }),
+      ...(port !== undefined && { port }),
       ...(site && { site }),
       workspace,
       maxUses,
@@ -509,26 +509,12 @@ export function validateAndNormalizeApprovalScope(
     surface = site ? 'browser' : 'api'
     const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedTargetLower)
     if (isDeleteByIds) {
-      if (!Array.isArray(obj.ids) || obj.ids.length === 0 || obj.ids.length > 64) {
-        throw new HttpError(400, 'SharePoint DeleteByIds scope requires 1..64 explicit concrete ids')
+      const parsed = validateSharePointDeleteIds(obj.ids, containsRawSecret)
+      if (!parsed.ok) {
+        throw new HttpError(400, parsed.reason)
       }
-      const idSet = new Set<string>()
-      for (const item of obj.ids) {
-        let sId: string
-        if (typeof item === 'string' && item.trim() && item.trim().length <= 128 && !item.includes('*') && !/[\r\n\0]/.test(item)) {
-          sId = item.trim()
-        } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
-          sId = String(item)
-        } else {
-          throw new HttpError(400, 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)')
-        }
-        if (containsRawSecret(sId)) {
-          throw new HttpError(400, 'execpolicy ids must not contain raw secrets or credentials')
-        }
-        idSet.add(sId)
-      }
-      ids = [...idSet].sort()
-      bodySelector = JSON.stringify({ op: 'deletebyids', ids })
+      ids = parsed.ids
+      bodySelector = parsed.bodySelector
     } else if (obj.ids !== undefined) {
       throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
     }
@@ -561,14 +547,13 @@ export function validateAndNormalizeApprovalScope(
   if (port !== undefined && !host) {
     throw new HttpError(400, 'execpolicy port requires host')
   }
-  const normPort = port === 443 ? undefined : port
   const foldGraph = connType === 'graph' || host === 'graph.microsoft.com'
   const canonicalTarget = canonicalizeTargetPath(rawPathname, foldGraph) + rawSearch
   const targetDigest = computeTargetDigest({
     surface,
     connectionType: connType,
     host,
-    ...(normPort !== undefined && { port: normPort }),
+    ...(port !== undefined && { port }),
     rawPathname,
     rawSearch,
     ...(bodySelector && { bodySelector }),
@@ -581,7 +566,7 @@ export function validateAndNormalizeApprovalScope(
     targetDigest,
     ...(connection && { connection }),
     ...(host && { host }),
-    ...(normPort !== undefined && { port: normPort }),
+    ...(port !== undefined && { port }),
     ...(site && { site }),
     workspace,
     maxUses,
@@ -592,8 +577,16 @@ function normalizeSafeAuthority(safe: SafeRequestProjection): string {
   const raw = (safe.authority ?? '').trim().toLowerCase()
   if (!raw) return ''
   const scheme = (safe.scheme ?? 'https').toLowerCase()
+  if (raw.startsWith('[')) {
+    const close = raw.indexOf(']')
+    if (close < 0) return ''
+    const host = raw.slice(0, close + 1)
+    const rest = raw.slice(close + 1)
+    if (rest.startsWith(':')) return effectiveAuthority(host, rest.slice(1), scheme)
+    return effectiveAuthority(host, undefined, scheme)
+  }
   const colon = raw.lastIndexOf(':')
-  if (colon > 0 && !raw.includes(']')) {
+  if (colon > 0) {
     return effectiveAuthority(raw.slice(0, colon), raw.slice(colon + 1), scheme)
   }
   return effectiveAuthority(raw, undefined, scheme)
@@ -604,10 +597,10 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   if (scope.connection !== undefined && safe.target.connection !== scope.connection) return false
   if (scope.site !== undefined && safe.target.site !== scope.site) return false
   // Enforce every supplied host/port authority constraint across ALL scope actions (incl. E1)!
+  // Resolve omitted scope.port as HTTPS default 443 (NEVER letting an http:// request match a port-443/default-HTTPS scope!).
   if (scope.port !== undefined && !scope.host) return false
   if (scope.host !== undefined) {
-    const scheme = (safe.scheme ?? 'https').toLowerCase()
-    const expectedAuth = effectiveAuthority(scope.host, scope.port, scheme)
+    const expectedAuth = effectiveAuthority(scope.host, scope.port, 'https')
     const reqAuth = normalizeSafeAuthority(safe)
     if (!reqAuth || reqAuth !== expectedAuth) return false
   }
@@ -686,10 +679,7 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
     if (!spAct) return false
     if (spAct.details?.bodySelectionIncomplete === true || spAct.details?.ambiguousPathEncoding === true) return false
     if (!safeHexEqual(spAct.details?.targetDigest, scope.targetDigest)) return false
-    if (Array.isArray(scope.ids)) {
-      const reqIds = Array.isArray(spAct.details?.selectedIds) ? (spAct.details!.selectedIds as string[]) : undefined
-      if (!reqIds || reqIds.length !== scope.ids.length || !reqIds.every((v, idx) => v === scope.ids![idx])) return false
-    }
+    if (Array.isArray(scope.ids) && spAct.details?.selectedIdCount !== scope.ids.length) return false
     return true
   }
 
@@ -1040,7 +1030,7 @@ export function evaluateStage1(
       if (act.coverage === 'opaque-batch') {
         return make('escalate', 'sharepoint_opaque_batch', 'Opaque SharePoint $batch write requires review')
       }
-      if (act.details?.bodySelectionIncomplete === true || act.details?.ambiguousPathEncoding === true) {
+      if (safe.isWrite && (act.details?.bodySelectionIncomplete === true || act.details?.ambiguousPathEncoding === true)) {
         return make('escalate', 'sharepoint_incomplete_selector', 'SharePoint write has incomplete body selector or ambiguous path encoding')
       }
       if (isSharePointDestructive(safe, act)) {

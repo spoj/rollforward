@@ -817,10 +817,10 @@ export function canonicalizeTargetPath(rawPathname: string, foldGraphVersion = f
 
 export function effectiveAuthority(host: string, port?: string | number, scheme = 'https'): string {
   const h = host.trim().toLowerCase()
-  const p = port !== undefined && port !== null ? String(port).trim() : ''
-  if (!p) return h
-  if ((scheme === 'https' && p === '443') || (scheme === 'http' && p === '80')) return h
-  return `${h}:${p}`
+  if (!h) return ''
+  const rawPort = port !== undefined && port !== null ? String(port).trim() : ''
+  const effPort = rawPort || (scheme === 'http' ? '80' : scheme === 'https' ? '443' : '')
+  return effPort ? `${h}:${effPort}` : h
 }
 
 export function decodePathSegmentsStrict(rawPathname: string): { segments: string[]; decodedPath: string; invalidEncoding: boolean } {
@@ -832,7 +832,8 @@ export function decodePathSegmentsStrict(rawPathname: string): { segments: strin
     if (!seg) continue
     try {
       const dec = decodeURIComponent(seg)
-      if (/[/\\\x00-\x1f\x7f]/.test(dec) || dec === '.' || dec === '..') {
+      // Reject encoded separators/CTLs/dot-segments AND residual double-encoding (%XX remaining after one decode)!
+      if (/[/\\\x00-\x1f\x7f]/.test(dec) || /%[0-9a-fA-F]{2}/.test(dec) || dec === '.' || dec === '..') {
         invalidEncoding = true
       }
       segments.push(dec)
@@ -842,6 +843,36 @@ export function decodePathSegmentsStrict(rawPathname: string): { segments: strin
     }
   }
   return { segments, decodedPath: '/' + segments.join('/'), invalidEncoding }
+}
+
+// Unified strict SharePoint DeleteByIds selector validator shared between proposal validation and runtime extraction.
+export function validateSharePointDeleteIds(
+  rawIds: unknown,
+  rejectValue?: (id: string) => boolean,
+): { ok: true; ids: string[]; bodySelector: string } | { ok: false; reason: string } {
+  if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.length > 64) {
+    return { ok: false, reason: 'SharePoint DeleteByIds scope requires 1..64 explicit concrete ids' }
+  }
+  const idSet = new Set<string>()
+  for (const item of rawIds) {
+    let sId: string
+    if (typeof item === 'string' && item.trim() && item.trim().length <= 128 && !item.includes('*') && !/[\r\n\0]/.test(item)) {
+      sId = item.trim()
+    } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
+      sId = String(item)
+    } else {
+      return { ok: false, reason: 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)' }
+    }
+    if (rejectValue?.(sId)) {
+      return { ok: false, reason: 'execpolicy ids must not contain raw secrets or credentials' }
+    }
+    idSet.add(sId)
+  }
+  if (idSet.size === 0) {
+    return { ok: false, reason: 'SharePoint DeleteByIds scope requires 1..64 explicit concrete ids' }
+  }
+  const ids = [...idSet].sort()
+  return { ok: true, ids, bodySelector: JSON.stringify({ op: 'deletebyids', ids }) }
 }
 
 export function computeTargetDigest(
@@ -1931,8 +1962,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         if (Array.isArray(obj?.parameters) && obj.parameters.length > 0) {
           details.parameterCount = obj.parameters.length
         }
-        // Only compute sqlContextDigest for non-read SQL (read-only SELECTs with >=128 params don't need approval digesting!)
-        if (stmtRaw && cls.sqlClass !== 'read') {
+        // Only compute sqlContextDigest for approvable non-read SQL (skip read-only SELECTs AND unconditionally denied
+        // DROP/TRUNCATE/INSERT OVERWRITE/REPLACE WHERE/MERGE...THEN DELETE so 512+ param nodes never downgrade a deny!).
+        if (stmtRaw && cls.sqlClass !== 'read' && !cls.hasDropOrTruncate && !cls.hasMergeDelete) {
           details.sqlContextDigest = computeSqlContextDigest({
             sql: stmtRaw,
             ...(obj && 'parameters' in obj ? { parameters: obj.parameters } : {}),
@@ -1975,6 +2007,87 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
       }
+    } else if (
+      // Classify recognized SharePoint REST routes BEFORE generic `service` and body-only E1 heuristics!
+      decodedLowerPath.includes('/_api/') ||
+      decodedLowerPath.includes('/_vti_bin/') ||
+      (decodedPathInfo.invalidEncoding && (
+        /(?:^|\.)sharepoint\.com$/i.test(input.url.hostname) ||
+        (() => {
+          const twice = decodePathSegmentsStrict(decodedPathInfo.decodedPath).decodedPath.toLowerCase()
+          return twice.includes('/_api/') || twice.includes('/_vti_bin/')
+        })()
+      ))
+    ) {
+      const sanLower = input.sanitizedPath.toLowerCase()
+      const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
+      const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
+      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
+      if (decodedLowerPath.includes('/$batch')) {
+        actions.push({
+          family: 'sharepoint',
+          op: 'sharepoint:batch',
+          resource: spResource,
+          details: {
+            hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
+            hasIfMatch,
+            ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
+            ...(input.isWrite && { targetDigest: makeTargetDigest() }),
+          },
+          coverage: 'opaque-batch',
+        })
+        extractStatus = 'opaque'
+      } else {
+        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
+        const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
+        let bodySelector: string | undefined
+        let selectedIdCount: number | undefined
+        let bodySelectionIncomplete = false
+        if (isDeleteByIds && input.isWrite) {
+          if (!fullyIntact || !obj) {
+            bodySelectionIncomplete = true
+          } else {
+            const idMatches = keyedCI(obj, 'ids')
+            const allowedMetaKeys = new Set(['__metadata', '@odata.type'])
+            const extraKeys = Object.keys(obj).filter(k => k.toLowerCase() !== 'ids' && !allowedMetaKeys.has(k.toLowerCase()))
+            if (idMatches.length !== 1 || extraKeys.length > 0) {
+              bodySelectionIncomplete = true
+            } else {
+              const parsed = validateSharePointDeleteIds(idMatches[0])
+              if (!parsed.ok) {
+                bodySelectionIncomplete = true
+              } else {
+                selectedIdCount = parsed.ids.length
+                bodySelector = parsed.bodySelector
+              }
+            }
+          }
+        }
+        // Keep runtime selector strings local to targetDigest computation — NEVER copy raw IDs into safe audit details!
+        const details: Record<string, unknown> = {
+          hasIfMatch,
+          hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
+          ...(destructiveAction && { destructiveAction: true }),
+          ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
+          ...(bodySelectionIncomplete && { bodySelectionIncomplete: true }),
+          ...(selectedIdCount !== undefined && { selectedIdCount }),
+          ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector) }),
+        }
+        if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
+        const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
+        const metaIdent = validateStructuralIdent(rawMetaType, /^[#A-Za-z][A-Za-z0-9_.-]{0,63}$/, input.vault)
+        vaultRedactions += metaIdent.vaultRedactions
+        if (metaIdent.value) details.metadataType = metaIdent.value
+
+        actions.push({
+          family: 'sharepoint',
+          op: destructiveAction ? 'sharepoint:delete' : `sharepoint:${input.effectiveMethod}`,
+          resource: spResource,
+          details,
+          coverage: decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'unknown' : defaultCov,
+        })
+        extractStatus = decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'opaque' : fullyIntact ? 'complete' : 'partial'
+      }
     } else if (isService) {
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       actions.push({
@@ -2015,8 +2128,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const inspectE1Unit = (unit: Record<string, unknown>) => {
         const containers: Record<string, unknown>[] = [unit]
         for (const subKey of ['actionRequest', 'formRequest'] as const) {
-          if (subKey in unit && unit[subKey] !== undefined && unit[subKey] !== null) {
-            if (typeof unit[subKey] === 'object' && !Array.isArray(unit[subKey])) {
+          if (subKey in unit && unit[subKey] !== undefined) {
+            if (unit[subKey] !== null && typeof unit[subKey] === 'object' && !Array.isArray(unit[subKey])) {
               containers.push(unit[subKey] as Record<string, unknown>)
             } else {
               malformedE1Action = true
@@ -2062,7 +2175,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         let unitMutates = normUnitScalars.some(s => s === 'W' || s === 'C' || s === 'U' || s === 'D')
 
         for (const c of containers) {
-          if ('formActions' in c && c.formActions !== undefined && c.formActions !== null) {
+          if ('formActions' in c && c.formActions !== undefined) {
             sawFormActionsField = true
             if (Array.isArray(c.formActions)) {
               for (const a of c.formActions) {
@@ -2094,7 +2207,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 
       if (obj) {
         inspectE1Unit(obj)
-        if ('formRequests' in obj && obj.formRequests !== undefined && obj.formRequests !== null) {
+        if ('formRequests' in obj && obj.formRequests !== undefined) {
           if (Array.isArray(obj.formRequests)) {
             for (const item of obj.formRequests) {
               if (item && typeof item === 'object' && !Array.isArray(item)) {
@@ -2106,7 +2219,12 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           } else {
             malformedE1Action = true
           }
+        } else if (endpoint === 'batchformservice' && input.isWrite) {
+          malformedE1Action = true
         }
+      } else if (parsedJson !== undefined || structuredJsonParseFailed) {
+        // Non-object JSON body (e.g. top-level JSON array or primitive) on an E1 endpoint is malformed!
+        malformedE1Action = true
       }
 
       const uniqueAllForms = [...new Set(allFormNames)]
@@ -2165,84 +2283,6 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         coverage: defaultCov,
       })
       extractStatus = fullyIntact ? 'complete' : 'partial'
-    } else if (decodedLowerPath.includes('/_api/') || decodedLowerPath.includes('/_vti_bin/')) {
-      const sanLower = input.sanitizedPath.toLowerCase()
-      const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
-      const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
-      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
-      if (decodedLowerPath.includes('/$batch')) {
-        actions.push({
-          family: 'sharepoint',
-          op: 'sharepoint:batch',
-          resource: spResource,
-          details: {
-            hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
-            hasIfMatch,
-            ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
-            ...(input.isWrite && { targetDigest: makeTargetDigest() }),
-          },
-          coverage: 'opaque-batch',
-        })
-        extractStatus = 'opaque'
-      } else {
-        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
-        const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
-        let bodySelector: string | undefined
-        let selectedIds: string[] | undefined
-        let bodySelectionIncomplete = false
-        if (isDeleteByIds && input.isWrite) {
-          if (!fullyIntact || !obj) {
-            bodySelectionIncomplete = true
-          } else {
-            const idMatches = keyedCI(obj, 'ids')
-            if (idMatches.length !== 1 || !Array.isArray(idMatches[0]) || idMatches[0].length === 0 || idMatches[0].length > 1000) {
-              bodySelectionIncomplete = true
-            } else {
-              const idSet = new Set<string>()
-              let ok = true
-              for (const item of idMatches[0]) {
-                if (typeof item === 'string' && item.trim() && item.trim().length <= 128 && !/[\r\n\0]/.test(item)) {
-                  idSet.add(item.trim())
-                } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
-                  idSet.add(String(item))
-                } else {
-                  ok = false
-                  break
-                }
-              }
-              if (!ok || idSet.size === 0 || idSet.size > 64) {
-                bodySelectionIncomplete = true
-              } else {
-                selectedIds = [...idSet].sort()
-                bodySelector = JSON.stringify({ op: 'deletebyids', ids: selectedIds })
-              }
-            }
-          }
-        }
-        const details: Record<string, unknown> = {
-          hasIfMatch,
-          hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
-          ...(destructiveAction && { destructiveAction: true }),
-          ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
-          ...(bodySelectionIncomplete && { bodySelectionIncomplete: true }),
-          ...(selectedIds && { selectedIds, selectedIdCount: selectedIds.length }),
-          ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector) }),
-        }
-        if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
-        const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
-        const metaIdent = validateStructuralIdent(rawMetaType, /^[#A-Za-z][A-Za-z0-9_.-]{0,63}$/, input.vault)
-        vaultRedactions += metaIdent.vaultRedactions
-        if (metaIdent.value) details.metadataType = metaIdent.value
-
-        actions.push({
-          family: 'sharepoint',
-          op: destructiveAction ? 'sharepoint:delete' : `sharepoint:${input.effectiveMethod}`,
-          resource: spResource,
-          details,
-          coverage: decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'unknown' : defaultCov,
-        })
-        extractStatus = decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'opaque' : fullyIntact ? 'complete' : 'partial'
-      }
     } else if (
       lowerPath.includes('/graphql') ||
       (obj && (typeof obj.query === 'string' || (obj.extensions && typeof obj.extensions === 'object' && 'persistedQuery' in (obj.extensions as Record<string, unknown>)))) ||
