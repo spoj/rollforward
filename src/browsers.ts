@@ -689,12 +689,15 @@ export async function reap() {
     } catch (e) {
       console.error(`the browser service: browser ${id}, left open by a restart, did not close cleanly`, e);
     } finally {
-      const all = journal();
-      delete all[id];
-      setJournal(all);
-      if (h) {
-        held.delete(key);
-        h.release();
+      try {
+        const all = journal();
+        delete all[id];
+        setJournal(all);
+      } finally {
+        if (h) {
+          held.delete(key);
+          h.release();
+        }
       }
     }
   })) };
