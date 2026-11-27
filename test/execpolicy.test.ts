@@ -15,6 +15,7 @@ import {
 import {
   buildApiRequestDescriptor,
   classifySqlStatement,
+  extractMimeRecipientDomains,
   extractSemantic,
   parseSemanticMethods,
 } from '../src/extract.ts';
@@ -349,22 +350,167 @@ test('Stage-1 execpolicy deterministic rules: method-override escalation/downgra
   assert.equal(dUnguarded.action, 'escalate');
   assert.equal(dUnguarded.ruleId, 'unguarded_overwrite_no_if_match');
 
-  // Current-epoch approval check: prior-epoch signoff is IGNORED after an authority boundary!
+  // Current-epoch approval check: structured scope, workspace binding, owner/approver authority, and single-use consumption!
+  const mailDesc = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 50, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ message: { toRecipients: [{ emailAddress: { address: 'cfo@acme.test' } }] } })),
+    bodyComplete: true,
+  }).descriptor;
+  const competitorMail = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 51, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ message: { toRecipients: [{ emailAddress: { address: 'ceo@competitor.test' } }] } })),
+    bodyComplete: true,
+  }).descriptor;
+  const fileDelDesc = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 52, method: 'DELETE',
+    url: new URL('https://graph.microsoft.com/v1.0/drives/b1/items/01ABC'),
+    headers: {}, bodyComplete: true,
+  }).descriptor;
+
+  // Unrelated prose proposal signed by an arbitrary viewer NEVER unlocks destructive actions!
+  const badLog: Entry[] = [
+    { seq: 1, at: '2026-11-01T00:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-01T00:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'May I rename the draft summary?', run: 1 },
+    { seq: 3, at: '2026-11-01T00:02:00Z', by: 'viewer@x.test', op: 'signoff', on: 2, text: 'Sure' },
+  ];
+  assert.equal(findCurrentEpochApproval(badLog, { owner: 'alice@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, false, 'unrelated prose + viewer signoff rejected');
+  assert.equal(findCurrentEpochApproval(badLog, { owner: 'alice@demo.test', workspace: 'w', safe: fileDelDesc.safe }).approved, false);
+
+  // Scoped proposal: enforced across authority boundary, workspace, owner, target/domain, and single-use count!
   const log: Entry[] = [
     { seq: 1, at: '2026-11-01T00:00:00Z', by: 'alice@demo.test', op: 'create' },
-    { seq: 2, at: '2026-11-01T00:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Send mail', run: 1 },
-    { seq: 3, at: '2026-11-01T00:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
-    { seq: 4, at: '2026-11-01T00:03:00Z', by: 'server', op: 'authority', owner: 'bob@demo.test', epoch: 2 },
+    { seq: 2, at: '2026-11-01T00:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Send mail', run: 1, execpolicy: { action: 'graph:sendMail', domains: ['acme.test'], workspace: 'w', maxUses: 1 } },
+    { seq: 3, at: '2026-11-01T00:02:00Z', by: 'viewer@x.test', op: 'signoff', on: 2, text: 'Viewer cannot approve' },
+    { seq: 4, at: '2026-11-01T00:02:30Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Owner approved' },
+    { seq: 5, at: '2026-11-01T00:03:00Z', by: 'server', op: 'authority', owner: 'bob@demo.test', epoch: 2, workspace: 'w' },
   ];
-  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 3 }).approved, true);
-  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 3 }).approvalRef, 'c2');
-  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4 }).approved, false, 'authority boundary retires earlier approval');
+  // Viewer signoff at seq 3 alone does NOT approve:
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 3, owner: 'alice@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, false, 'non-owner viewer signoff rejected');
+  // Owner signoff at seq 4 approves matching mail in workspace 'w':
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4, owner: 'alice@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, true);
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4, owner: 'alice@demo.test', workspace: 'w', safe: mailDesc.safe }).approvalRef, 'c2');
+  // Wrong workspace / wrong recipient domain / wrong action all rejected:
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4, owner: 'alice@demo.test', workspace: 'other-ws', safe: mailDesc.safe }).approved, false, 'wrong workspace rejected');
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4, owner: 'alice@demo.test', workspace: 'w', safe: competitorMail.safe }).approved, false, 'unapproved recipient domain rejected');
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 4, owner: 'alice@demo.test', workspace: 'w', safe: fileDelDesc.safe }).approved, false, 'different action rejected');
+  // Authority boundary at seq 5 retires earlier approval:
+  assert.equal(findCurrentEpochApproval(log, { uptoSeq: 5, owner: 'bob@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, false, 'authority boundary retires earlier approval');
   log.push(
-    { seq: 5, at: '2026-11-01T00:04:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Send mail in epoch 2', run: 2 },
-    { seq: 6, at: '2026-11-01T00:05:00Z', by: 'bob@demo.test', op: 'signoff', on: 5, text: 'OK' },
+    { seq: 6, at: '2026-11-01T00:04:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Send mail in epoch 2', run: 2, execpolicy: { action: 'graph:sendMail', domains: ['acme.test'], workspace: 'w', maxUses: 1 } },
+    { seq: 7, at: '2026-11-01T00:05:00Z', by: 'bob@demo.test', op: 'signoff', on: 6, text: 'OK' },
   );
-  assert.equal(findCurrentEpochApproval(log).approved, true);
-  assert.equal(findCurrentEpochApproval(log).approvalRef, 'c5');
+  assert.equal(findCurrentEpochApproval(log, { owner: 'bob@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, true);
+  assert.equal(findCurrentEpochApproval(log, { owner: 'bob@demo.test', workspace: 'w', safe: mailDesc.safe }).approvalRef, 'c6');
+  // Consuming c6 once exhausts maxUses=1:
+  log.push({ seq: 8, at: '2026-11-01T00:05:10Z', by: 'agent', op: 'call', run: 2, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', status: 202, bytes: 0, policy: { decisionId: 'd', mode: 'enforce', action: 'allow', ruleId: 'graph_send_mail_approved', policyVersion: 'v1', approvalRef: 'c6' } });
+  assert.equal(findCurrentEpochApproval(log, { owner: 'bob@demo.test', workspace: 'w', safe: mailDesc.safe }).approved, false, 'consumed single-use approval cannot unlock a 2nd call');
+});
+
+test('P1-1 O(N) MIME recipient scanner, P1-2 Spark SQL comment/raw-string lexer fail-closed, P2-7 rule coverage & P2-8 quote-aware SOAP', () => {
+  // P1-1: adversarial 60 KiB dotless MIME To header must scan in <50ms (no quadratic regex ReDoS!)
+  const evilMime = Buffer.from(`From: alice@demo.test\r\nTo: ${'a'.repeat(23_000)}@${'b'.repeat(23_000)}\r\n\r\nbody`).toString('base64');
+  const t0 = performance.now();
+  const badRes = extractMimeRecipientDomains(evilMime);
+  const dt = performance.now() - t0;
+  assert.ok(dt < 50, `extractMimeRecipientDomains must run in <50ms (took ${dt.toFixed(1)}ms)`);
+  assert.deepEqual(badRes, { domains: [], count: 0 });
+
+  const goodMime = Buffer.from('From: alice@demo.test\r\nTo: "Jane" <jane@acme.test>, cfo@partner.org\r\nCc: audit@acme.test\r\n\r\nhello').toString('base64');
+  assert.deepEqual(extractMimeRecipientDomains(goodMime), { domains: ['acme.test', 'partner.org'], count: 3 });
+
+  // P1-2: Spark SqlBaseLexer comment/CR/nesting/raw-string attacks NEVER classify as read and DENY in enforce mode!
+  const sparkAttacks = [
+    '/* /* */ SELECT 1 -- */\rDROP TABLE prod.finance.gl',
+    '-- a\\\nSELECT 1 -- x\rDROP TABLE t',
+    '-- x\rDROP TABLE t',
+    "SELECT r'\\' ; DROP TABLE t; --'",
+  ];
+  for (const sql of sparkAttacks) {
+    const cls = classifySqlStatement(sql);
+    assert.notEqual(cls.sqlClass, 'read', `attack SQL must never be classified as read: ${sql}`);
+    assert.equal(cls.hasDropOrTruncate, true, `attack SQL must flag hasDropOrTruncate: ${sql}`);
+    const desc = buildApiRequestDescriptor({
+      connection: 'dbx', connectionType: 'databricks', seq: 1, method: 'POST',
+      url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'w1', statement: sql })),
+      bodyComplete: true,
+    }).descriptor;
+    const dec = evaluateStage1(desc.safe, 'enforce', { approved: true, approvalRef: 'c1', recentApprovedProposals: [] });
+    assert.equal(dec.action, 'deny', `attack SQL must deny unconditionally: ${sql}`);
+    assert.equal(dec.ruleId, 'databricks_destructive_ddl');
+  }
+  // Ambiguous comment without destructive keyword STILL never classifies as read (escalates databricks_sql_unknown):
+  const ambig = classifySqlStatement('-- note\rSELECT 1');
+  assert.equal(ambig.sqlClass, 'unknown');
+  assert.equal(ambig.ambiguous, true);
+
+  // P2-7: Graph permanentDelete, SharePoint recycle(), E1 formActions writes, and Graph excel_write all requireApproval!
+  const permDel = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 2, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/drives/d1/items/i1/permanentDelete'),
+    headers: {}, bodyComplete: true,
+  }).descriptor;
+  assert.equal(permDel.safe.actions[0].op, 'graph:file_delete');
+  assert.equal(evaluateStage1(permDel.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'graph_file_delete');
+
+  const spRecycle = extractSemantic({
+    url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/lists/getbytitle(%27Docs%27)/items(1)/recycle()'),
+    sanitizedPath: '/sites/fin/_api/web/lists/getbytitle(%27Docs%27)/items(1)/recycle()',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: {}, bodyComplete: true,
+    transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(spRecycle.actions[0].op, 'sharepoint:delete');
+  assert.equal(evaluateStage1({
+    descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'sp' }, seq: 3, t: '', kind: 'http',
+    scheme: 'https', authority: 'tenant.sharepoint.com', path: '/sites/fin/_api/web/lists/items(1)/recycle()',
+    url: 'https://tenant.sharepoint.com/sites/fin/_api/web/lists/items(1)/recycle()',
+    method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 0,
+    bodyComplete: true, decodeComplete: true, completeness: spRecycle.completeness, actions: spRecycle.actions,
+  }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'sharepoint_destructive_write');
+
+  const e1FormAct = extractSemantic({
+    url: new URL('https://erp.example.com/jderest/v2/formservice'),
+    sanitizedPath: '/jderest/v2/formservice',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+    reqType: 'application/json',
+    decodedBuf: Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] })),
+    bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(evaluateStage1({
+    descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'e1' }, seq: 4, t: '', kind: 'http',
+    scheme: 'https', authority: 'erp.example.com', path: '/jderest/v2/formservice',
+    url: 'https://erp.example.com/jderest/v2/formservice',
+    method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
+    bodyComplete: true, decodeComplete: true, completeness: e1FormAct.completeness, actions: e1FormAct.actions,
+  }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
+
+  const xlWrite = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 5, method: 'PATCH',
+    url: new URL("https://graph.microsoft.com/v1.0/drives/d1/items/i1/workbook/worksheets/Sheet1/range(address='A1')"),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ values: [[42]] })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(evaluateStage1(xlWrite.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'graph_excel_write');
+
+  // P2-8: SOAP quote-aware tag end scan resists '>' inside attribute values
+  const soap = extractSemantic({
+    url: new URL('https://erp.example.com/soap'),
+    sanitizedPath: '/soap',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http',
+    hdr: { soapaction: '"GetBalance"' },
+    rawHeaders: { 'content-type': 'text/xml', soapaction: '"GetBalance"' },
+    reqType: 'text/xml',
+    decodedBuf: Buffer.from('<s:Envelope><s:Body x="><GetBalance/>"><DeleteVendor/></s:Body></s:Envelope>'),
+    bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(soap.actions[0].details?.bodyRootQName, 'DeleteVendor');
+  assert.equal(soap.actions[0].details?.actionMismatch, true);
 });
 
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
@@ -470,7 +616,7 @@ test('replayExecPolicy deterministically replays saved log.jsonl + browser/*.jso
       { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
       // send at seq 2, signoff arrives mid-flight at seq 4, call finishes at seq 5 -> replay MUST cut off at sent - 1 (seq 1) so signoff does NOT retroactively approve!
       { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'send', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail' },
-      { seq: 3, at: '2026-11-27T01:02:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Approve E1 post', run: 1 },
+      { seq: 3, at: '2026-11-27T01:02:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Approve E1 post', run: 1, execpolicy: { action: 'e1_ais_write', target: 'P0411_W0411A', site: 'e1', maxUses: 1 } },
       { seq: 4, at: '2026-11-27T01:03:00Z', by: 'alice@demo.test', op: 'signoff', on: 3, text: 'Approved' },
       { seq: 5, at: '2026-11-27T01:03:05Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', isWrite: true, sent: 2, status: 202, bytes: 0, actions: mailDesc.safe.actions, completeness: mailDesc.safe.completeness, policy: pol1 },
       // Legacy API write without actions -> insufficient_evidence

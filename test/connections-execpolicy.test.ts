@@ -28,12 +28,16 @@ writeJson('users.json', { [ALICE]: { role: 'admin' } });
 
 const logins = await import('../src/logins.ts');
 const { call, setConnection, removeConnection, upstreams, loginOf } = await import('../src/connections.ts');
+const { endpoints: graphEndpoints } = await import('../src/connections/graph.ts');
 const { keepSignIn } = await import('../src/entra.ts');
 
 keepSignIn(ALICE, entra.refresh(ALICE));
 logins.saveLogin(ALICE, {
   id: 'm365', kind: 'm365', name: 'Microsoft 365', since: '2026-11-01T00:00:00Z',
-  offers: [{ id: `m365:mail:${ALICE}`, name: `Mailbox ${ALICE}` }],
+  offers: [
+    { id: `m365:mail:${ALICE}`, name: `Mailbox ${ALICE}` },
+    { id: 'm365:item:d1/i1', name: 'File pack.xlsx' },
+  ],
 }, entra.refresh(ALICE));
 await setConnection('graph', { type: 'graph' }, ALICE);
 await setConnection('dbx', { type: 'databricks' }, ALICE);
@@ -43,9 +47,25 @@ logins.saveLogin(ALICE, {
 }, entra.refresh(ALICE));
 
 let upstreamHits = 0;
+let writeUpstreamHits = 0;
+let lastWriteBody = '';
 const upstream = createServer(async (req, res) => {
   upstreamHits++;
-  for await (const _ of req) {}
+  const chunks: Buffer[] = [];
+  for await (const ch of req) chunks.push(ch as Buffer);
+  const rawBody = Buffer.concat(chunks).toString('utf8');
+  if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/items/i1')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({ id: 'i1', parentReference: { driveId: 'd1', id: 'root' } }));
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({ id: 'd1', driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://contoso.sharepoint.com/sites/fin', siteId: 's1', webId: 'w1' } }));
+  }
+  if (req.method !== 'GET') {
+    writeUpstreamHits++;
+    lastWriteBody = rawBody;
+  }
   if (req.url?.startsWith('/api/v1/chat/completions')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ id: 'gen-1', usage: { cost: 0.001 } }));
@@ -56,6 +76,7 @@ const upstream = createServer(async (req, res) => {
 await new Promise<void>(ok => upstream.listen(0, '127.0.0.1', ok));
 const upstreamBase = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
 upstreams['graph.microsoft.com'] = upstreamBase;
+graphEndpoints.graph = upstreamBase;
 upstreams['adb-1.azuredatabricks.net'] = upstreamBase;
 upstreams['openrouter.ai'] = upstreamBase;
 
@@ -172,50 +193,105 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   assert.ok(!String(graphRefCall.refused).includes('aB3dE5fG7hI9jK1lM3nO5pQ7'), 'redacted path segment scrubbed from call.refused');
 });
 
-test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade with zero upstream hits and ruleId-only 403, and unlocks sendMail after current-epoch signoff', async () => {
+test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade with ruleId+decisionId & Connection:close, runs PrefixReader for streamed writes, and enforces scoped single-use owner approval', async () => {
   process.env.RF_EXECPOLICY_MODE = 'enforce';
-  const { inst, run, entries } = makeRun([`m365:mail:${ALICE}`, 'dbx:adb-1.azuredatabricks.net/wh1', 'erp:AP/']);
+  const { inst, run, entries } = makeRun([`m365:mail:${ALICE}`, 'm365:item:d1/i1', 'dbx:adb-1.azuredatabricks.net/wh1', 'erp:AP/']);
 
-  const hits0 = upstreamHits;
-  // 1. Unapproved sendMail -> 403 with ONLY ruleId (no reasoning text), zero upstream hits, no `send`
+  const hits0 = writeUpstreamHits;
+  // 1. Unapproved sendMail -> 403 with ruleId + decisionId ONLY (no reasoning text), Connection: close, zero upstream hits, no `send`
   const r1 = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
     message: { subject: 'S', toRecipients: [{ emailAddress: { address: 'a@b.test' } }] },
   }));
   assert.equal(r1.status, 403);
-  assert.equal(upstreamHits, hits0, 'zero bytes reach upstream');
+  assert.equal(r1.headers.get('connection'), 'close');
+  assert.equal(writeUpstreamHits, hits0, 'zero bytes reach upstream');
   assert.equal(entries.some(e => e.op === 'send'), false, 'no send logged when blocked pre-flight');
   const parsed1 = JSON.parse(r1.text);
-  assert.deepEqual(parsed1, { error: { code: 'rf_policy', ruleId: 'graph_send_mail' } }, 'returns ruleId ONLY, no reasoning oracle');
+  assert.equal(parsed1.error.code, 'rf_policy');
+  assert.equal(parsed1.error.ruleId, 'graph_send_mail');
+  assert.equal(typeof parsed1.error.decisionId, 'string');
+  assert.deepEqual(Object.keys(parsed1.error).sort(), ['code', 'decisionId', 'ruleId'], 'returns ruleId + decisionId ONLY, no reasoning oracle');
 
-  // 2. Databricks DROP -> 403 ruleId only
+  // 2. Databricks DROP -> 403 ruleId + decisionId
   const r2 = await sendViaProxy(run, 'adb-1.azuredatabricks.net', 'POST', '/api/2.0/sql/statements', { 'content-type': 'application/json' }, JSON.stringify({
     warehouse_id: 'wh1', statement: 'DROP TABLE t',
   }));
   assert.equal(r2.status, 403);
-  assert.deepEqual(JSON.parse(r2.text), { error: { code: 'rf_policy', ruleId: 'databricks_destructive_ddl' } });
-  assert.equal(upstreamHits, hits0);
+  assert.equal(r2.headers.get('connection'), 'close');
+  assert.equal(JSON.parse(r2.text).error.ruleId, 'databricks_destructive_ddl');
+  assert.equal(writeUpstreamHits, hits0);
 
-  // 3. Method-override downgrade on service -> 403 plain text ruleId only
+  // 3. Method-override downgrade on service -> 403 plain text ruleId + decisionId, Connection: close, 0 upstream hits
   const r3 = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'x-http-method-override': 'GET' }, '{"a":1}');
   assert.equal(r3.status, 403);
-  assert.equal(r3.text.trim(), 'blocked by policy: method_override_downgrade');
-  assert.equal(upstreamHits, hits0);
+  assert.equal(r3.headers.get('connection'), 'close');
+  assert.match(r3.text.trim(), /^blocked by policy: method_override_downgrade \(decisionId=[0-9a-f-]+\)$/);
+  assert.equal(writeUpstreamHits, hits0);
 
-  // 3b. Body-bearing streamed service write in enforce mode fails closed (write_body_not_inspected)
-  const r3b = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'content-type': 'application/json' }, '{"amount":500}');
-  assert.equal(r3b.status, 403);
-  assert.equal(r3b.text.trim(), 'blocked by policy: write_body_not_inspected');
-  assert.equal(upstreamHits, hits0);
+  // 3b. PrefixReader: streamed deployment-service POST (<=64 KiB clean JSON) is inspected and allowed with full body replayed upstream!
+  const svcPayload = JSON.stringify({ amount: 500, batch: 'B1' });
+  const r3b = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'content-type': 'application/json' }, svcPayload);
+  assert.equal(r3b.status, 200);
+  assert.equal(writeUpstreamHits, hits0 + 1);
+  assert.equal(lastWriteBody, svcPayload, 'PrefixReader replayed full body upstream unchanged');
 
-  // 4. Current-epoch human signoff unlocks sendMail in enforce mode!
-  const prop = inst.append('agent', 'comment', { ask: 'proposal', text: 'Send approved report', run: 1 });
+  // 3c. PrefixReader: streamed deployment-service POST with duplicate JSON keys is caught and blocked BEFORE upstream!
+  const r3c = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'content-type': 'application/json' }, '{"amount":1,"amount":999999}');
+  assert.equal(r3c.status, 403);
+  assert.equal(r3c.headers.get('connection'), 'close');
+  assert.match(r3c.text.trim(), /^blocked by policy: write_duplicate_json_keys \(decisionId=[0-9a-f-]+\)$/);
+  assert.equal(writeUpstreamHits, hits0 + 1, 'duplicate-key JSON blocked before upstream dial');
+
+  // 3d. PrefixReader: Graph PUT .../content WITHOUT If-Match -> blocked (unguarded_overwrite_no_if_match), 0 write upstream hits!
+  const r3d = await sendViaProxy(run, 'graph.microsoft.com', 'PUT', '/v1.0/drives/d1/items/i1/content', { 'content-type': 'application/octet-stream' }, 'binary-file-payload');
+  assert.equal(r3d.status, 403);
+  assert.equal(r3d.headers.get('connection'), 'close');
+  assert.equal(JSON.parse(r3d.text).error.ruleId, 'unguarded_overwrite_no_if_match');
+  assert.equal(writeUpstreamHits, hits0 + 1);
+
+  // 3e. PrefixReader: Graph PUT .../content WITH If-Match -> allowed and full body received upstream!
+  const filePayload = 'PK\x03\x04excel-content-bytes-12345';
+  const r3e = await sendViaProxy(run, 'graph.microsoft.com', 'PUT', '/v1.0/drives/d1/items/i1/content', { 'content-type': 'application/octet-stream', 'if-match': '"etag-1"' }, filePayload);
+  assert.equal(r3e.status, 200);
+  assert.equal(writeUpstreamHits, hits0 + 2);
+  assert.equal(lastWriteBody, filePayload, 'full binary payload streamed upstream after PrefixReader allow');
+
+  // 4. Unrelated prose proposal signed by viewer does NOT unlock sendMail!
+  const proseProp = inst.append('agent', 'comment', { ask: 'proposal', text: 'May I rename the draft summary?', run: 1 });
+  inst.append('viewer@demo.test', 'signoff', { on: proseProp.seq, text: 'Sure' });
+  const r4Unrel = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
+    message: { subject: 'Sneaky', toRecipients: [{ emailAddress: { address: 'a@b.test' } }] },
+  }));
+  assert.equal(r4Unrel.status, 403);
+  assert.equal(writeUpstreamHits, hits0 + 2);
+
+  // 5. Scoped single-use owner signoff unlocks matching sendMail ONCE and denies different domain or 2nd sendMail!
+  const prop = inst.append('agent', 'comment', {
+    ask: 'proposal', text: 'Send approved report', run: 1,
+    execpolicy: { action: 'graph:sendMail', domains: ['b.test'], workspace: 'w', maxUses: 1 },
+  });
   inst.append(ALICE, 'signoff', { on: prop.seq, text: 'Approved' });
-  const r4 = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
+
+  // Wrong recipient domain rejected even with approval active:
+  const r5WrongDom = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
+    message: { subject: 'Wrong domain', toRecipients: [{ emailAddress: { address: 'ceo@evil.test' } }] },
+  }));
+  assert.equal(r5WrongDom.status, 403);
+
+  // Exact matching domain succeeds once:
+  const r5Ok = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
     message: { subject: 'Approved', toRecipients: [{ emailAddress: { address: 'a@b.test' } }] },
   }));
-  assert.equal(r4.status, 200);
-  assert.equal(upstreamHits, hits0 + 1);
+  assert.equal(r5Ok.status, 200);
+  assert.equal(writeUpstreamHits, hits0 + 3);
   const okCall = entries.findLast(e => e.op === 'call')!;
   assert.equal((okCall.policy as any).action, 'allow');
   assert.equal((okCall.policy as any).approvalRef, `c${prop.seq}`);
+
+  // 2nd sendMail after single-use consumption is DENIED!
+  const r5Replay = await sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, JSON.stringify({
+    message: { subject: 'Second send', toRecipients: [{ emailAddress: { address: 'a@b.test' } }] },
+  }));
+  assert.equal(r5Replay.status, 403);
+  assert.equal(writeUpstreamHits, hits0 + 3, 'consumed approval cannot unlock a 2nd send');
 });

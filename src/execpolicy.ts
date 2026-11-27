@@ -45,6 +45,18 @@ export type CompactPolicyDecision = {
   atSeq?: number
 }
 
+export type ApprovalScope = {
+  action: string
+  target?: string
+  domains?: string[]
+  sqlHash?: string
+  warehouseId?: string
+  connection?: string
+  site?: string
+  workspace?: string
+  maxUses?: number
+}
+
 export type ApprovalContext = {
   approved: boolean
   approvalRef?: string
@@ -82,7 +94,9 @@ export type EvaluateOptions = {
   uptoSeq?: number
   epoch?: number
   owner?: string
+  approvers?: readonly string[]
   workspace?: string
+  priorBrowserUses?: ReadonlyMap<string, number>
   intent?: { run: number; series?: string; taskSummary?: string }
   signal?: AbortSignal
   deadlineMs?: number
@@ -145,66 +159,249 @@ export function loadExecPolicyConfig(): ExecPolicyConfig {
   return { mode, deadlineMs, maxConcurrentShadow, maxShadowQueue, ...(configError && { configError }) }
 }
 
+const E1_MUTATING_FORM_COMMANDS = new Set([
+  'doaction',
+  'setcontrolvalue',
+  'setcheckboxvalue',
+  'setradiobutton',
+  'setcombovalue',
+  'setgridcellvalue',
+  'insertgridrow',
+  'deletegridrow',
+  'updategridrow',
+  'clickgridcell',
+])
+
+function isE1WriteAction(act: SemanticAction): boolean {
+  if (act.family !== 'e1-ais') return false
+  const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
+  if (a === 'W' || act.op.endsWith(':W')) return true
+  const formActions = Array.isArray(act.details?.formActions) ? (act.details!.formActions as Array<{ command?: unknown }>) : []
+  return formActions.some(fa => typeof fa?.command === 'string' && E1_MUTATING_FORM_COMMANDS.has(fa.command.toLowerCase()))
+}
+
+function isSharePointDestructive(safe: SafeRequestProjection, act: SemanticAction): boolean {
+  if (act.family !== 'sharepoint') return false
+  return (
+    safe.method === 'DELETE' ||
+    safe.effectiveMethod === 'DELETE' ||
+    safe.method === 'MERGE' ||
+    safe.effectiveMethod === 'MERGE' ||
+    act.op === 'sharepoint:delete' ||
+    act.details?.destructiveAction === true
+  )
+}
+
+function normalizeScopeAction(raw: string): string {
+  const s = raw.trim().toLowerCase()
+  if (['graph:sendmail', 'graph_send_mail', 'graph:send', 'graph:reply', 'graph:replyall', 'graph:forward'].includes(s)) return 'graph:sendMail'
+  if (['graph:file_delete', 'graph_file_delete'].includes(s)) return 'graph:file_delete'
+  if (['graph:excel_write', 'graph_excel_write'].includes(s)) return 'graph:excel_write'
+  if (['databricks:sql', 'databricks_ddl_or_delete', 'databricks:sql_write', 'databricks:sql_ddl'].includes(s)) return 'databricks:sql'
+  if (['e1_ais_write', 'e1-ais:w', 'e1_write'].includes(s)) return 'e1_ais_write'
+  if (['sharepoint_destructive_write', 'sharepoint:delete', 'sharepoint:merge'].includes(s)) return 'sharepoint_destructive_write'
+  if (['http_delete', 'delete'].includes(s)) return 'http_delete'
+  return s
+}
+
+function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope): boolean {
+  if (!scope || typeof scope !== 'object' || typeof scope.action !== 'string' || !scope.action.trim()) return false
+  if (scope.connection !== undefined && safe.target.connection !== scope.connection) return false
+  if (scope.site !== undefined && safe.target.site !== scope.site) return false
+
+  const actClass = normalizeScopeAction(scope.action)
+
+  if (actClass === 'graph:sendMail') {
+    const mailAct = safe.actions.find(a => a.family === 'graph' && ['graph:sendMail', 'graph:send', 'graph:reply', 'graph:replyAll', 'graph:forward'].includes(a.op))
+    if (!mailAct) return false
+    if (scope.target !== undefined && safe.path !== scope.target) return false
+    const allowedDomains = Array.isArray(scope.domains)
+      ? scope.domains.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).map(d => d.trim().toLowerCase())
+      : []
+    if (!allowedDomains.length) return false
+    const reqDomains = Array.isArray(mailAct.details?.recipientDomains)
+      ? (mailAct.details!.recipientDomains as unknown[]).filter((d): d is string => typeof d === 'string' && d.length > 0).map(d => d.toLowerCase())
+      : []
+    if (!reqDomains.length) return false
+    const allowedSet = new Set(allowedDomains)
+    return reqDomains.every(d => allowedSet.has(d))
+  }
+
+  if (actClass === 'graph:file_delete') {
+    const delAct = safe.actions.find(a => a.family === 'graph' && a.op === 'graph:file_delete')
+    if (!delAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
+    return delAct.resource === scope.target || safe.path === scope.target
+  }
+
+  if (actClass === 'graph:excel_write') {
+    const xlAct = safe.actions.find(a => a.family === 'graph' && a.op === 'graph:excel_write')
+    if (!xlAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
+    return xlAct.resource === scope.target || safe.path === scope.target || safe.path.startsWith(`${scope.target}/`)
+  }
+
+  if (actClass === 'databricks:sql') {
+    const sqlAct = safe.actions.find(a => a.family === 'databricks' && a.op.startsWith('databricks:sql_'))
+    if (!sqlAct) return false
+    if (typeof scope.warehouseId === 'string' && scope.warehouseId && sqlAct.details?.warehouseId !== scope.warehouseId) return false
+    if (typeof scope.sqlHash === 'string' && scope.sqlHash.trim()) {
+      return sqlAct.details?.sqlHash === scope.sqlHash.trim().toLowerCase()
+    }
+    if (typeof scope.warehouseId === 'string' && scope.warehouseId && typeof scope.target === 'string' && scope.target.trim()) {
+      return sqlAct.details?.sqlClass === scope.target.trim().toLowerCase()
+    }
+    return false
+  }
+
+  if (actClass === 'e1_ais_write') {
+    const e1Act = safe.actions.find(a => isE1WriteAction(a))
+    if (!e1Act || typeof scope.target !== 'string' || !scope.target.trim()) return false
+    return e1Act.resource === scope.target || safe.path === scope.target
+  }
+
+  if (actClass === 'sharepoint_destructive_write') {
+    const spAct = safe.actions.find(a => isSharePointDestructive(safe, a))
+    if (!spAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
+    return spAct.resource === scope.target || safe.path === scope.target
+  }
+
+  if (actClass === 'http_delete') {
+    if (safe.method !== 'DELETE' && safe.effectiveMethod !== 'DELETE') return false
+    if (typeof scope.target !== 'string' || !scope.target.trim()) return false
+    return safe.path === scope.target
+  }
+
+  return false
+}
+
 // Inspects an instance's log.jsonl up to `uptoSeq` (default full log) to determine whether the current authority
-// epoch has a human sign-off (`op === 'signoff' && approved !== false`).
+// epoch has an authorized, workspace-bound, structured, unconsumed human sign-off matching `opts.safe`.
 export function findCurrentEpochApproval(
   log: readonly Entry[] | undefined,
-  opts?: { uptoSeq?: number; epoch?: number; owner?: string; workspace?: string },
+  opts?: {
+    uptoSeq?: number
+    epoch?: number
+    owner?: string
+    approvers?: readonly string[]
+    workspace?: string
+    safe?: SafeRequestProjection
+    priorBrowserUses?: ReadonlyMap<string, number>
+  },
 ): ApprovalContext {
   if (!log || !log.length) return { approved: false, recentApprovedProposals: [] }
   const upto = opts?.uptoSeq ?? (log.at(-1)?.seq ?? log.length)
   const slice = log.filter(e => e.seq <= upto)
   if (!slice.length) return { approved: false, recentApprovedProposals: [] }
 
-  // Find latest duplicate or authority boundary in this slice
+  // Find latest duplicate or authority boundary in this slice, plus inferred owner & workspace.
   let boundarySeq = 0
   let activeEpoch = opts?.epoch
   let activeOwner = opts?.owner
+  let logWorkspace: string | undefined
+  let creatorOwner: string | undefined
   for (const e of slice) {
+    if (e.op === 'create' && isPerson(e) && !creatorOwner) {
+      creatorOwner = e.by
+    }
     if (e.op === 'duplicate') {
       boundarySeq = Math.max(boundarySeq, e.seq)
     } else if (e.op === 'authority') {
       boundarySeq = Math.max(boundarySeq, e.seq)
       if (typeof e.epoch === 'number') activeEpoch = e.epoch
       if (typeof e.owner === 'string') activeOwner = e.owner
+      if (typeof e.workspace === 'string') logWorkspace = e.workspace
+    } else if (e.op === 'run' && e.authority && typeof e.authority === 'object') {
+      const ra = e.authority as { epoch?: unknown; owner?: unknown; workspace?: unknown }
+      if (activeEpoch === undefined && typeof ra.epoch === 'number') activeEpoch = ra.epoch
+      if (activeOwner === undefined && typeof ra.owner === 'string') activeOwner = ra.owner
+      if (typeof ra.workspace === 'string') logWorkspace = ra.workspace
     }
   }
-  // If an explicit epoch was provided and there's a run/authority with a matching epoch, enforce it.
+  const effectiveOwner = activeOwner ?? creatorOwner
+  const expectedWorkspace = opts?.workspace ?? logWorkspace
+
+  // If caller specified a workspace and the log's active authority belongs to a DIFFERENT workspace, deny immediately.
+  if (opts?.workspace !== undefined && logWorkspace !== undefined && logWorkspace !== opts.workspace) {
+    return { approved: false, recentApprovedProposals: [] }
+  }
+
+  // Authorized sign-off actors: series owner (or creator in minimal logs) plus any explicit approvers.
+  const authorizedActors = new Set<string>()
+  if (effectiveOwner) authorizedActors.add(effectiveOwner.toLowerCase())
+  if (opts?.approvers) {
+    for (const a of opts.approvers) {
+      if (typeof a === 'string' && a.trim()) authorizedActors.add(a.trim().toLowerCase())
+    }
+  }
+
   const proposals: ApprovalContext['recentApprovedProposals'] = []
-  let latestApprovalRef: string | undefined
+  let matchedApprovalRef: string | undefined
 
   for (const e of slice) {
     if (e.seq <= boundarySeq) continue
     if (e.op !== 'signoff' || e.approved === false || !isPerson(e)) continue
+    // Authority check: signoff MUST come from an authorized owner/approver (never an arbitrary viewer!).
+    if (authorizedActors.size > 0 && !authorizedActors.has(e.by.toLowerCase())) continue
+
     const auth = messageAuthority(slice, e, upto)
     if (auth.stale) continue
     if (activeEpoch !== undefined && auth.epoch !== undefined && auth.epoch !== activeEpoch) continue
     if (activeOwner !== undefined && auth.owner !== undefined && auth.owner !== activeOwner) continue
-    // If signoff targets a proposal comment cN, ensure the proposal itself wasn't from before the boundary or stale
-    let proposalText = typeof e.text === 'string' ? e.text : ''
-    if (typeof e.on === 'number') {
-      const ask = slice.find(x => x.seq === e.on)
-      if (ask) {
-        if (ask.seq <= boundarySeq) continue
-        const askAuth = messageAuthority(slice, ask, upto)
-        if (askAuth.stale) continue
-        if (activeEpoch !== undefined && askAuth.epoch !== undefined && askAuth.epoch !== activeEpoch) continue
-        if (typeof ask.text === 'string' && ask.text) proposalText = ask.text
-      }
-    }
-    const ref = typeof e.on === 'number' ? `c${e.on}` : `seq:${e.seq}`
-    latestApprovalRef = ref
+
+    // Signoff MUST reference a current-epoch proposal comment carrying structured execpolicy scope.
+    if (typeof e.on !== 'number') continue
+    const ask = slice.find(x => x.seq === e.on)
+    if (!ask || ask.op !== 'comment' || (ask.ask !== 'proposal' && ask.ask !== true)) continue
+    if (ask.seq <= boundarySeq) continue
+    const askAuth = messageAuthority(slice, ask, upto)
+    if (askAuth.stale) continue
+    if (activeEpoch !== undefined && askAuth.epoch !== undefined && askAuth.epoch !== activeEpoch) continue
+
+    const proposalText = typeof ask.text === 'string' && ask.text ? ask.text : (typeof e.text === 'string' ? e.text : '')
     proposals.push({
       seq: e.seq,
       text: proposalText.slice(0, 256),
       by: e.by,
       at: e.at,
     })
+
+    const scope = ask.execpolicy as ApprovalScope | undefined
+    if (!scope || typeof scope !== 'object' || Array.isArray(scope) || typeof scope.action !== 'string' || !scope.action.trim()) {
+      continue
+    }
+
+    // Workspace binding: if workspace is known or present on the proposal, require exact match.
+    if (expectedWorkspace !== undefined) {
+      if (typeof scope.workspace === 'string' && scope.workspace !== expectedWorkspace) continue
+      if (opts?.workspace !== undefined && scope.workspace !== undefined && scope.workspace !== opts.workspace) continue
+    } else if (typeof scope.workspace === 'string' && scope.workspace.trim()) {
+      // Proposal is workspace-scoped, but caller didn't supply a matching workspace context -> fail closed.
+      continue
+    }
+
+    // Scope matching against the evaluated request (required when opts.safe is supplied).
+    if (opts?.safe && !matchesApprovalScope(opts.safe, scope)) continue
+
+    // Single-use / bounded count consumption: count prior allowed uses of this approvalRef after signoff.
+    const ref = `c${e.on}`
+    const maxUses = typeof scope.maxUses === 'number' && Number.isInteger(scope.maxUses) && scope.maxUses >= 1 && scope.maxUses <= 100
+      ? scope.maxUses
+      : 1
+    let usedCount = opts?.priorBrowserUses?.get(ref) ?? 0
+    for (const prior of slice) {
+      if (prior.seq <= e.seq) continue
+      if (prior.op === 'call') {
+        const pol = prior.policy as CompactPolicyDecision | undefined
+        if (pol?.approvalRef === ref && pol?.action === 'allow') usedCount++
+      }
+    }
+    if (usedCount >= maxUses) continue
+
+    matchedApprovalRef = ref
   }
 
   return {
-    approved: latestApprovalRef !== undefined,
-    ...(latestApprovalRef && { approvalRef: latestApprovalRef }),
+    approved: matchedApprovalRef !== undefined,
+    ...(matchedApprovalRef && { approvalRef: matchedApprovalRef }),
     recentApprovedProposals: proposals.slice(-5),
   }
 }
@@ -305,11 +502,11 @@ export function evaluateStage1(
           ? approvedOrIntegrity('databricks_write_approved', approval.approvalRef)
           : make('requireApproval', 'databricks_ddl_or_delete', `SQL ${stmts.join(',') || String(sqlClass)} requires human approval`)
       }
+      if (act.details?.ambiguous === true || sqlClass === 'unknown') {
+        return make('escalate', 'databricks_sql_unknown', 'Ambiguous or unclassified Databricks SQL statement')
+      }
       if (sqlClass === 'read' && !hasDeleteVerb && !escalatedFromSafe && !bodyIntegrityFailure && safe.bodyComplete && safe.decodeComplete) {
         return make('allow', 'allow_databricks_sql_read')
-      }
-      if (sqlClass === 'unknown') {
-        return make('escalate', 'databricks_sql_unknown', 'Unclassified Databricks SQL statement')
       }
     }
 
@@ -323,40 +520,59 @@ export function evaluateStage1(
       }
     }
 
-    // Microsoft Graph file delete
+    // Microsoft Graph file delete (including POST .../permanentDelete)
     if (act.family === 'graph' && act.op === 'graph:file_delete') {
       return approval.approved
         ? approvedOrIntegrity('graph_file_delete_approved', approval.approvalRef)
         : make('requireApproval', 'graph_file_delete', 'File deletion requires current-epoch human approval')
     }
 
-    // Unguarded file overwrite (PUT .../content without If-Match ETag)
-    if (act.family === 'graph' && act.op === 'graph:file_write' && act.details?.hasIfMatch === false) {
-      return make('escalate', 'unguarded_overwrite_no_if_match', 'File content overwrite without If-Match ETag')
-    }
-
-    // E1 AIS write (formServiceAction: 'W' / action: 'W')
-    if (act.family === 'e1-ais') {
-      const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
-      if (a === 'W' || act.op.endsWith(':W')) {
-        if (!approval.approved) {
-          return make('requireApproval', 'e1_ais_write', 'JD Edwards E1 AIS write action requires human approval')
-        }
-        if (!hasDeleteVerb) {
-          return approvedOrIntegrity('e1_ais_write_approved', approval.approvalRef)
-        }
+    // Microsoft Graph Excel workbook write
+    if (act.family === 'graph' && act.op === 'graph:excel_write') {
+      if (!approval.approved) {
+        return make('requireApproval', 'graph_excel_write', 'Excel workbook write requires current-epoch human approval')
+      }
+      if (!hasDeleteVerb) {
+        return approvedOrIntegrity('graph_excel_write_approved', approval.approvalRef)
       }
     }
 
-    // SharePoint DELETE / MERGE / opaque batch / unguarded PUT (check BOTH wire method and effectiveMethod!)
+    // Microsoft Graph file content write (PUT .../content): require If-Match; allow governed binary upload once prefix is read!
+    if (act.family === 'graph' && act.op === 'graph:file_write') {
+      if (act.details?.hasIfMatch === false) {
+        return make('escalate', 'unguarded_overwrite_no_if_match', 'File content overwrite without If-Match ETag')
+      }
+      if (
+        act.details?.hasIfMatch === true &&
+        !hasDeleteVerb &&
+        !escalatedFromSafe &&
+        !writeDupKeys &&
+        safe.completeness.transport !== 'not-read' &&
+        (safe.completeness.decode === 'complete' || safe.completeness.decode === 'none')
+      ) {
+        return make('allow', 'allow_governed_file_write')
+      }
+    }
+
+    // E1 AIS write (formServiceAction/action === 'W' OR mutating formActions commands)
+    if (isE1WriteAction(act)) {
+      if (!approval.approved) {
+        return make('requireApproval', 'e1_ais_write', 'JD Edwards E1 AIS write action requires human approval')
+      }
+      if (!hasDeleteVerb) {
+        return approvedOrIntegrity('e1_ais_write_approved', approval.approvalRef)
+      }
+    }
+
+    // SharePoint DELETE / MERGE / recycle() / opaque batch / unguarded PUT (check BOTH wire method and effectiveMethod!)
     if (act.family === 'sharepoint') {
       if (act.coverage === 'opaque-batch') {
         return make('escalate', 'sharepoint_opaque_batch', 'Opaque SharePoint $batch write requires review')
       }
-      if (hasDeleteVerb || safe.method === 'MERGE' || safe.effectiveMethod === 'MERGE') {
+      if (isSharePointDestructive(safe, act)) {
         return approval.approved
           ? approvedOrIntegrity('sharepoint_destructive_approved', approval.approvalRef)
-          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${hasDeleteVerb ? 'DELETE' : 'MERGE'} requires human approval`)
+          : make('requireApproval', 'sharepoint_destructive_write', `SharePoint ${hasDeleteVerb || act.op === 'sharepoint:delete' ? 'DELETE' : 'MERGE'} requires human approval`)
       }
       if ((safe.method === 'PUT' || safe.effectiveMethod === 'PUT') && act.details?.hasIfMatch === false) {
         return make('escalate', 'unguarded_overwrite_no_if_match', 'SharePoint PUT without If-Match ETag')
@@ -387,6 +603,20 @@ export function evaluateStage1(
   // 5. Method-override escalation from safe wire verb
   if (escalatedFromSafe) {
     return make('escalate', 'method_override_escalation', `Safe wire verb ${safe.method} escalated to ${safe.effectiveMethod}`)
+  }
+
+  // 5b. Governed SharePoint / Outlook upload-session binary PUT chunks (granted link from Graph createUploadSession, prefix inspected)
+  if (
+    safe.surface === 'api' &&
+    safe.method === 'PUT' &&
+    safe.effectiveMethod === 'PUT' &&
+    safe.target.connection === 'graph' &&
+    /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(safe.authority) &&
+    !writeDupKeys &&
+    safe.completeness.transport !== 'not-read' &&
+    (safe.completeness.decode === 'complete' || safe.completeness.decode === 'none')
+  ) {
+    return make('allow', 'allow_upload_session_chunk')
   }
 
   // 6. Integrity/completeness escalations on writes
@@ -497,7 +727,10 @@ export class ExecPolicyEngine {
         uptoSeq: opts.uptoSeq,
         epoch: opts.epoch,
         owner: opts.owner,
+        approvers: opts.approvers,
         workspace: opts.workspace,
+        safe: descriptor.safe,
+        priorBrowserUses: opts.priorBrowserUses,
       })
       stage1 = evaluateStage1(descriptor.safe, mode, approval, decisionId)
     } catch {
@@ -957,6 +1190,7 @@ export async function replayExecPolicy(
     for (const rel of manifestHashes.keys()) allRelFiles.add(rel)
   }
 
+  const browserApprovalUses = new Map<string, number>()
   for (const relFile of [...allRelFiles].sort()) {
     if (manifestHashes && !manifestHashes.has(relFile)) {
       // Extra unmanifested workspace file cannot inject entries into replay
@@ -1096,7 +1330,10 @@ export async function replayExecPolicy(
         const uptoEntry = t ? instLog.findLast(e => e.at <= t) : instLog.at(-1)
         const uptoSeq = uptoEntry?.seq ?? 0
         const safe = r as SafeRequestProjection
-        const decision = await engine.evaluate({ safe }, { mode, log: instLog, uptoSeq })
+        const decision = await engine.evaluate({ safe }, { mode, log: instLog, uptoSeq, priorBrowserUses: browserApprovalUses })
+        if (decision.action === 'allow' && decision.approvalRef) {
+          browserApprovalUses.set(decision.approvalRef, (browserApprovalUses.get(decision.approvalRef) ?? 0) + 1)
+        }
 
         // Never treat truncated/opaque writes as deterministic allow during offline replay
         let verdict: ReplayVerdict = decision.action

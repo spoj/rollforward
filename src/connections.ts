@@ -1,6 +1,6 @@
 import { request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { createCipheriv, createDecipheriv, createHash, randomBytes, type Hash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, type Hash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { brotliDecompressSync, createBrotliDecompress, createGunzip, createInflate, createZstdDecompress, gunzipSync, inflateSync, zstdDecompressSync } from 'node:zlib';
 import { HttpError, type Instance } from './store.ts';
@@ -9,7 +9,7 @@ import { getDomain } from 'tldts';
 import { act, changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import { recordCost } from './costs.ts';
 import { buildApiRequestDescriptor, MAX_PREFIX_BYTES, parseSemanticMethods, type SemanticAction } from './extract.ts';
-import { compactDecision, defaultExecPolicy, type CompactPolicyDecision } from './execpolicy.ts';
+import { compactDecision, defaultExecPolicy, loadExecPolicyConfig, type CompactPolicyDecision } from './execpolicy.ts';
 import { sanitizeUrl, scrubText } from './redact.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
@@ -453,6 +453,54 @@ function logExpired(a: CallRun, login: string, since: string, name: string, runn
   a.inst.append('server', 'expired', { run: a.n, login, name, runner });
 }
 
+// Spec §2.5 PrefixReader: pauses a streamed write after reading <=64 KiB (or EOF / 10s timeout) so enforce-mode
+// execpolicy inspects the body BEFORE dialing upstream, then replays buffered chunks + remaining live stream on allow.
+async function readStreamPrefix(
+  req: IncomingMessage,
+  maxBytes = MAX_PREFIX_BYTES,
+  timeoutMs = 10_000,
+  signal?: AbortSignal,
+): Promise<{ prefix: Buffer; replayChunks: Buffer[]; eof: boolean; timedOut: boolean; aborted: boolean }> {
+  return new Promise(resolve => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let done = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (eof: boolean, timedOut: boolean, aborted: boolean) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onAbort);
+      req.off('close', onClose);
+      signal?.removeEventListener('abort', onAbort);
+      if (!eof && !aborted) req.pause();
+      const combined = chunks.length === 1 ? chunks[0] : chunks.length ? Buffer.concat(chunks, total) : Buffer.alloc(0);
+      const prefix = combined.length > maxBytes ? combined.subarray(0, maxBytes) : combined;
+      resolve({ prefix, replayChunks: chunks, eof, timedOut, aborted });
+    };
+    const onData = (b: Buffer) => {
+      chunks.push(b);
+      total += b.length;
+      if (total >= maxBytes) finish(false, false, false);
+    };
+    const onEnd = () => finish(true, false, false);
+    const onAbort = () => finish(false, false, true);
+    const onClose = () => { if (!req.readableEnded) finish(false, false, true); };
+    if (signal?.aborted) return finish(false, false, true);
+    if (req.readableEnded) return finish(true, false, false);
+    timer = setTimeout(() => finish(false, true, false), timeoutMs);
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    req.on('data', onData);
+    req.once('end', onEnd);
+    req.once('error', onAbort);
+    req.once('close', onClose);
+    req.resume();
+  });
+}
+
 function sanitizeLoggedTarget(rawTarget: string, host: string, includeOrigin = false): string {
   const u = URL.parse(rawTarget, `https://${host}`);
   if (u) {
@@ -613,10 +661,46 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     const connectionType = link ? 'link' as const : (c?.type as 'graph' | 'databricks' | 'service' | undefined);
     let isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
     let prefixTee: { chunks: Buffer[]; bytes: number; truncated: boolean } | undefined;
+    let prefixChunks: Buffer[] | undefined;
+    let prefixEof = false;
     if (!s) {
       const descUrl = new URL(`${url.origin}${targetPath}${url.search}`);
       const bodyExpected = Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined;
-      const effectiveRaw = body !== undefined ? body : (!bodyExpected ? Buffer.alloc(0) : undefined);
+      const cfg = loadExecPolicyConfig();
+      const enforceActive = cfg.mode === 'enforce' || Boolean(cfg.configError);
+      const preliminaryWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method) || !['GET', 'HEAD', 'OPTIONS'].includes(parsedMethods.effectiveMethod);
+      const ac = new AbortController();
+      const onResClose = () => ac.abort();
+      res.once('close', onResClose);
+
+      let effectiveRaw: Buffer | undefined = body !== undefined ? body : (!bodyExpected ? Buffer.alloc(0) : undefined);
+      let bodyComplete = effectiveRaw !== undefined;
+      let transport: 'complete' | 'truncated' | 'not-read' = effectiveRaw !== undefined
+        ? (effectiveRaw.length <= MAX_PREFIX_BYTES ? 'complete' : 'truncated')
+        : 'not-read';
+      let transportReasons: string[] | undefined;
+
+      // Spec §2.5 PrefixReader: in enforce mode, read <=64 KiB (or EOF / 10s timeout) from streamed writes BEFORE dialing upstream!
+      if (enforceActive && body === undefined && preliminaryWrite && bodyExpected) {
+        const pr = await readStreamPrefix(req, MAX_PREFIX_BYTES, 10_000, ac.signal);
+        if (pr.timedOut || pr.aborted) {
+          res.off('close', onResClose);
+          const decId = randomUUID();
+          const ruleId = pr.timedOut ? 'policy_prefix_timeout' : 'policy_error';
+          log(403, 0, { refused: `blocked by policy: ${ruleId}` });
+          if (res.headersSent) return void res.destroy();
+          if (jsonApi) res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', connection: 'close' }).end(`${JSON.stringify({ error: { code: 'rf_policy', ruleId, decisionId: decId } })}\n`);
+          else res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' }).end(`blocked by policy: ${ruleId} (decisionId=${decId})\n`);
+          return;
+        }
+        prefixChunks = pr.replayChunks;
+        prefixEof = pr.eof;
+        effectiveRaw = pr.prefix;
+        bodyComplete = pr.eof;
+        transport = pr.eof ? 'complete' : 'truncated';
+        if (!pr.eof) transportReasons = ['prefix-only'];
+      }
+
       const { descriptor, methods } = buildApiRequestDescriptor({
         connection: name,
         connectionType,
@@ -625,24 +709,24 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         url: descUrl,
         headers: req.headers,
         rawBody: effectiveRaw,
-        bodyComplete: effectiveRaw !== undefined,
-        transport: effectiveRaw !== undefined ? (effectiveRaw.length <= MAX_PREFIX_BYTES ? 'complete' : 'truncated') : 'not-read',
+        bodyComplete,
+        transport,
+        ...(transportReasons && { transportReasons }),
       });
       isWrite = descriptor.safe.isWrite;
       const runEntry = Array.isArray(a.inst.log) ? a.inst.log.findLast(e => e.op === 'run' && e.run === a.n) : undefined;
       const runAuth = runEntry?.authority as { epoch?: number; owner?: string; workspace?: string } | undefined;
+      const instWorkspace = runAuth?.workspace ?? (a.inst.seriesId ? tree().series[a.inst.seriesId]?.workspace : undefined);
+      const instOwner = runAuth?.owner ?? a.runner;
       const admissionAtSeq = Array.isArray(a.inst.log) ? (a.inst.log.at(-1)?.seq ?? 0) : 0;
-      const ac = new AbortController();
-      const onResClose = () => ac.abort();
-      res.once('close', onResClose);
       let decision;
       try {
         decision = await defaultExecPolicy.evaluate(descriptor, {
           log: Array.isArray(a.inst.log) ? a.inst.log : undefined,
           uptoSeq: admissionAtSeq,
           epoch: runAuth?.epoch,
-          owner: runAuth?.owner,
-          workspace: runAuth?.workspace,
+          owner: instOwner,
+          workspace: instWorkspace,
           intent: { run: a.n, series: a.inst.seriesId },
           signal: ac.signal,
         });
@@ -665,9 +749,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       if (decision.mode === 'enforce' && decision.action !== 'allow') {
         log(403, 0, { refused: `blocked by policy: ${decision.ruleId}` });
         if (res.headersSent) return void res.destroy();
-        // Enforce-mode refusal returns ONLY ruleId (never reasoning oracle text).
-        if (jsonApi) res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' }).end(`${JSON.stringify({ error: { code: 'rf_policy', ruleId: decision.ruleId } })}\n`);
-        else res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }).end(`blocked by policy: ${decision.ruleId}\n`);
+        // Enforce-mode refusal returns ruleId + decisionId only (never reasoning oracle text) and closes connection cleanly.
+        if (jsonApi) res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', connection: 'close' }).end(`${JSON.stringify({ error: { code: 'rf_policy', ruleId: decision.ruleId, decisionId: decision.decisionId } })}\n`);
+        else res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', connection: 'close' }).end(`blocked by policy: ${decision.ruleId} (decisionId=${decision.decisionId})\n`);
         return;
       }
       // Recheck authority after any async execpolicy wait before emitting send or opening upstream.
@@ -675,7 +759,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       lender(a.inst, a.n);
       if (offer) use(a.inst, a.n, offer);
       if (link) use(a.inst, a.n, link.offer);
-      if (body === undefined && isWrite) {
+      if (body === undefined && !prefixChunks && isWrite) {
         prefixTee = { chunks: [], bytes: 0, truncated: false };
       }
     }
@@ -712,7 +796,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     try {
       // A Location where the check lets one go, as a redirect's, is a link for this run before the run can follow it.
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
-        auth, body, digest, prefixTee, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
+        auth, body, digest, prefixTee, prefixChunks, prefixEof, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
         beforeRetry: s === openrouter ? verifyModelKey : undefined,
         location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
       });
@@ -843,6 +927,8 @@ function maxKeepBytes(): number {
 function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
   auth: Record<string, string>; body?: Buffer; digest?: { hash: Hash; size: number };
   prefixTee?: { chunks: Buffer[]; bytes: number; truncated: boolean };
+  prefixChunks?: Buffer[];
+  prefixEof?: boolean;
   keep: boolean;
   service?: boolean; retry429?: boolean; beforeRetry?: () => void; registerAbort?: (fn: () => void) => () => void; location(to: string): void;
 }) {
@@ -1066,7 +1152,7 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
       });
       if (o.body) up.end(o.body);
       else {
-        if (o.digest || o.prefixTee) req.on('data', (b: Buffer) => {
+        const recordChunk = (b: Buffer) => {
           if (o.digest) { o.digest.hash.update(b); o.digest.size += b.length; }
           if (o.prefixTee && !o.prefixTee.truncated) {
             const need = MAX_PREFIX_BYTES - o.prefixTee.bytes;
@@ -1081,10 +1167,21 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
               o.prefixTee.truncated = true;
             }
           }
-        });
-        req.on('error', e => up.destroy(e));
-        if (o.digest) up.once('close', () => req.resume());
-        req.pipe(up);
+        };
+        if (o.prefixChunks?.length) {
+          for (const ch of o.prefixChunks) {
+            recordChunk(ch);
+            up.write(ch);
+          }
+        }
+        if (o.prefixEof) {
+          up.end();
+        } else {
+          if (o.digest || o.prefixTee) req.on('data', recordChunk);
+          req.on('error', e => up.destroy(e));
+          if (o.digest) up.once('close', () => req.resume());
+          req.pipe(up);
+        }
       }
     };
     sendAttempt(0);
