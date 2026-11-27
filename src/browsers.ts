@@ -972,6 +972,21 @@ function v2ShotRelPath(b: Pick<Opened, 'run' | 'site' | 'openIndex'>, seq: numbe
   return `browser/run ${b.run} ${b.site}${idx} s${seq}.jpg`;
 }
 
+function reconcilePendingShots(openId: string, b: Opened, inst: Instance, shotState: ShotSpoolState, closedAlready: boolean) {
+  if (!shotState.pending.length) return;
+  for (const pMeta of shotState.pending) {
+    const check = readVerifiedWorkspaceFile(inst.dir, pMeta.file, pMeta.sha256, MAX_AUDIT_SHOT_BYTES);
+    if (check.status === 'ok') {
+      if (!closedAlready && !inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === pMeta.seq)) {
+        inst.append('server', 'shot', { run: b.run, site: b.site, file: pMeta.file, sessionId: openId, shotSeq: pMeta.seq, ...(pMeta.trigger && { trigger: pMeta.trigger }) });
+      }
+      if (!shotState.published.some(x => x.seq === pMeta.seq)) shotState.published.push(pMeta);
+    }
+  }
+  shotState.pending = [];
+  writeShotSpool(openId, shotState);
+}
+
 // Per-session serialized drain lock shared by active Browsers AND crash-recovery reap().
 const drainLocks = new Map<string, Promise<void>>();
 
@@ -1062,25 +1077,7 @@ async function doDrainSession(
 
   // Reconcile any direct shots interrupted mid-publication on crash: promote if file+hash exist on disk, else drop from pending so it refetches!
   const closedAlready = inst.log.some(e => e.op === 'close' || e.op === 'abandon');
-  if (shotState.pending.length) {
-    let pendingChanged = false;
-    const stillPending: ShotManifestItem[] = [];
-    for (const pMeta of shotState.pending) {
-      const check = readVerifiedWorkspaceFile(inst.dir, pMeta.file, pMeta.sha256, MAX_AUDIT_SHOT_BYTES);
-      if (check.status === 'ok') {
-        if (!closedAlready && !inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === pMeta.seq)) {
-          inst.append('server', 'shot', { run: b.run, site: b.site, file: pMeta.file, sessionId: openId, shotSeq: pMeta.seq, ...(pMeta.trigger && { trigger: pMeta.trigger }) });
-        }
-        if (!shotState.published.some(x => x.seq === pMeta.seq)) shotState.published.push(pMeta);
-        pendingChanged = true;
-      } else {
-        // Missing/corrupt file on disk -> drop from pending so the sealed browser can re-deliver it!
-        pendingChanged = true;
-      }
-    }
-    shotState.pending = stillPending;
-    if (pendingChanged) writeShotSpool(openId, shotState);
-  }
+  reconcilePendingShots(openId, b, inst, shotState, closedAlready);
 
   // Resume strictly from durable spool high-water marks so crash recovery never skips unspooled remote records!
   let logCursor = httpState.maxCursor;
@@ -1391,6 +1388,8 @@ async function finalizeV2Session(
   remoteAvailable = true,
 ): Promise<void> {
   const openId = b.openId ?? id;
+  const persisted = journal()[id];
+  if (!b.sealCursors && persisted?.sealCursors) b.sealCursors = persisted.sealCursors;
   let state: unknown = null;
   let hasFrozenSeal = Boolean(b.sealCursors);
   let sealCursors = b.sealCursors ?? { log: b.logCursor ?? 0, cdp: b.cdpCursor ?? 0, shot: b.shotCursor ?? 0 };
@@ -1466,12 +1465,16 @@ async function finalizeV2Session(
     const dir = spoolDirOf(openId);
     const httpSpoolPath = join(dir, 'http.jsonl');
     const cdpSpoolPath = join(dir, 'cdp.jsonl');
-    // Apply frozen seal cursor as upper bound ONLY when a seal actually supplied it; if remote was already gone before seal, recover all valid host-spooled records.
-    const httpSpool = repairJsonlStream(httpSpoolPath, hasFrozenSeal ? Math.max(b.logCursor ?? 0, sealCursors.log) : (b.logCursor ?? 0), hasFrozenSeal ? sealCursors.log : undefined);
-    const cdpSpool = repairJsonlStream(cdpSpoolPath, b.cdpFile ? (hasFrozenSeal ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : (b.cdpCursor ?? 0)) : 0, hasFrozenSeal ? sealCursors.cdp : undefined);
+    // Only durable local cursors establish that a spool file MUST already exist when the remote vanished before drain; frozen seal cursors remain the upper bound when present.
+    const expectedLog = remoteAvailable && hasFrozenSeal ? Math.max(b.logCursor ?? 0, sealCursors.log) : (b.logCursor ?? 0);
+    const expectedCdp = b.cdpFile ? (remoteAvailable && hasFrozenSeal ? Math.max(b.cdpCursor ?? 0, sealCursors.cdp) : (b.cdpCursor ?? 0)) : 0;
+    const expectedShot = remoteAvailable && hasFrozenSeal ? Math.max(b.shotCursor ?? 0, sealCursors.shot) : (b.shotCursor ?? 0);
+    const httpSpool = repairJsonlStream(httpSpoolPath, expectedLog, hasFrozenSeal ? sealCursors.log : undefined);
+    const cdpSpool = repairJsonlStream(cdpSpoolPath, expectedCdp, hasFrozenSeal ? sealCursors.cdp : undefined);
     const httpRaw = httpSpool.entries as Entry[];
     const cdpRaw = cdpSpool.entries;
-    const shotState = readShotSpool(openId, hasFrozenSeal ? Math.max(b.shotCursor ?? 0, sealCursors.shot) : (b.shotCursor ?? 0));
+    const shotState = readShotSpool(openId, expectedShot);
+    reconcilePendingShots(openId, b, inst, shotState, inst.log.some(e => e.op === 'close' || e.op === 'abandon'));
 
     // Evaluate Stage-1 execpolicy over drained browser writes for unified API+browser policy telemetry.
     const { enriched: httpEntries, policySummary } = evaluateBrowserPolicySummary(inst, b.run, httpRaw);
@@ -1524,6 +1527,13 @@ async function finalizeV2Session(
       artifacts[s.file] = s.sha256;
     }
 
+    const recoveredLog = Math.max(b.logCursor ?? 0, httpSpool.maxCursor);
+    const recoveredCdp = Math.max(b.cdpCursor ?? 0, cdpSpool.maxCursor);
+    const recoveredShot = Math.max(b.shotCursor ?? 0, ...allShots.map(s => s.seq));
+    if (!remoteAvailable && hasFrozenSeal && (recoveredLog < sealCursors.log || (b.cdpFile && recoveredCdp < sealCursors.cdp) || recoveredShot < sealCursors.shot)) {
+      sealGaps = { ...sealGaps, remoteGone: true, ackGap: sealGaps.ackGap ?? 'remote_gone_before_drain' };
+    }
+
     const manifest: BrowserAuditManifest = {
       version: 1,
       sessionId: id,
@@ -1540,9 +1550,9 @@ async function finalizeV2Session(
       extractorV: EXTRACTOR_V,
       sealedAt,
       finalCursors: {
-        log: hasFrozenSeal ? (b.logCursor ?? sealCursors.log) : Math.max(b.logCursor ?? 0, httpSpool.maxCursor),
-        cdp: hasFrozenSeal ? (b.cdpCursor ?? sealCursors.cdp) : Math.max(b.cdpCursor ?? 0, cdpSpool.maxCursor),
-        shot: hasFrozenSeal ? (b.shotCursor ?? sealCursors.shot) : Math.max(b.shotCursor ?? 0, ...allShots.map(s => s.seq)),
+        log: recoveredLog,
+        cdp: recoveredCdp,
+        shot: recoveredShot,
       },
       gaps: sealGaps,
       ...(policySummary && { policySummary }),
@@ -1582,6 +1592,8 @@ async function finalizeV2Session(
           : 0;
         const writes = httpReqs.filter(e => !e.blocked && (e.isWrite ?? !SAFE_METHODS.has(String(e.method ?? 'GET').toUpperCase()))).length;
         const blocked = httpReqs.filter(e => e.blocked).length;
+        const attempts = httpReqs.length;
+        const forwarded = attempts - blocked;
         let errors = httpReqs.filter(e => {
           if (e.blocked) return false;
           const end = typeof e.n === 'number' ? httpEndsByRef.get(e.n) : undefined;
@@ -1603,6 +1615,8 @@ async function finalizeV2Session(
             ...(b.email && { login: b.email }),
             ...(b.siteId && { siteId: b.siteId }),
             requests: httpReqs.length,
+            attempts,
+            forwarded,
             writes,
             blocked,
             ...(errors > 0 && { errors }),

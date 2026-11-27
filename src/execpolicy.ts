@@ -697,13 +697,13 @@ function parseJsonlBuffer(rawBuf: Buffer): { entries: any[]; malformedLines: num
   const malformedLines: number[] = []
   const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : raw.split('\n')
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim()
-    if (!trimmed) {
+    const line = lines[i]
+    if (line.length === 0 || /^[ \t\r]+$/.test(line)) {
       malformedLines.push(i + 1)
       continue
     }
     try {
-      const parsed = JSON.parse(trimmed)
+      const parsed = JSON.parse(line)
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         malformedLines.push(i + 1)
         continue

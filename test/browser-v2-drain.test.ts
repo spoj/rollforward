@@ -296,6 +296,8 @@ test('v0.3.0 capabilities probe, auditV2 session open, seal -> paginated drain -
   const browserEntry = inst.log.find(e => e.op === 'browser' && !e.action)!;
   assert.equal(browserEntry.sessionId, id);
   assert.equal(browserEntry.requests, 2);
+  assert.equal(browserEntry.attempts, 2);
+  assert.equal(browserEntry.forwarded, 2);
   assert.equal(browserEntry.writes, 1);
   assert.equal(browserEntry.collapsedGets, 3);
   assert.equal(browserEntry.cdp, 2);
@@ -425,6 +427,26 @@ test('fail-closed spool & protocol checks: malformed /capabilities, corrupt shot
   assert.equal(goneAudit.manifest.gaps.remoteGone, true);
   assert.equal(goneAudit.manifest.finalCursors.log, 2);
   assert.equal(goneAudit.http.length, 2, 'host-spooled records recovered even when remote vanished before seal');
+
+  // 6. Sealed then remote vanishes BEFORE drain: journal has positive sealCursors while local cursors are 0 -> MUST still publish recovered streams with explicit ackGap!
+  const instSealedGone = makeInst('v2sealedgone');
+  const bSG = new Browsers(instSealedGone, 1);
+  const idSG = await bSG.browser('erp');
+  const jSG = JSON.parse(readFileSync(join(rfDir(), 'browsers.json'), 'utf8'));
+  jSG[idSG].phase = 'sealed';
+  jSG[idSG].sealCursors = { log: 3, cdp: 3, shot: 2 };
+  jSG[idSG].sealedAt = new Date().toISOString();
+  chmodSync(join(rfDir(), 'browsers.json'), 0o644);
+  writeFileSync(join(rfDir(), 'browsers.json'), JSON.stringify(jSG));
+  mkdirSync(join(rfDir(), 'browser-spool', idSG), { recursive: true });
+  writeFileSync(join(rfDir(), 'browser-spool', idSG, 'http.jsonl'), remoteSessions.get(idSG)!.http.map(e => JSON.stringify(e) + '\n').join(''));
+  remoteSessions.delete(idSG);
+  await bSG.close('erp');
+  const sgAudit = readBrowserAudit(instSealedGone, idSG);
+  assert.equal(sgAudit.integrity.ok, true);
+  assert.equal(sgAudit.manifest.gaps.remoteGone, true);
+  assert.equal(sgAudit.manifest.gaps.ackGap, 'remote_gone_before_drain');
+  assert.equal(sgAudit.http.length, 2, 'recovers available HTTP spool even when CDP/shot streams were never drained before remote vanished');
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {
