@@ -48,7 +48,7 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
   if (from.length !== 1) throw refuse(`a message has one From header, not ${from.length}`);
   const m = FROM.exec(from[0].trim()), address = m?.[1] ?? m?.[2];
   if (!address || address.includes('=?')) throw refuse('its From is one plain address, with a display name if any');
-  if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
+  if (address.toLowerCase() !== box) throw refuse("its From must match the runner's mailbox");
 }
 
 const encodePart = (s: string) => encodeURIComponent(s).replace(/%(?:24|26|2B|2C|3A|3B|3D|40)/gi, m => decodeURIComponent(m));

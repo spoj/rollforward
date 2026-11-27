@@ -825,7 +825,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
   const sendMime = (body: string, headers?: Record<string, string>, path = '/me/sendMail') => via('POST', `${G}${path}`, { token: 'run3', body, headers: { 'content-type': 'text/plain', ...headers } });
   for (const [body, why] of [
     [mime(`From: ${ALICE}`, `From: ${AP}`), /a message has one From header, not 2/],
-    [mime('From: Alice', ` <${AP}>`), /mail from alice@demo.test goes out as alice@demo.test, not ap@demo.test/],
+    [mime('From: Alice', ` <${AP}>`), /its From must match the runner's mailbox/],
     [mime(`From: <=?utf-8?Q?alice?=@demo.test>`), /its From is one plain address/],
     [mime(`From: =?utf-8?B?${Buffer.from(ALICE).toString('base64')}?=`), /its From is one plain address/],
     [mime(`From: ${ALICE}`, `Sender: ${AP}`), /its Sender header would name another sender/],

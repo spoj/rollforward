@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import zlib from 'node:zlib'
+import { key as systemKey, rfDir } from './system.ts'
 import {
   buildBodyShape,
   buildFormBodyShape,
@@ -696,6 +697,8 @@ export function classifyGraphqlQuery(
 export function extractSoapBodyRoot(xml: string): string | undefined {
   const len = xml.length
   let i = 0
+  let depth = 0
+  let inEnvelope = false
   let inBody = false
   const isNameChar = (c: number) =>
     (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95 || c === 45 || c === 46 || c === 58
@@ -731,12 +734,12 @@ export function extractSoapBodyRoot(xml: string): string | undefined {
     if (nextCh === 47) { // '</'
       const end = xml.indexOf('>', pos + 2)
       if (end < 0) return undefined
-      if (inBody) {
-        const closeName = xml.slice(pos + 2, end).trim()
-        const colon = closeName.indexOf(':')
-        const local = (colon >= 0 ? closeName.slice(colon + 1) : closeName).toLowerCase()
-        if (local === 'body') return undefined
-      }
+      const closeName = xml.slice(pos + 2, end).trim()
+      const colon = closeName.indexOf(':')
+      const local = (colon >= 0 ? closeName.slice(colon + 1) : closeName).toLowerCase()
+      if (inBody && depth === 2 && local === 'body') return undefined
+      if (inEnvelope && depth === 1 && local === 'envelope') return undefined
+      if (depth > 0) depth--
       i = end + 1
       continue
     }
@@ -763,20 +766,121 @@ export function extractSoapBodyRoot(xml: string): string | undefined {
     }
     if (gt < 0) return undefined
     const selfClosing = xml.charCodeAt(gt - 1) === 47
-    if (inBody) {
+    if (inBody && depth === 2) {
       return qname
     }
     const colon = qname.indexOf(':')
     const local = (colon >= 0 ? qname.slice(colon + 1) : qname).toLowerCase()
-    if (local === 'body' && !selfClosing) {
+    if (depth === 0) {
+      if (local !== 'envelope' || selfClosing) return undefined
+      inEnvelope = true
+      depth = 1
+    } else if (inEnvelope && depth === 1 && local === 'body' && !selfClosing) {
       inBody = true
+      depth = 2
+    } else if (!selfClosing) {
+      depth++
     }
     i = gt + 1
   }
   return undefined
 }
 
-// ---- SQL classifier for Databricks statements (comment & string literal safe, zero PII emitted) ----
+// ---- Keyed HMAC target & SQL context digests (never leak raw IDs or SQL literals/parameters) ----
+
+let cachedHmacDir = ''
+let cachedHmacKey: Buffer | undefined
+let fallbackEphemeralKey: Buffer | undefined
+
+export function getPolicyHmacKey(): Buffer {
+  const dir = rfDir()
+  if (dir) {
+    if (cachedHmacKey && cachedHmacDir === dir) return cachedHmacKey
+    try {
+      cachedHmacKey = crypto.createHmac('sha256', systemKey('seal.key')).update('rf:execpolicy:hmac:v1').digest()
+      cachedHmacDir = dir
+      return cachedHmacKey
+    } catch {
+      // Fall through to ephemeral key if .rf is unavailable in isolated unit tests
+    }
+  }
+  if (!fallbackEphemeralKey) fallbackEphemeralKey = crypto.randomBytes(32)
+  return fallbackEphemeralKey
+}
+
+export function canonicalizeTargetPath(rawPathname: string): string {
+  let p = rawPathname.trim()
+  if (!p.startsWith('/')) p = '/' + p
+  // Normalize only the Graph API version prefix case (/V1.0/ -> /v1.0/, /BETA/ -> /beta/) while preserving ID case
+  p = p.replace(/^\/(v1\.0|beta)(?=\/|$)/i, (_, v: string) => `/${v.toLowerCase()}`)
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1)
+  return p
+}
+
+export function computeTargetDigest(
+  input: { surface: 'browser' | 'api'; connectionType?: string; host: string; rawPathname: string; resourceId?: string },
+  hmacKey?: Buffer,
+): string {
+  const k = hmacKey ?? getPolicyHmacKey()
+  const payload = JSON.stringify([
+    input.surface,
+    (input.connectionType ?? '').toLowerCase(),
+    input.host.toLowerCase(),
+    canonicalizeTargetPath(input.rawPathname),
+    input.resourceId ?? '',
+  ])
+  return crypto.createHmac('sha256', k).update(`target:${payload}`).digest('hex')
+}
+
+function canonicalizeJsonValue(val: unknown): unknown {
+  if (val === null || val === undefined || typeof val !== 'object') return val
+  if (Array.isArray(val)) return val.map(canonicalizeJsonValue)
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(val as Record<string, unknown>).sort()) {
+    out[k] = canonicalizeJsonValue((val as Record<string, unknown>)[k])
+  }
+  return out
+}
+
+export function computeSqlContextDigest(
+  input: { sql: string; parameters?: unknown; warehouseId?: string; catalog?: string; schema?: string },
+  hmacKey?: Buffer,
+): string {
+  const k = hmacKey ?? getPolicyHmacKey()
+  const payload = JSON.stringify({
+    sql: input.sql.trim(),
+    parameters: input.parameters !== undefined ? canonicalizeJsonValue(input.parameters) : null,
+    warehouseId: input.warehouseId ?? '',
+    catalog: input.catalog ?? '',
+    schema: input.schema ?? '',
+  })
+  return crypto.createHmac('sha256', k).update(`sql:${payload}`).digest('hex')
+}
+
+export function hasStrongIfMatch(rawHeaders: Record<string, string | string[] | undefined>): boolean {
+  const raw = rawHeaders['if-match']
+  const val = Array.isArray(raw) ? raw.join(',') : typeof raw === 'string' ? raw : ''
+  const trimmed = val.trim()
+  if (!trimmed || trimmed === '*') return false
+  const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean)
+  if (!parts.length) return false
+  return parts.every(p => p !== '*' && p !== '""' && !/^W\//i.test(p) && !p.includes('*'))
+}
+
+export const E1_MUTATING_FORM_COMMANDS = new Set([
+  'doaction',
+  'setcontrolvalue',
+  'setcheckboxvalue',
+  'setradiobutton',
+  'setcombovalue',
+  'setgridcellvalue',
+  'insertgridrow',
+  'deletegridrow',
+  'updategridrow',
+  'clickgridcell',
+])
+
+// ---- SQL classifier for Databricks statements (Spark SqlBaseLexer compatible, zero PII emitted) ----
 
 export type SqlClassification = {
   sqlClass: 'read' | 'write' | 'ddl' | 'unknown'
@@ -873,15 +977,29 @@ export function classifySqlStatement(sql: string): SqlClassification {
       if (!closed) ambiguous = true
       continue
     }
-    if (ch === '"' || ch === '`') {
-      const q = ch
+    // Spark SqlBaseLexer BACKQUOTED_IDENTIFIER: '`' ( ~'`' | '``' )* '`'
+    // Backslash is ALWAYS a literal character inside backticks, NEVER an escape! Only `` escapes a backtick.
+    if (ch === '`') {
+      const start = i
+      i++
+      let closed = false
+      while (i < len) {
+        if (sql[i] === '`' && sql[i + 1] === '`') { i += 2; continue }
+        if (sql[i] === '`') { i++; closed = true; break }
+        i++
+      }
+      if (!closed) ambiguous = true
+      tokens.push({ kind: 'word', text: sql.slice(start, i) })
+      continue
+    }
+    if (ch === '"') {
       const start = i
       i++
       let closed = false
       while (i < len) {
         if (sql[i] === '\\') { i += 2; continue }
-        if (sql[i] === q && sql[i + 1] === q) { i += 2; continue }
-        if (sql[i] === q) { i++; closed = true; break }
+        if (sql[i] === '"' && sql[i + 1] === '"') { i += 2; continue }
+        if (sql[i] === '"') { i++; closed = true; break }
         i++
       }
       if (!closed) ambiguous = true
@@ -936,6 +1054,9 @@ export function classifySqlStatement(sql: string): SqlClassification {
   }
 
   const statements: string[] = []
+  let hasMergeDelete = false
+  let hasOverwriteOrReplaceWhere = false
+
   for (const stmt of rawStmts) {
     const first = stmt[0]
     if (!first || first.kind !== 'word') {
@@ -943,6 +1064,7 @@ export function classifySqlStatement(sql: string): SqlClassification {
       continue
     }
     let verb = first.text
+    let mainIdx = 0
     if (verb === 'WITH') {
       // Strictly parse CTE list: WITH [RECURSIVE] <name> [(cols)] AS [MATERIALIZED|NOT MATERIALIZED] (<subquery>) [, ...] <mainVerb>
       let p = 1
@@ -974,12 +1096,51 @@ export function classifySqlStatement(sql: string): SqlClassification {
         continue
       }
       verb = stmt[p].text
+      mainIdx = p
+    }
+    // Check top-level destructive clauses on MERGE and INSERT (including behind CTEs!)
+    if (verb === 'MERGE') {
+      let d = 0
+      let prevWord = ''
+      for (let k = mainIdx + 1; k < stmt.length; k++) {
+        const tk = stmt[k]
+        if (tk.kind === 'lparen') { d++; prevWord = '' }
+        else if (tk.kind === 'rparen') { if (d > 0) d--; prevWord = '' }
+        else if (d === 0 && tk.kind === 'word') {
+          if (prevWord === 'THEN' && tk.text === 'DELETE') {
+            hasMergeDelete = true
+          }
+          prevWord = tk.text
+        } else if (d === 0) {
+          prevWord = ''
+        }
+      }
+    } else if (verb === 'INSERT') {
+      if (stmt[mainIdx + 1]?.kind === 'word' && stmt[mainIdx + 1].text === 'OVERWRITE') {
+        hasOverwriteOrReplaceWhere = true
+      } else {
+        let d = 0
+        let prevWord = ''
+        for (let k = mainIdx + 1; k < stmt.length; k++) {
+          const tk = stmt[k]
+          if (tk.kind === 'lparen') { d++; prevWord = '' }
+          else if (tk.kind === 'rparen') { if (d > 0) d--; prevWord = '' }
+          else if (d === 0 && tk.kind === 'word') {
+            if (prevWord === 'REPLACE' && tk.text === 'WHERE') {
+              hasOverwriteOrReplaceWhere = true
+            }
+            prevWord = tk.text
+          } else if (d === 0) {
+            prevWord = ''
+          }
+        }
+      }
     }
     // Defense-in-depth: if any top-level word in the statement after CTEs is a write/DDL verb, never misclassify as read!
     if (SQL_READ_VERBS.has(verb)) {
       let d = 0
       let hasMutatingTopLevel = false
-      for (let k = 1; k < stmt.length; k++) {
+      for (let k = mainIdx + 1; k < stmt.length; k++) {
         const tk = stmt[k]
         if (tk.kind === 'lparen') d++
         else if (tk.kind === 'rparen' && d > 0) d--
@@ -1000,12 +1161,12 @@ export function classifySqlStatement(sql: string): SqlClassification {
     statements.push(normalizedVerb)
   }
 
-  let hasDropOrTruncate = statements.some(v => v === 'DROP' || v === 'TRUNCATE')
-  let hasDelete = statements.some(v => v === 'DELETE')
+  let hasDropOrTruncate = hasOverwriteOrReplaceWhere || statements.some(v => v === 'DROP' || v === 'TRUNCATE')
+  let hasDelete = hasMergeDelete || statements.some(v => v === 'DELETE')
   // Fail-closed: if lexer hit ambiguous Spark comment/string constructs, also scan raw text for destructive verbs
   // and NEVER classify as 'read'.
   if (ambiguous) {
-    if (!hasDropOrTruncate && /\b(?:DROP|TRUNCATE)\b/i.test(sql)) hasDropOrTruncate = true
+    if (!hasDropOrTruncate && /\b(?:DROP|TRUNCATE)\b|\bINSERT\s+OVERWRITE\b|\bREPLACE\s+WHERE\b/i.test(sql)) hasDropOrTruncate = true
     if (!hasDelete && /\bDELETE\b/i.test(sql)) hasDelete = true
   }
   const destructive = hasDropOrTruncate || hasDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
@@ -1030,52 +1191,12 @@ export function classifySqlStatement(sql: string): SqlClassification {
 
 // ---- Graph API semantic helpers (domains & counts only, NEVER raw addresses/subject/body PII) ----
 
-function extractRecipientDomains(obj: Record<string, unknown> | undefined): { domains: string[]; count: number } {
-  if (!obj) return { domains: [], count: 0 }
-  const msg = (obj.message && typeof obj.message === 'object' && !Array.isArray(obj.message)
-    ? obj.message
-    : obj.Message && typeof obj.Message === 'object' && !Array.isArray(obj.Message)
-      ? obj.Message
-      : obj) as Record<string, unknown>
-  const fields = ['toRecipients', 'ccRecipients', 'bccRecipients', 'ToRecipients', 'CcRecipients', 'BccRecipients']
-  const domains = new Set<string>()
-  let count = 0
-  for (const f of fields) {
-    const arr = msg[f]
-    if (!Array.isArray(arr)) continue
-    for (const item of arr) {
-      if (!item || typeof item !== 'object') continue
-      const rec = item as Record<string, unknown>
-      const ea = (rec.emailAddress ?? rec.EmailAddress) as Record<string, unknown> | undefined
-      const addr = typeof ea?.address === 'string' ? ea.address : typeof ea?.Address === 'string' ? ea.Address : undefined
-      if (addr) {
-        count++
-        const at = addr.lastIndexOf('@')
-        if (at >= 0) {
-          const dom = addr.slice(at + 1).trim().toLowerCase()
-          if (dom && /^[a-z0-9.-]+$/.test(dom) && domains.size < 32) domains.add(dom)
-        }
-      }
-    }
-  }
-  return { domains: [...domains].sort(), count }
-}
-
-function extractAttachmentCount(obj: Record<string, unknown> | undefined): number {
-  if (!obj) return 0
-  const msg = (obj.message && typeof obj.message === 'object' && !Array.isArray(obj.message)
-    ? obj.message
-    : obj.Message && typeof obj.Message === 'object' && !Array.isArray(obj.Message)
-      ? obj.Message
-      : obj) as Record<string, unknown>
-  const att = msg.attachments ?? msg.Attachments
-  return Array.isArray(att) ? att.length : 0
-}
-
 const MAX_MIME_HEAD_BYTES = 8192
+const MAX_RECIPIENT_DOMAINS = 32
 
 function isValidEmailLocal(s: string): boolean {
   if (!s.length || s.length > 256) return false
+  if (s.startsWith('.') || s.endsWith('.') || s.includes('..')) return false
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i)
     const ok =
@@ -1088,8 +1209,9 @@ function isValidEmailLocal(s: string): boolean {
   return true
 }
 
-function isValidEmailDomain(s: string): boolean {
+export function isValidEmailDomain(s: string): boolean {
   if (!s.length || s.length > 253) return false
+  if (s.startsWith('.') || s.endsWith('.')) return false
   const lastDot = s.lastIndexOf('.')
   if (lastDot <= 0 || s.length - lastDot - 1 < 2) return false
   // TLD must be ASCII letters only
@@ -1098,11 +1220,13 @@ function isValidEmailDomain(s: string): boolean {
     if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return false
   }
   let labelLen = 0
+  let labelStart = 0
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i)
     if (c === 46) {
-      if (labelLen === 0) return false
+      if (labelLen === 0 || labelLen > 63 || s.charCodeAt(labelStart) === 45 || s.charCodeAt(i - 1) === 45) return false
       labelLen = 0
+      labelStart = i + 1
       continue
     }
     const ok =
@@ -1113,67 +1237,270 @@ function isValidEmailDomain(s: string): boolean {
     if (!ok) return false
     labelLen++
   }
-  return labelLen > 0
+  return labelLen > 0 && labelLen <= 63 && s.charCodeAt(labelStart) !== 45 && s.charCodeAt(s.length - 1) !== 45
 }
 
-function isMimeDelim(c: number): boolean {
-  return c === 44 || c === 59 || c === 60 || c === 62 || c === 32 || c === 9 || c === 13 || c === 10 || c === 34 || c === 40 || c === 41
+// Strict plain ASCII addr-spec parser: rejects quoted locals, IP-literals, trailing dots, underscores, IDN, comments, etc.
+function parsePlainEmailDomain(rawAddr: string): string | null {
+  const s = rawAddr.trim()
+  if (!s || s.length > 512) return null
+  const firstAt = s.indexOf('@')
+  if (firstAt <= 0 || firstAt !== s.lastIndexOf('@') || firstAt >= s.length - 1) return null
+  const local = s.slice(0, firstAt)
+  const dom = s.slice(firstAt + 1)
+  if (!isValidEmailLocal(local) || !isValidEmailDomain(dom)) return null
+  return dom.toLowerCase()
 }
 
-// Linear O(N) MIME recipient header scanner (capped at 8 KiB, zero backtracking regexes).
-export function extractMimeRecipientDomains(rawText: string): { domains: string[]; count: number } {
+function keyedCI(obj: Record<string, unknown>, lowerKey: string): unknown[] {
+  const out: unknown[] = []
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.toLowerCase() === lowerKey) out.push(v)
+  }
+  return out
+}
+
+function extractRecipientDomains(obj: Record<string, unknown> | undefined): { domains: string[]; count: number; complete: boolean } {
+  if (!obj) return { domains: [], count: 0, complete: false }
+  const msgVals = keyedCI(obj, 'message')
+  let complete = true
+  let msg: Record<string, unknown>
+  if (msgVals.length > 1) {
+    // Ambiguous multiple case-variants of `message`
+    complete = false
+    const firstObj = msgVals.find(v => v && typeof v === 'object' && !Array.isArray(v))
+    msg = (firstObj ?? obj) as Record<string, unknown>
+  } else if (msgVals.length === 1) {
+    if (!msgVals[0] || typeof msgVals[0] !== 'object' || Array.isArray(msgVals[0])) {
+      return { domains: [], count: 0, complete: false }
+    }
+    msg = msgVals[0] as Record<string, unknown>
+    // If top-level ALSO has recipient fields outside `message`, mark incomplete
+    if (
+      keyedCI(obj, 'torecipients').length > 0 ||
+      keyedCI(obj, 'ccrecipients').length > 0 ||
+      keyedCI(obj, 'bccrecipients').length > 0
+    ) {
+      complete = false
+    }
+  } else {
+    msg = obj
+  }
+
+  const domains = new Set<string>()
+  let count = 0
+  let resolvedCount = 0
+  const recipFieldNames = ['torecipients', 'ccrecipients', 'bccrecipients'] as const
+
+  for (const fname of recipFieldNames) {
+    const matches = keyedCI(msg, fname)
+    for (const arr of matches) {
+      if (arr === undefined || arr === null) continue
+      if (!Array.isArray(arr)) {
+        complete = false
+        continue
+      }
+      for (const item of arr) {
+        count++
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          complete = false
+          continue
+        }
+        const eaVals = keyedCI(item as Record<string, unknown>, 'emailaddress')
+        if (eaVals.length !== 1 || !eaVals[0] || typeof eaVals[0] !== 'object' || Array.isArray(eaVals[0])) {
+          complete = false
+          continue
+        }
+        const addrVals = keyedCI(eaVals[0] as Record<string, unknown>, 'address')
+        if (addrVals.length !== 1 || typeof addrVals[0] !== 'string' || !addrVals[0].trim()) {
+          complete = false
+          continue
+        }
+        const dom = parsePlainEmailDomain(addrVals[0])
+        if (!dom) {
+          complete = false
+          continue
+        }
+        resolvedCount++
+        if (domains.size >= MAX_RECIPIENT_DOMAINS && !domains.has(dom)) {
+          complete = false
+        } else {
+          domains.add(dom)
+        }
+      }
+    }
+  }
+
+  return {
+    domains: [...domains].sort(),
+    count,
+    complete: complete && count > 0 && count === resolvedCount,
+  }
+}
+
+function extractAttachmentCount(obj: Record<string, unknown> | undefined): number {
+  if (!obj) return 0
+  const msgVals = keyedCI(obj, 'message')
+  const msg = (msgVals[0] && typeof msgVals[0] === 'object' && !Array.isArray(msgVals[0])
+    ? msgVals[0]
+    : obj) as Record<string, unknown>
+  const attVals = keyedCI(msg, 'attachments')
+  let total = 0
+  for (const att of attVals) if (Array.isArray(att)) total += att.length
+  return total
+}
+
+function isPlainDisplayName(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    const ok =
+      (c >= 65 && c <= 90) ||
+      (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c === 32 || c === 9 || c === 46 || c === 45 || c === 95 || c === 39
+    if (!ok) return false
+  }
+  return true
+}
+
+// Linear O(N) fail-closed MIME recipient header scanner (capped at 8 KiB, zero backtracking regexes).
+export function extractMimeRecipientDomains(rawText: string): { domains: string[]; count: number; complete: boolean } {
   try {
-    // Only need enough base64 to decode the first 8 KiB of MIME headers (+ padding margin).
-    const maxB64Chars = Math.ceil((MAX_MIME_HEAD_BYTES * 4) / 3) + 64
+    // Decode up to MAX_MIME_HEAD_BYTES + 4 bytes so we can verify header termination within the 8 KiB cap.
+    const maxB64Chars = Math.ceil(((MAX_MIME_HEAD_BYTES + 4) * 4) / 3) + 8
     let b64 = ''
-    for (let i = 0; i < rawText.length && b64.length < maxB64Chars; i++) {
+    let hitInputCap = false
+    let i = 0
+    for (; i < rawText.length; i++) {
       const c = rawText.charCodeAt(i)
       if (c === 32 || c === 9 || c === 13 || c === 10) continue
+      if (b64.length >= maxB64Chars) {
+        hitInputCap = true
+        break
+      }
       const ok =
         (c >= 65 && c <= 90) ||
         (c >= 97 && c <= 122) ||
         (c >= 48 && c <= 57) ||
         c === 43 || c === 47 || c === 61
-      if (!ok) return { domains: [], count: 0 }
+      if (!ok) return { domains: [], count: 0, complete: false }
       b64 += rawText[i]
     }
-    if (!b64.length) return { domains: [], count: 0 }
+    if (!b64.length) return { domains: [], count: 0, complete: false }
     // Align partial prefix to 4-char base64 boundary when truncated
-    const aligned = b64.length < rawText.length ? b64.slice(0, b64.length - (b64.length % 4)) : b64
-    if (!aligned.length || aligned.length % 4 !== 0) return { domains: [], count: 0 }
+    const aligned = hitInputCap ? b64.slice(0, b64.length - (b64.length % 4)) : b64
+    if (!aligned.length || aligned.length % 4 !== 0) return { domains: [], count: 0, complete: false }
     const decoded = Buffer.from(aligned, 'base64').toString('latin1')
-    const headEnd = decoded.indexOf('\r\n\r\n')
-    const lfEnd = headEnd < 0 ? decoded.indexOf('\n\n') : -1
-    const cut = headEnd >= 0 ? Math.min(headEnd, MAX_MIME_HEAD_BYTES) : lfEnd >= 0 ? Math.min(lfEnd, MAX_MIME_HEAD_BYTES) : Math.min(decoded.length, MAX_MIME_HEAD_BYTES)
+
+    const crlfEnd = decoded.indexOf('\r\n\r\n')
+    const lfEnd = decoded.indexOf('\n\n')
+    let headEnd = -1
+    if (crlfEnd >= 0 && lfEnd >= 0) headEnd = Math.min(crlfEnd, lfEnd)
+    else if (crlfEnd >= 0) headEnd = crlfEnd
+    else if (lfEnd >= 0) headEnd = lfEnd
+
+    // Fail closed if the header block did not terminate within MAX_MIME_HEAD_BYTES!
+    let complete = true
+    if (headEnd < 0) {
+      if (hitInputCap || decoded.length > MAX_MIME_HEAD_BYTES) complete = false
+      // Even without a body separator, a valid MIME message with headers must terminate cleanly within cap
+      if (decoded.length >= MAX_MIME_HEAD_BYTES) complete = false
+    } else if (headEnd > MAX_MIME_HEAD_BYTES) {
+      complete = false
+    }
+
+    const cut = headEnd >= 0 ? Math.min(headEnd, MAX_MIME_HEAD_BYTES) : Math.min(decoded.length, MAX_MIME_HEAD_BYTES)
     const head = decoded.slice(0, cut)
     const unfolded = head.replace(/\r?\n[ \t]+/g, ' ')
     const domains = new Set<string>()
-    let count = 0
+    let parsedCount = 0
+    let resolvedCount = 0
+
     for (const line of unfolded.split(/\r?\n/)) {
+      if (!line) continue
       const colon = line.indexOf(':')
-      if (colon <= 0) continue
+      if (colon <= 0) {
+        complete = false
+        continue
+      }
       const hdrName = line.slice(0, colon).trim().toLowerCase()
-      if (hdrName !== 'to' && hdrName !== 'cc' && hdrName !== 'bcc') continue
-      const val = line.slice(colon + 1, colon + 1 + MAX_MIME_HEAD_BYTES)
-      let pos = 0
-      while (pos < val.length) {
-        while (pos < val.length && isMimeDelim(val.charCodeAt(pos))) pos++
-        const start = pos
-        while (pos < val.length && !isMimeDelim(val.charCodeAt(pos))) pos++
-        if (pos <= start) continue
-        const tok = val.slice(start, pos)
-        const at = tok.lastIndexOf('@')
-        if (at <= 0 || at >= tok.length - 1) continue
-        const local = tok.slice(0, at)
-        const dom = tok.slice(at + 1)
-        if (!isValidEmailLocal(local) || !isValidEmailDomain(dom)) continue
-        count++
-        if (domains.size < 32) domains.add(dom.toLowerCase())
+      const isResentRecip = hdrName === 'resent-to' || hdrName === 'resent-cc' || hdrName === 'resent-bcc'
+      if (isResentRecip) {
+        complete = false
+      }
+      if (hdrName !== 'to' && hdrName !== 'cc' && hdrName !== 'bcc' && !isResentRecip) continue
+
+      const val = line.slice(colon + 1)
+      // Fail closed on RFC 5322 comments (...), quoted strings "...", group syntax : ;, encoded-words =?, or non-ASCII/control bytes
+      let hasUnsafeSyntax = false
+      for (let k = 0; k < val.length; k++) {
+        const ch = val.charCodeAt(k)
+        if (
+          ch === 34 || // "
+          ch === 40 || // (
+          ch === 41 || // )
+          ch === 58 || // :
+          ch === 59 || // ;
+          ch === 92 || // \
+          ch > 126 ||
+          (ch < 32 && ch !== 9)
+        ) {
+          hasUnsafeSyntax = true
+          break
+        }
+        if (ch === 61 && val.charCodeAt(k + 1) === 63) { // =?
+          hasUnsafeSyntax = true
+          break
+        }
+      }
+      if (hasUnsafeSyntax) {
+        complete = false
+      }
+
+      const parts = val.split(',')
+      for (const rawPart of parts) {
+        const part = rawPart.trim()
+        if (!part) {
+          complete = false
+          continue
+        }
+        parsedCount++
+        let candidate: string | null = null
+        const lt = part.indexOf('<')
+        const gt = part.indexOf('>')
+        if (lt < 0 && gt < 0) {
+          candidate = part
+        } else if (lt >= 0 && gt > lt && gt === part.length - 1 && part.indexOf('<', lt + 1) < 0 && part.indexOf('>', gt + 1) < 0) {
+          const display = part.slice(0, lt).trim()
+          if (!display || isPlainDisplayName(display)) {
+            candidate = part.slice(lt + 1, gt).trim()
+          }
+        }
+        if (!candidate) {
+          complete = false
+          continue
+        }
+        const dom = parsePlainEmailDomain(candidate)
+        if (!dom) {
+          complete = false
+          continue
+        }
+        resolvedCount++
+        if (domains.size >= MAX_RECIPIENT_DOMAINS && !domains.has(dom)) {
+          complete = false
+        } else {
+          domains.add(dom)
+        }
       }
     }
-    return { domains: [...domains].sort(), count }
+
+    return {
+      domains: [...domains].sort(),
+      count: resolvedCount,
+      complete: complete && parsedCount > 0 && parsedCount === resolvedCount,
+    }
   } catch {
-    return { domains: [], count: 0 }
+    return { domains: [], count: 0, complete: false }
   }
 }
 
@@ -1185,6 +1512,8 @@ export type ExtractInput = {
   kind: 'http' | 'upgrade'
   surface?: 'browser' | 'api'
   connectionType?: 'graph' | 'databricks' | 'service' | 'link'
+  linkProvenance?: { sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }
+  hmacKey?: Buffer
   hdr?: Record<string, string>
   rawHeaders: Record<string, string | string[] | undefined>
   reqType?: string
@@ -1338,14 +1667,48 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       : undefined
 
     // ---- API-native extractors (surface === 'api') ----
+    const surface: 'browser' | 'api' = input.surface ?? 'browser'
+    const makeTargetDigest = (resourceId?: string) =>
+      computeTargetDigest({
+        surface,
+        connectionType: input.connectionType,
+        host: input.url.hostname,
+        rawPathname: input.url.pathname,
+        ...(resourceId && { resourceId }),
+      }, input.hmacKey)
     const isGraph = input.connectionType === 'graph' || (input.surface === 'api' && input.url.hostname.toLowerCase() === 'graph.microsoft.com')
     const isDatabricks = input.connectionType === 'databricks' || (input.surface === 'api' && input.url.hostname.toLowerCase().endsWith('.azuredatabricks.net'))
     const isService = input.connectionType === 'service'
+    const isUploadSessionHost = /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(input.url.hostname)
+    const isUploadSessionPath =
+      /\/_api\/v2\.\d+\/.*\/uploadsession(?:$|[/?])/i.test(lowerPath) ||
+      /\/attachmentsessions\//i.test(lowerPath) ||
+      /\/uploadsession(?:$|[/?])/i.test(lowerPath)
+    const isGrantedUploadChunk =
+      input.surface === 'api' &&
+      input.connectionType === 'link' &&
+      input.method === 'PUT' &&
+      input.effectiveMethod === 'PUT' &&
+      isUploadSessionHost &&
+      (input.linkProvenance?.linkKind === 'upload_session' || isUploadSessionPath)
 
-    if (isGraph) {
+    if (isGrantedUploadChunk) {
+      actions.push({
+        family: 'graph',
+        op: 'graph:upload_session_chunk',
+        resource: input.sanitizedPath,
+        details: {
+          uploadSession: true,
+          ...(input.linkProvenance?.sourceType && { sourceType: input.linkProvenance.sourceType }),
+          targetDigest: makeTargetDigest(),
+        },
+        coverage: isBinary || input.transport === 'truncated' ? 'complete' : defaultCov,
+      })
+      extractStatus = 'complete'
+    } else if (isGraph) {
       const segs = lowerPath.replace(/^\/(?:v1\.0|beta)\//, '').split('/').filter(Boolean)
       const lastSeg = (segs.at(-1) ?? '').replace(/\(.*$/, '').split('.').pop() ?? ''
-      const hasIfMatch = Boolean(input.rawHeaders['if-match'])
+      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       const eff = input.effectiveMethod
 
       if (input.isWrite && ['sendmail', 'send', 'reply', 'replyall', 'forward'].includes(lastSeg)) {
@@ -1353,6 +1716,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         const recips = isMime ? extractMimeRecipientDomains(decodedText!) : extractRecipientDomains(obj)
         const attachmentCount = isMime ? 0 : extractAttachmentCount(obj)
         const opName = lastSeg === 'sendmail' ? 'sendMail' : lastSeg === 'replyall' ? 'replyAll' : lastSeg
+        // reply / replyAll / draft send carry implicit server-side recipients not provable from request body alone!
+        const recipientsComplete = (lastSeg === 'sendmail' || lastSeg === 'forward') ? recips.complete : false
         actions.push({
           family: 'graph',
           op: `graph:${opName}`,
@@ -1360,7 +1725,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           details: {
             recipientDomains: recips.domains,
             recipientCount: recips.count,
+            recipientsComplete,
             attachmentCount,
+            targetDigest: makeTargetDigest(),
             ...(isMime && { isMime: true }),
           },
           coverage: defaultCov,
@@ -1371,7 +1738,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'graph',
           op: 'graph:teams_message',
           resource: input.sanitizedPath,
-          details: { ...(bodyShape && { fieldCount: Object.keys(bodyShape).length }) },
+          details: { ...(bodyShape && { fieldCount: Object.keys(bodyShape).length }), targetDigest: makeTargetDigest() },
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1385,7 +1752,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           details: {
             recipientDomains: recips.domains,
             recipientCount: recips.count,
+            recipientsComplete: recips.complete,
             attachmentCount,
+            targetDigest: makeTargetDigest(),
           },
           coverage: defaultCov,
         })
@@ -1396,7 +1765,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'graph',
           op: 'graph:mail_patch',
           resource: input.sanitizedPath,
-          details: { ...(fields.length && { fields }), hasIfMatch },
+          details: { ...(fields.length && { fields }), hasIfMatch, targetDigest: makeTargetDigest() },
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1405,7 +1774,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'graph',
           op: 'graph:excel_write',
           resource: input.sanitizedPath,
-          details: { method: eff, hasIfMatch },
+          details: { method: eff, hasIfMatch, targetDigest: makeTargetDigest() },
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1414,20 +1783,24 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'graph',
           op: 'graph:file_write',
           resource: input.sanitizedPath,
-          details: { hasIfMatch },
-          coverage: isBinary ? 'complete' : defaultCov,
+          details: { hasIfMatch, targetDigest: makeTargetDigest() },
+          coverage: isBinary || input.transport === 'truncated' ? 'complete' : defaultCov,
         })
         extractStatus = 'complete'
       } else if (
         input.isWrite &&
         (eff === 'DELETE' || input.method === 'DELETE' || lastSeg.split('.').pop() === 'permanentdelete') &&
-        (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares'))
+        (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares') || segs.includes('messages') || segs.includes('mailfolders'))
       ) {
         actions.push({
           family: 'graph',
           op: 'graph:file_delete',
           resource: input.sanitizedPath,
-          details: { hasIfMatch, ...(lastSeg.split('.').pop() === 'permanentdelete' && { permanentDelete: true }) },
+          details: {
+            hasIfMatch,
+            targetDigest: makeTargetDigest(),
+            ...(lastSeg.split('.').pop() === 'permanentdelete' && { permanentDelete: true }),
+          },
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1436,7 +1809,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'graph',
           op: `graph:${eff}`,
           resource: input.sanitizedPath,
-          details: { hasIfMatch },
+          details: { hasIfMatch, targetDigest: makeTargetDigest() },
           coverage: isBinary || structuredJsonParseFailed ? 'partial' : defaultCov,
         })
         extractStatus = isBinary || structuredJsonParseFailed ? 'opaque' : fullyIntact ? 'complete' : 'partial'
@@ -1463,7 +1836,6 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(cls.hasDropOrTruncate && { hasDropOrTruncate: true }),
           ...(cls.hasDelete && { hasDelete: true }),
           ...(cls.ambiguous && { ambiguous: true }),
-          ...(stmtRaw && { sqlHash: crypto.createHash('sha256').update(stmtRaw.trim()).digest('hex') }),
         }
         const wh = validateStructuralIdent(obj?.warehouse_id, DBX_IDENT_RE, input.vault, true)
         vaultRedactions += wh.vaultRedactions
@@ -1474,6 +1846,18 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         const sch = validateStructuralIdent(obj?.schema, DBX_IDENT_RE, input.vault)
         vaultRedactions += sch.vaultRedactions
         if (sch.value) details.schema = sch.value
+        if (Array.isArray(obj?.parameters) && obj.parameters.length > 0) {
+          details.parameterCount = obj.parameters.length
+        }
+        if (stmtRaw) {
+          details.sqlContextDigest = computeSqlContextDigest({
+            sql: stmtRaw,
+            parameters: obj?.parameters,
+            warehouseId: typeof obj?.warehouse_id === 'string' ? obj.warehouse_id : undefined,
+            catalog: typeof obj?.catalog === 'string' ? obj.catalog : undefined,
+            schema: typeof obj?.schema === 'string' ? obj.schema : undefined,
+          }, input.hmacKey)
+        }
 
         actions.push({
           family: 'databricks',
@@ -1494,6 +1878,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'databricks',
           op: `databricks:unity_catalog_${input.effectiveMethod}`,
           resource: input.sanitizedPath,
+          ...(input.isWrite && { details: { targetDigest: makeTargetDigest() } }),
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1502,23 +1887,24 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           family: 'databricks',
           op: `databricks:${input.effectiveMethod}`,
           resource: input.sanitizedPath,
+          ...(input.isWrite && { details: { targetDigest: makeTargetDigest() } }),
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
       }
     } else if (isService) {
-      const hasIfMatch = Boolean(input.rawHeaders['if-match'])
+      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       actions.push({
         family: 'service',
         op: `service:${input.effectiveMethod}`,
         resource: input.sanitizedPath,
-        ...(hasIfMatch && { details: { hasIfMatch: true } }),
+        details: { ...(hasIfMatch && { hasIfMatch: true }), ...(input.isWrite && { targetDigest: makeTargetDigest() }) },
         coverage: isBinary || structuredJsonParseFailed ? 'partial' : defaultCov,
       })
       extractStatus = isBinary || structuredJsonParseFailed ? 'opaque' : fullyIntact ? 'complete' : 'partial'
     }
 
-    // ---- Browser & general HTTP extractors (identical to rollforward-browser) ----
+    // ---- Browser & general HTTP extractors ----
     else if (
       lowerPath.includes('/jderest/') ||
       (!!obj && typeof obj.formName === 'string' && (Array.isArray(obj.formActions) || typeof obj.formServiceAction === 'string' || 'actionRequest' in obj || 'formRequest' in obj))
@@ -1565,6 +1951,13 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             ? (obj!.formRequest as any).formActions
             : undefined
       if (rawActions) {
+        // Evaluate mutation flag across the FULL decoded formActions array BEFORE slicing to 32 for audit brevity!
+        const hasMutatingFormAction = rawActions.some(a => {
+          if (!a || typeof a !== 'object') return false
+          const cmd = (a as Record<string, unknown>).command
+          return typeof cmd === 'string' && E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())
+        })
+        if (hasMutatingFormAction) details.hasMutatingFormAction = true
         const summarized = rawActions.slice(0, 32).map(a => {
           if (!a || typeof a !== 'object') return { command: 'unknown' }
           const rec = a as Record<string, unknown>
@@ -1581,6 +1974,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         if (rawActions.length > 32) details.formActionsTruncated = true
       }
 
+      if (input.isWrite) details.targetDigest = makeTargetDigest(formIdent.value)
+
       const op = actIdent.value ? `${endpoint}:${actIdent.value}` : `${endpoint}:${input.effectiveMethod}`
       const resource = formIdent.value ?? input.sanitizedPath
       actions.push({
@@ -1595,6 +1990,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const sanLower = input.sanitizedPath.toLowerCase()
       const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
       const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
+      const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       if (lowerPath.includes('/$batch')) {
         actions.push({
           family: 'sharepoint',
@@ -1602,17 +1998,19 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           resource: spResource,
           details: {
             hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
-            hasIfMatch: Boolean(input.rawHeaders['if-match']),
+            hasIfMatch,
+            ...(input.isWrite && { targetDigest: makeTargetDigest() }),
           },
           coverage: 'opaque-batch',
         })
         extractStatus = 'opaque'
       } else {
-        const destructiveAction = /\/(?:recycle|deleteobject|deletebyid)(?:\(|$|\/)/i.test(lowerPath)
+        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyid|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(lowerPath)
         const details: Record<string, unknown> = {
-          hasIfMatch: Boolean(input.rawHeaders['if-match']),
+          hasIfMatch,
           hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
           ...(destructiveAction && { destructiveAction: true }),
+          ...(input.isWrite && { targetDigest: makeTargetDigest() }),
         }
         if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
         const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
@@ -1753,6 +2151,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(soapAction && { soapAction }),
           ...(bodyRoot && { bodyRootQName: bodyRoot }),
           ...(actionMismatch && { actionMismatch: true }),
+          ...(input.isWrite && { targetDigest: makeTargetDigest() }),
         },
         coverage: defaultCov,
       })
@@ -1762,6 +2161,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         family: input.surface === 'api' ? 'api' : 'rest',
         op: `${input.surface === 'api' ? 'api' : 'rest'}:${input.effectiveMethod}`,
         resource: input.sanitizedPath,
+        details: { targetDigest: makeTargetDigest() },
         coverage: isBinary || structuredJsonParseFailed ? 'partial' : defaultCov,
       })
       extractStatus = isBinary || structuredJsonParseFailed ? 'opaque' : fullyIntact ? 'complete' : 'partial'
@@ -1853,6 +2253,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 export function buildApiRequestDescriptor(opts: {
   connection: string
   connectionType?: 'graph' | 'databricks' | 'service' | 'link'
+  linkProvenance?: { sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }
+  hmacKey?: Buffer
   seq: number
   method: string
   url: URL
@@ -1896,6 +2298,8 @@ export function buildApiRequestDescriptor(opts: {
     kind: 'http',
     surface: 'api',
     connectionType: opts.connectionType,
+    linkProvenance: opts.linkProvenance,
+    hmacKey: opts.hmacKey,
     hdr: methods.hdr,
     rawHeaders: opts.headers,
     reqType,
