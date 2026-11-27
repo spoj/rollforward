@@ -695,6 +695,8 @@ export class Browsers {
   private expired = new Set<string>();
   private conns = new Map<Duplex, string>();
   private ended = false;
+  private endWait!: () => void;
+  private readonly onEnded = new Promise<void>(ok => { this.endWait = ok; });
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -753,23 +755,27 @@ export class Browsers {
       if (this.opening.has(site)) return this.opening.get(site);
       const w = site === PRINT ? undefined : website(email, site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
-        if (conn?.destroyed) return undefined;
+        if (this.ended || conn?.destroyed) return undefined;
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : other.by ?? 'keepalive' });
         other.waiters++;
         other.nudge?.();
         let onClose: (() => void) | undefined;
         try {
-          await Promise.race([other.released, new Promise<void>(ok => {
-            if (!conn) return;
-            if (conn.destroyed) return ok();
-            onClose = ok;
-            conn.once('close', ok);
-          })]);
+          await Promise.race([
+            other.released,
+            this.onEnded,
+            new Promise<void>(ok => {
+              if (!conn) return;
+              if (conn.destroyed) return ok();
+              onClose = ok;
+              conn.once('close', ok);
+            }),
+          ]);
         } finally {
           if (conn && onClose) conn.off('close', onClose);
           other.waiters--;
         }
-        if (conn?.destroyed) return undefined;
+        if (this.ended || conn?.destroyed) return undefined;
         continue;
       }
       const state = w ? JSON.parse(secret(email, login!.id)) : undefined;
@@ -843,6 +849,7 @@ export class Browsers {
   // treat the browser as idle so a waiting run or keepalive does not wait IDLE_MS.
   abandoned(site: string, id: string) {
     setTimeout(() => {
+      if (this.ended) return;
       const b = this.bySite.get(site);
       if (!b || b.id !== id || b.conns > 0 || b.used) return;
       b.used = true;
@@ -853,12 +860,19 @@ export class Browsers {
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
   cut() {
     this.ended = true;
-    for (const b of this.bySite.values()) clearInterval(b.shotPoll);
+    this.endWait();
+    for (const b of this.bySite.values()) {
+      clearTimeout(b.idle);
+      b.idle = undefined;
+      clearInterval(b.shotPoll);
+    }
     for (const c of this.conns.keys()) c.destroy();
   }
 
-  private idle(site: string, b: { email: string; writeback: boolean; used?: boolean; idle?: NodeJS.Timeout }) {
+  private idle(site: string, b: { email: string; writeback: boolean; conns: number; used?: boolean; idle?: NodeJS.Timeout }) {
     clearTimeout(b.idle);
+    b.idle = undefined;
+    if (this.ended || b.conns > 0) return;
     if (!b.writeback && site !== PRINT) return;
     const h = b.writeback ? held.get(`${b.email} ${site}`) : undefined;
     const wait = site === PRINT || (b.used && h?.run === this && h.waiters > 0) ? 0 : IDLE_MS;
@@ -869,6 +883,7 @@ export class Browsers {
     const h = held.get(key);
     if (h?.run !== this) return false;
     if (h.closing) return true;
+    if (this.ended) return false;
     const b = this.bySite.get(site);
     if (!b || b.conns > 0 || !b.used) return false;
     clearTimeout(b.idle);
@@ -953,6 +968,7 @@ export class Browsers {
   // The run ended: its browsers close, and a connection still waiting for its person's browser on a website gets none.
   end() {
     this.ended = true;
+    this.endWait();
     this.close();
     return Promise.all([...this.closing, ...[...this.opening.values()].map(p => p.catch(() => {}))]);
   }
@@ -1036,18 +1052,20 @@ export class Browsers {
 // expired, as rf expired says, and else the browser's state is the login.
 const lastTurn = new Map<string, number>();
 
-export async function keepAlive(now = new Date()) {
+export async function keepAlive(now?: Date) {
+  const started = Date.now(), sweep = now ? now.getTime() : started;
+  const atNow = () => new Date(sweep + Math.max(0, Date.now() - started)).toISOString();
   const root = rfDir(), keeping = Object.entries(users()).filter(([email, u]) => { const p = asPerson(email, u); return p && can(p, 'keepalive'); }).map(([email]) => email);
   for (const email of keeping) for (const [site, w] of Object.entries(websitesOf(email))) {
     const key = `${email} ${site}`;
-    if (now.getTime() - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
-    lastTurn.set(key, now.getTime());
+    if (sweep - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
+    lastTurn.set(key, sweep);
     const login = logins(email).find(l => l.id === `web:${site}`);
     if (!login) continue;
     const current = () => {
       const p = asPerson(email), next = websitesOf(email)[site], after = logins(email).find(l => l.id === login.id);
       return rfDir() === root && !!p && can(p, 'keepalive') && !!next && next.url === w.url && next.via === w.via && next.added === w.added && (next.generation ?? 0) === (w.generation ?? 0)
-        && after?.since === login.since && !after.expired && (after.keepalive ?? '') > now.toISOString() && approved(site, email);
+        && after?.since === login.since && !after.expired && (after.keepalive ?? '') > atNow() && approved(site, email);
     };
     if (!current()) continue;
     const other = held.get(key);
@@ -1119,7 +1137,10 @@ export async function serveBrowsers(b: Browsers, base: string, [site, what, ...p
 export async function upgradeBrowser(b: Browsers, site: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
   try {
     const id = await b.browser(site, socket);
-    if (!id) return;
+    if (!id) {
+      if (!socket.destroyed) socket.end(`HTTP/1.1 409 ${STATUS_CODES[409]}\r\ncontent-type: text/plain\r\n\r\nrun stopped\n`);
+      return;
+    }
     if (socket.destroyed) {
       b.abandoned(site, id);
       return;
@@ -1128,6 +1149,6 @@ export async function upgradeBrowser(b: Browsers, site: string, req: IncomingMes
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   } catch (e) {
     const status = (e as HttpError).status ?? 500;
-    socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
+    if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}\n`);
   }
 }
