@@ -19,7 +19,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteIdentity, siteRevision, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, listBrowserAudits, passAllowed, passUpgrade, profiles, readBrowserAudit, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteIdentity, siteRevision, startSignIn, unreached, viewActivity, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -1638,6 +1638,12 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       held: [...new Set(inst.log.filter(e => e.op === 'expired').map(e => e.login as string))].filter(l => held(inst, l, who.by)) });
   }
   if (action === 'trace') return send(res, 200, trace(inst));
+  if (action === 'browser-audit' && req.method === 'GET' && !run) {
+    if (inst.doc.status === 'deleted') throw new HttpError(404, 'the instance was deleted');
+    const sid = url.searchParams.get('session');
+    if (sid) return send(res, 200, readBrowserAudit(inst, sid));
+    return send(res, 200, { sessions: listBrowserAudits(inst.id) });
+  }
   if (action === 'summary') {
     const settings = seriesSettings(inst.series()), s = t.series[inst.seriesId], discussion = seriesConversation(inst.seriesId, undefined, settings.epoch);
     const instance = summary(inst, me, s.workspace, undefined, settings);
@@ -2271,6 +2277,12 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     else if (/^\/runs\/\w+\/[a-z0-9-]+\/view$/.test(url.pathname) && req.method === 'GET') {
       const [, , id, site] = url.pathname.split('/'), html = await viewPage(watched(me, id, site).id);
       res.writeHead(200, { 'content-type': 'text/html' }).end(html);
+    }
+    else if (/^\/runs\/\w+\/[a-z0-9-]+\/view\/activity$/.test(url.pathname) && req.method === 'GET') {
+      const [, , id, site] = url.pathname.split('/');
+      const after = Number(url.searchParams.get('after') ?? '0') || 0;
+      const data = await viewActivity(watched(me, id, site).id, after);
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(data));
     }
     // Saved, a login may be kept alive, by those granted keepalive; or thrown away.
     else if (/^\/signins\/\w+$/.test(url.pathname) && req.method === 'POST') {

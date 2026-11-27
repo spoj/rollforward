@@ -613,7 +613,8 @@ function logText(e) {
       : e.action === 'wait' ? `Run ${e.run} waits for ${person(e.login)}'s ${esc(e.site)} browser, held by ${esc(e.held)}`
       : e.action === 'refused' ? `Run ${e.run} goes on without ${esc(e.site)}<div class="d">${esc(e.why)}</div>`
       : e.action === 'allowed' ? `${w} let ${e.login ? `${person(e.login)}'s ` : ''}${esc(e.site)} reach ${esc(e.allowed.join(', '))}${Object.entries(e.why ?? {}).map(([h, y]) => `<div class="d">${esc(h)}: ${esc(y)}</div>`).join('')}`
-      : e.action === 'drive' ? `${w} took control of run ${e.run}'s browser on ${esc(e.site)}` : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}`}</div>${f}`,
+      : e.action === 'drive' ? `${w} took control of run ${e.run}'s browser on ${esc(e.site)}`
+      : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}${e.cdp ? `, ${e.cdp} CDP` : ''}${e.shots ? `, ${e.shots} shots` : ''}`}</div><div class="f">${e.sessionId ? `<button class="btn" data-act="browser-audit" data-session="${esc(e.sessionId)}">Audit timeline</button> ` : ''}${e.file ? `<a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a>` : ''}${e.cdpFile ? ` · <a data-act="preview" data-file="${esc(e.cdpFile)}">${esc(e.cdpFile)}</a>` : ''}</div>`,
     shot: () => `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,
   }[e.op]?.() ?? `${w} ${esc(e.op)}`;
@@ -1005,6 +1006,82 @@ function sheetTable(p, s, first) {
   return h + '</table>' + (s.truncated ? `<div class="empty">Showing the first ${s.rows.length} rows.</div>` : '');
 }
 
+function browserAuditItems(ba) {
+  const items = [];
+  for (const s of ba.shots ?? []) {
+    items.push({ kind: 'shot', t: s.at ?? '', seq: s.seq ?? 0, data: s });
+  }
+  for (const e of ba.http ?? []) {
+    if (!e || e.rec === '_summary' || e.rec === 'http_end') continue;
+    const isWrite = e.isWrite === true || !['GET', 'HEAD', 'OPTIONS'].includes(String(e.method ?? 'GET').toUpperCase());
+    items.push({ kind: 'http', isWrite, t: e.t ?? '', seq: e.n ?? e.seq ?? 0, data: e });
+  }
+  for (const c of ba.cdp ?? []) {
+    if (!c || c.rec === '_tap.summary') continue;
+    items.push({ kind: 'cdp', t: c.t ?? '', seq: c.n ?? 0, data: c });
+  }
+  items.sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : a.seq - b.seq));
+  return items;
+}
+
+function browserAuditRowsHtml(ba) {
+  const filter = ba.filter ?? 'all', q = (ba.q ?? '').trim().toLowerCase();
+  const items = browserAuditItems(ba).filter(it => {
+    if (filter === 'writes' && !(it.kind === 'http' && (it.isWrite || it.data.blocked || it.data.error))) return false;
+    if (filter === 'shots' && it.kind !== 'shot') return false;
+    if (filter === 'cdp' && it.kind !== 'cdp') return false;
+    if (q) {
+      const hay = JSON.stringify(it.data).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if (!items.length) return '<div class="empty">No timeline entries match this filter.</div>';
+  return items.map(it => {
+    const ts = it.t ? `<span class="ba-t">${esc(it.t.slice(11, 19))}</span>` : '';
+    if (it.kind === 'shot') {
+      const s = it.data;
+      return `<div class="ba-card ba-shot" data-kind="shot"><div class="ba-hdr">${ts}<span class="ba-pill">shot #${esc(String(s.seq))}</span>${s.trigger ? `<span class="ba-pill">${esc(s.trigger)}</span>` : ''}${s.integrity && s.integrity !== 'ok' ? `<span class="ba-pill ba-warn">${esc(s.integrity)}</span>` : ''}<span class="ba-url">${esc(s.url || '')}</span></div><div class="ba-shot-img"><img src="${fileUrl(s.file)}" loading="lazy" alt="" data-act="preview" data-file="${esc(s.file)}"></div></div>`;
+    }
+    if (it.kind === 'cdp') {
+      const c = it.data;
+      const sum = c.summary ? Object.entries(c.summary).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(' · ') : '';
+      return `<div class="ba-card ba-cdp${c.live ? ' ba-live' : ''}" data-kind="cdp"><div class="ba-hdr">${ts}<span class="ba-pill ba-pill-cdp">CDP</span><code>${esc(c.method)}</code>${c.count > 1 ? `<span class="ba-pill">\u00d7${esc(String(c.count))}</span>` : ''}${c.severity === 'high' ? '<span class="ba-pill ba-warn">high severity</span>' : ''}${c.ambiguous ? '<span class="ba-pill ba-warn">ambiguous</span>' : ''}${c.live ? '<span class="ba-pill ba-live-pill">live control</span>' : ''}</div>${sum ? `<div class="ba-sub"><code>${esc(sum)}</code></div>` : ''}</div>`;
+    }
+    const e = it.data;
+    const eff = e.effectiveMethod && e.effectiveMethod !== e.method ? `${e.method} \u2192 ${e.effectiveMethod}` : (e.method ?? 'GET');
+    const warns = [];
+    if (e.reqTrunc) warns.push('truncated');
+    if (e.dupKeys) warns.push('dupKeys');
+    if (e.logCapped) warns.push('logCapped');
+    if (e.vaultRedactions >= 5) warns.push(`vault:${e.vaultRedactions}`);
+    if (e.reqOmitted && e.reqOmitted !== 'policy-profile') warns.push(`omitted:${e.reqOmitted}`);
+    if (e.blocked) warns.push(`blocked:${e.blocked}`);
+    if (e.error) warns.push(`error:${e.error}`);
+    const acts = Array.isArray(e.actions) && e.actions.length
+      ? `<div class="ba-acts">${e.actions.map(a => `<span class="ba-pill">${esc(a.op)}${a.resource ? ` ${esc(a.resource)}` : ''}${a.coverage && a.coverage !== 'complete' ? ` (${esc(a.coverage)})` : ''}</span>`).join('')}</div>` : '';
+    const shape = e.bodyShape && Object.keys(e.bodyShape).length
+      ? `<div class="ba-sub">Shape: <code>${esc(Object.entries(e.bodyShape).map(([k, v]) => `${k}:${v}`).join(', '))}</code></div>` : '';
+    const pol = e.policy
+      ? `<span class="ba-pill${e.policy.action !== 'allow' ? ' ba-warn' : ''}">${esc(e.policy.action)} \u00b7 ${esc(e.policy.ruleId)}</span>` : '';
+    return `<div class="ba-card ba-http${it.isWrite ? ' ba-write' : ''}${e.live || e.liveAtEnd ? ' ba-live' : ''}" data-kind="http" data-write="${it.isWrite ? '1' : '0'}"><div class="ba-hdr">${ts}<span class="ba-pill${it.isWrite ? ' ba-pill-write' : ''}">${esc(eff)}</span><span class="ba-pill">${esc(String(e.status ?? 0))}</span>${pol}${e.live || e.liveAtEnd ? '<span class="ba-pill ba-live-pill">live control</span>' : ''}${warns.map(w => `<span class="ba-pill ba-warn">${esc(w)}</span>`).join('')}<span class="ba-url">${esc(e.url || '')}</span></div>${acts}${shape}</div>`;
+  }).join('');
+}
+
+function browserAuditHtml(ba) {
+  const m = ba.manifest ?? {}, integ = ba.integrity ?? { ok: true, checked: 0, tampered: [], missing: [] };
+  const filter = ba.filter ?? 'all';
+  const tapSum = (ba.cdp ?? []).findLast(c => c?.rec === '_tap.summary');
+  const filters = [['all', 'All'], ['writes', 'Writes'], ['shots', 'Shots'], ['cdp', 'CDP']];
+  return `<div class="ba-wrap"><div class="ba-meta">`
+    + `<div class="ba-integ ${integ.ok ? 'ok' : 'bad'}">${integ.ok ? `Host manifest verified (${integ.checked} files)` : `Integrity mismatch: ${[...integ.tampered.map(f => `tampered ${f}`), ...integ.missing.map(f => `missing ${f}`)].join(', ')}`}</div>`
+    + `<div class="ba-links">${m.file ? `<a href="${fileUrl(m.file)}">Download HTTP log</a>` : ''}${m.cdpFile ? ` · <a href="${fileUrl(m.cdpFile)}">Download CDP log</a>` : ''}${m.policySummary ? ` · Policy: ${esc(String(m.policySummary.totalWrites))} writes (${esc(String(m.policySummary.flagged?.length ?? 0))} flagged)` : ''}</div>`
+    + `<div class="ba-bar"><span class="seg">${filters.map(([k, lbl]) => `<button class="${filter === k ? 'sel' : ''}" data-act="ba-filter" data-filter="${k}">${lbl}</button>`).join('')}</span><input type="text" id="ba-q" placeholder="Filter URL, action, method…" value="${esc(ba.q ?? '')}"></div>`
+    + `</div><div class="ba-list" id="ba-list">${browserAuditRowsHtml(ba)}</div>`
+    + (tapSum?.methodCounts ? `<details class="ba-summary"><summary>CDP method counts</summary><pre>${esc(JSON.stringify(tapSum.methodCounts, null, 2))}</pre></details>` : '')
+    + `</div>`;
+}
+
 function renderPv() {
   const d = $('#pv');
   if (!pv) return void (d.open && d.close());
@@ -1014,6 +1091,7 @@ function renderPv() {
   let h = `<div class="pvh"><b>${esc(pv.title)}</b><span class="saved"></span>${pv.sheets && /\.(xlsx|xlsm|xls|csv)$/i.test(pv.was ?? '') ? `<button class="btn ${pv.cmp ? 'sel' : ''}" data-act="compare">${pv.cmp ? `Changes since ${esc(fname(pv.was))}` : 'Compare with previous'}</button>` : ''}${(pv.att ?? pv).doc ? '<button class="btn" data-act="layout">Exact layout</button>' : ''}${pv.download ? `<a class="btn" href="${pv.download}">Download</a>` : ''}${pv.signin ? `<button class="btn primary" data-act="signin-save"${pv.signinExpired || pv.saving ? ' disabled' : ''}>${pv.saving ? 'Saving…' : pv.vpn ? 'Connect' : 'Save login'}</button>` : ''}<button class="btn${pv.signin && !pv.signinExpired ? '' : ' primary'}" data-act="unpv"${pv.saving ? ' disabled' : ''}>${pv.signin && !pv.signinExpired ? 'Cancel' : 'Close'}</button></div>`;
   if (mine) h += `<div class="pvtabs">${account.map(([k, name]) => `<button class="tab ${pv.settings.kind === k ? 'sel' : ''}" data-act="${k}">${name}</button>`).join('')}</div>`;
   if (pv.att) h += `<div class="sub" style="padding:8px 14px"><a data-act="attachment-back">\u2190 ${esc(pv.title)}</a> \u00b7 ${esc(pv.att.title)}</div>` + previewBody(pv.att);
+  else if (pv.browserAudit) h += `<div class="pvb">${browserAuditHtml(pv.browserAudit)}</div>`;
   else if (pv.path) h += previewBody(pv);
   else if (pv.saving) h += '<div class="pvb"><div class="empty" role="status">Saving login…</div></div>';
   else if (pv.signinSaved) h += '<div class="pvb"><div class="empty" role="status">Login saved. Close this and open Logins again.</div></div>';
@@ -1898,6 +1976,18 @@ async function onAct(act, el) {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
   }
+  if (act === 'browser-audit') {
+    const sid = el.dataset.session;
+    const res = await api(`${instPath()}/browser-audit?session=${encodeURIComponent(sid)}`);
+    pv = { title: `Browser audit \u00b7 ${res.manifest?.site ?? sid} (run ${res.manifest?.run ?? ''})`, browserAudit: { ...res, filter: 'all', q: '' } };
+    renderPv();
+    return;
+  }
+  if (act === 'ba-filter' && pv?.browserAudit) {
+    pv.browserAudit.filter = el.dataset.filter;
+    renderPv();
+    return;
+  }
   if (act === 'compare') {
     const p = pv;
     p.old ??= (await api(fileUrl(p.was, 'preview'))).sheets;
@@ -2299,6 +2389,13 @@ document.addEventListener('change', async ev => {
   await refresh();
 });
 // Clear the dialog's state as it hides on Escape; its native close event arrives after another dialog may already be opening.
+$('#pv').addEventListener('input', e => {
+  if (e.target.id === 'ba-q' && pv?.browserAudit) {
+    pv.browserAudit.q = e.target.value;
+    const list = $('#ba-list');
+    if (list) put(list, browserAuditRowsHtml(pv.browserAudit));
+  }
+});
 $('#pv').addEventListener('cancel', e => { e.preventDefault(); closePv(true); });
 $('#pv').addEventListener('close', () => pv && !$('#pv').open && closePv(true));
 $('#pv').addEventListener('click', e => {
