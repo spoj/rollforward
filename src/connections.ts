@@ -127,15 +127,13 @@ export const reachable = (inst: Instance, run?: number) => {
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = {
-  inst: Instance;
-  n: number;
-  runner: string;
-  links: Map<string, { name: string; offer: string; sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }>;
-  cost: number;
-  estimated?: boolean;
-  stopped?: boolean;
-};
+export type CallRun = { inst: Instance; n: number; runner: string; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
+const linkProvenanceByRun = new WeakMap<CallRun, Map<string, { sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }>>();
+function recordLinkProvenance(a: CallRun, href: string, prov: { sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }) {
+  let map = linkProvenanceByRun.get(a);
+  if (!map) linkProvenanceByRun.set(a, map = new Map());
+  map.set(href, prov);
+}
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -688,10 +686,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 
     // Unified RequestDescriptor + semantic extraction + execpolicy admission for non-LLM API connections (never logging OpenRouter/Exa prompt bodies).
     const connectionType = link ? 'link' as const : (c?.type as 'graph' | 'databricks' | 'service' | undefined);
+    const savedProv = link ? linkProvenanceByRun.get(a)?.get(url.href) : undefined;
     const linkProvenance = link
       ? {
-          sourceType: link.sourceType ?? connections().find(x => x.name === link.name)?.type,
-          linkKind: link.linkKind,
+          sourceType: savedProv?.sourceType ?? connections().find(x => x.name === link.name)?.type,
+          linkKind: savedProv?.linkKind,
         }
       : undefined;
     let isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
@@ -879,7 +878,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
         auth, body, digest, prefixTee, prefixChunks, prefixEof, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
         beforeRetry: s === openrouter ? verifyModelKey : undefined,
-        location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer, sourceType: c?.type, linkKind: 'redirect' }); },
+        location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) { a.links.set(l.href, { name, offer }); recordLinkProvenance(a, l.href, { sourceType: c?.type, linkKind: 'redirect' }); } },
       });
       // For streamed non-LLM writes (e.g. service or PUT .../content), extract bodyShape/actions from the <=64KiB tee prefix.
       if (!s && prefixTee && prefixTee.bytes > 0) {
@@ -913,7 +912,11 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
             checkpoint();
             const isUploadSession = /createuploadsession(?:\(|$)/i.test(targetPath.split('/').pop() ?? '');
             const linkKind = isUploadSession ? 'upload_session' as const : 'download' as const;
-            for (const l of links) a.links.set(new URL(l).href, { name, offer, sourceType: c.type, linkKind });
+            for (const l of links) {
+              const href = new URL(l).href;
+              a.links.set(href, { name, offer });
+              recordLinkProvenance(a, href, { sourceType: c.type, linkKind });
+            }
           } catch (e) { if (current()) throw e; }
         }
       }

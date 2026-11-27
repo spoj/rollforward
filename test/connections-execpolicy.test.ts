@@ -350,7 +350,7 @@ test('R2 PrefixReader boundary sizes (65535B, 65536B, 65537B, 300 KiB), If-Match
 
   // 3. Realistic SharePoint /_api/v2.0/.../uploadSession chunk (320 KiB) under non-"graph" connection name -> 200 allow_upload_session_chunk!
   const uploadUrl = 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=abc-123';
-  run.links.set(uploadUrl, { name: 'm365-corp', offer: 'm365:item:d1/i1', sourceType: 'graph', linkKind: 'upload_session' });
+  run.links.set(uploadUrl, { name: 'm365-corp', offer: 'm365:item:d1/i1' });
   const chunk320k = Buffer.alloc(320 * 1024, 0x5a).toString('latin1');
   const beforeChunk = writeUpstreamHits;
   const rChunk = await sendViaProxy(
