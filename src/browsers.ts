@@ -424,13 +424,14 @@ export async function endSignIn(email: string, id: string, save: boolean, keepal
 // the instance, at the first connection, and kept for the later ones until the run ends. Closing one keeps its request log in the
 // instance's browser/, which the agent can read but not change, beside the screenshots taken after each of the agent's tool calls.
 // Where a website writes a browser's state back, its default, a person has one browser there at a time: a run connecting while
-// another holds it waits; the browser is released when its run ends, or after five minutes with no connection, and hands its login
-// back refreshed, unless its person signed out or signed in to it anew meanwhile. Elsewhere each run's browser starts from the login
-// as its person saved it, and nothing comes back.
+// another holds it waits; the browser is released when its run ends, after five minutes with no connection, or at once once no
+// connection is open while another run or a keepalive waits for it, and hands its login back refreshed, unless its person signed out
+// or signed in to it anew meanwhile. Elsewhere each run's browser starts from the login as its person saved it, and nothing comes back.
 
 // The run holding each person's browser on a website that writes its state back, by person and website, or none for a keepalive's
 // turn or a browser a restart left, and its release.
-const held = new Map<string, { run?: Browsers; by?: string; released: Promise<void>; release(): void }>();
+type Held = { run?: Browsers; by?: string; released: Promise<void>; release(): void; waiters: number; closing?: boolean; nudge?: () => boolean };
+const held = new Map<string, Held>();
 const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
@@ -665,7 +666,7 @@ export async function reap() {
   return { closed: Promise.all(sessions.map(async ({ id }) => {
     const b = left[id], key = b?.writeback ? `${b.email} ${b.site}` : '';
     let release!: () => void;
-    if (key) held.set(key, { by: 'restart', released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+    if (key) held.set(key, { by: 'restart', released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0, closing: true });
     try {
       const closed = await close(id);
       if (b) keep(instance(b.inst), b, closed);
@@ -686,7 +687,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -752,15 +753,29 @@ export class Browsers {
       if (this.opening.has(site)) return this.opening.get(site);
       const w = site === PRINT ? undefined : website(email, site), writeback = !!w?.writeback, key = `${email} ${site}`, other = writeback ? held.get(key) : undefined;
       if (other) {
+        if (conn?.destroyed) return undefined;
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : other.by ?? 'keepalive' });
-        await Promise.race([other.released, new Promise(ok => conn?.once('close', ok))]);
+        other.waiters++;
+        other.nudge?.();
+        let onClose: (() => void) | undefined;
+        try {
+          await Promise.race([other.released, new Promise<void>(ok => {
+            if (!conn) return;
+            if (conn.destroyed) return ok();
+            onClose = ok;
+            conn.once('close', ok);
+          })]);
+        } finally {
+          if (conn && onClose) conn.off('close', onClose);
+          other.waiters--;
+        }
         if (conn?.destroyed) return undefined;
         continue;
       }
       const state = w ? JSON.parse(secret(email, login!.id)) : undefined;
       if (writeback) {
         let release!: () => void;
-        held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+        held.set(key, { run: this, released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0, nudge: () => this.nudge(site, key) });
       }
       const generation = w?.generation ?? 0, root = rfDir(), websiteGeneration = websiteGenerations.get(key), signing = signInGenerations.get(key);
       const source = w ? () => {
@@ -777,7 +792,7 @@ export class Browsers {
       const internal = w ? internalHosts(w) : [], opening = w ? openSession(w, 7200, state, via, this.run > 0) : printer().then(id => ({ id, shots: undefined }));
       const ready = opening.then(async ({ id, shots: shotsPath }) => {
         const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`;
-        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
+        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         if (shotsPath) {
@@ -813,13 +828,26 @@ export class Browsers {
     if (this.ended) throw new HttpError(409, 'run stopped');
     lender(this.inst, this.run);
     const b = this.bySite.get(site)!;
+    b.used = true;
     b.conns++;
     this.conns.set(conn, site);
     clearTimeout(b.idle);
+    b.idle = undefined;
     conn.on('close', () => {
       this.conns.delete(conn);
       if (!--b.conns && this.bySite.get(site) === b) this.idle(site, b);
     });
+  }
+
+  // A connection that opened `site` closed before attaching: once the current turn settles, if no sibling connection attached,
+  // treat the browser as idle so a waiting run or keepalive does not wait IDLE_MS.
+  abandoned(site: string, id: string) {
+    setTimeout(() => {
+      const b = this.bySite.get(site);
+      if (!b || b.id !== id || b.conns > 0 || b.used) return;
+      b.used = true;
+      this.idle(site, b);
+    }, 0);
   }
 
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
@@ -829,8 +857,24 @@ export class Browsers {
     for (const c of this.conns.keys()) c.destroy();
   }
 
-  private idle(site: string, b: { writeback: boolean; idle?: NodeJS.Timeout }) {
-    if (b.writeback || site === PRINT) b.idle = setTimeout(() => this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message })), site === PRINT ? 0 : IDLE_MS);
+  private idle(site: string, b: { email: string; writeback: boolean; used?: boolean; idle?: NodeJS.Timeout }) {
+    clearTimeout(b.idle);
+    if (!b.writeback && site !== PRINT) return;
+    const h = b.writeback ? held.get(`${b.email} ${site}`) : undefined;
+    const wait = site === PRINT || (b.used && h?.run === this && h.waiters > 0) ? 0 : IDLE_MS;
+    b.idle = setTimeout(() => this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message })), wait);
+  }
+
+  private nudge(site: string, key: string): boolean {
+    const h = held.get(key);
+    if (h?.run !== this) return false;
+    if (h.closing) return true;
+    const b = this.bySite.get(site);
+    if (!b || b.conns > 0 || !b.used) return false;
+    clearTimeout(b.idle);
+    b.idle = undefined;
+    void this.close(site).catch(e => this.inst.append('server', 'browsers', { run: this.run, error: e.message }));
+    return true;
   }
 
   private release(key: string) {
@@ -965,6 +1009,8 @@ export class Browsers {
       this.bySite.delete(site);
       clearTimeout(idle);
       clearInterval(shotPoll);
+      const h = writeback ? held.get(`${email} ${site}`) : undefined;
+      if (h?.run === this) h.closing = true;
       for (const [conn, on] of this.conns) if (on === site) conn.destroy();
       try {
         const closed = await close(id), all = journal();
@@ -984,8 +1030,8 @@ export class Browsers {
 // time at most 7 days ahead, so that runs that come while they're away, such as a weekday's at 8:00, find it signed in. Every
 // `every` minutes a person's website gives, 10 unless it gives one, such as 8 for a site that ends sessions left idle after 12,
 // the server loads its keepalive page, or else its address, in their login's browser, while they keep a live login there alive and
-// may still use the website, unless a run of theirs holds that browser; where the website writes its state back, the turn holds it, so
-// a run that connects meanwhile waits. The browser reaches only that page's host, so a sign-in elsewhere, as single sign-on would
+// may still use the website, unless an active run of theirs holds that browser (an idle run browser with no open connections hands
+// off immediately); where the website writes its state back, the turn holds it, so a run that connects meanwhile waits. The browser reaches only that page's host, so a sign-in elsewhere, as single sign-on would
 // make one, never stretches a session past what the site allows: a page asking for a password, or one elsewhere, means the login
 // expired, as rf expired says, and else the browser's state is the login.
 const lastTurn = new Map<string, number>();
@@ -997,15 +1043,26 @@ export async function keepAlive(now = new Date()) {
     if (now.getTime() - (lastTurn.get(key) ?? 0) < (w.every ?? 10) * 60_000) continue;
     lastTurn.set(key, now.getTime());
     const login = logins(email).find(l => l.id === `web:${site}`);
-    if (!login || held.has(key)) continue;
+    if (!login) continue;
     const current = () => {
       const p = asPerson(email), next = websitesOf(email)[site], after = logins(email).find(l => l.id === login.id);
       return rfDir() === root && !!p && can(p, 'keepalive') && !!next && next.url === w.url && next.via === w.via && next.added === w.added && (next.generation ?? 0) === (w.generation ?? 0)
         && after?.since === login.since && !after.expired && (after.keepalive ?? '') > now.toISOString() && approved(site, email);
     };
     if (!current()) continue;
+    const other = held.get(key);
+    if (other) {
+      other.waiters++;
+      try {
+        if (!other.nudge?.()) continue;
+        await other.released;
+      } finally {
+        other.waiters--;
+      }
+      if (held.has(key) || !current()) continue;
+    }
     let release!: () => void;
-    if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release() });
+    if (w.writeback) held.set(key, { released: new Promise<void>(ok => { release = ok; }), release: () => release(), waiters: 0 });
     try {
       const via = await vpnVia(email, w);
       if (!current()) continue;
@@ -1062,7 +1119,11 @@ export async function serveBrowsers(b: Browsers, base: string, [site, what, ...p
 export async function upgradeBrowser(b: Browsers, site: string, req: IncomingMessage, socket: Duplex, head: Buffer) {
   try {
     const id = await b.browser(site, socket);
-    if (!id || socket.destroyed) return;
+    if (!id) return;
+    if (socket.destroyed) {
+      b.abandoned(site, id);
+      return;
+    }
     b.connected(site, socket);
     passUpgrade(req, socket, head, `/sessions/${id}/cdp`);
   } catch (e) {
