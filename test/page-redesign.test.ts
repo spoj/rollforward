@@ -542,6 +542,7 @@ test('only admins see the server-filtered high and internal host decisions in Wa
       });
       await page.click('[data-act=waiting]');
       assert.equal(await page.locator('[data-act=allow-host]').count(), role === 'admin' ? 2 : 0);
+      assert.equal(await page.locator('[data-act=refuse-host]').count(), role === 'admin' ? 2 : 0);
       assert.equal(await page.locator('[data-act=grant-approve]').count(), role === 'admin' ? 1 : 0);
       if (role === 'admin') {
         assert.match(await page.textContent('#pv') ?? '', /High risk: can share files\.[\s\S]*An internal address\./);

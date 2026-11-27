@@ -70,6 +70,14 @@ before(async () => {
   const refusedLog = join(root, 'instances', scratch, 'log.jsonl'), entries = readFileSync(refusedLog, 'utf8').trim().split('\n');
   appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1, at: new Date().toISOString(), by: 'server', op: 'browser', run: 1, site: 'waiting-hosts', login: bob, requests: 5, writes: 0, blocked: 5,
     hosts: Object.fromEntries(['files.example.net', 'intra.acme.localhost', 'cdn.example.net', 'tracker.example.net', 'unchecked.example.net'].map(h => [h, 1])) }) + '\n');
+  const t0 = Date.now();
+  for (const [n, offset, hosts] of [
+    [1, -3000, { 'files.example.net': 2, 'intra.acme.localhost': 1 }],
+    [2, -2000, { 'files.example.net': 4 }],
+    [3, -1000, { 'files.example.net': 1 }],
+  ] as const) {
+    appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 1 + n, at: new Date(t0 + offset).toISOString(), by: 'server', op: 'browser', run: n, site: 'waiting-hosts-dedup', login: bob, requests: 3, writes: 0, blocked: 2, hosts }) + '\n');
+  }
   // A copy of 2026-08-30 as earlier versions made one: its files but its session, open, and its log, then a duplicate entry.
   const august = join(root, 'instances', '3d70f7ca6f20'), copy = join(root, 'instances', 'c0b1ed000001');
   cpSync(august, copy, { recursive: true, filter: p => p !== join(august, 'session') });
@@ -828,6 +836,90 @@ test('only admins receive high or internal refused hosts in Waiting; unchecked, 
   assert.deepEqual(adminHosts[0].why, { 'files.example.net': 'Can receive company files.', 'intra.acme.localhost': 'It is at an internal address.' });
   assert.deepEqual(await refused(b), [], 'even their own unapproved/unchecked hosts give a person no decision to make');
   assert.equal((await call('DELETE', `/logins/sites/${site}`, undefined, b)).status, 200);
+});
+
+test('refused hosts deduplicate per (login, site, host) with counts and admins can keep them blocked', async () => {
+  const b = sessionOf(await login(bob))!, site = 'waiting-hosts-dedup';
+  assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: site, url: 'https://portal.test/' }), b)).status, 200);
+  const { changeWebsite } = await import('../src/browsers.ts');
+  changeWebsite(bob, site, { checks: {
+    'files.example.net': { verdict: 'high', why: 'Can receive company files.' },
+    'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
+  } });
+  const refused = async (cookie: string) => (await workspaces(cookie)).flatMap((w: any) => w.series.flatMap((s: any) => s.instances.flatMap((i: any) => i.refused))).filter((r: any) => r.site === site);
+  const rows = await refused(admin);
+  assert.equal(rows.length, 2, 'hosts with different latest runs keep their own latest run without duplicating any host');
+  const byHost = Object.fromEntries(rows.flatMap((r: any) => r.hosts.map((h: string) => [h, { run: r.run, count: r.counts[h], why: r.why[h] }])));
+  assert.deepEqual(byHost, {
+    'files.example.net': { run: 3, count: 3, why: 'Can receive company files.' },
+    'intra.acme.localhost': { run: 1, count: 1, why: 'It is at an internal address.' },
+  });
+  // Validation and permissions for Keep blocked (allow: false)
+  assert.equal((await call('POST', `/logins/web/${site}/hosts`, JSON.stringify({ host: 'files.example.net', allow: false }), b)).status, 403);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: 'false' }))).status, 400);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: '', allow: false }))).status, 400);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: '*.example.net', allow: false }))).status, 400);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'constructor', allow: false }))).status, 400);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'portal.test', allow: false }))).status, 409, 'cannot keep the website starting host blocked');
+
+  // Admin keeps both high and internal hosts blocked; stays refused and leaves Waiting on you
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'FILES.EXAMPLE.NET', allow: false }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false }))).status, 200, 'keep blocked is idempotent');
+  assert.deepEqual((await json(`/logins/sites?person=${bob}`))[site].checks['files.example.net'], { verdict: 'refused', why: 'An admin kept it blocked.' });
+  assert.deepEqual((await refused(admin)).flatMap((r: any) => r.hosts), ['intra.acme.localhost']);
+
+  const internalBefore = existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '';
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'intra.acme.localhost', allow: false }))).status, 200);
+  assert.deepEqual(await refused(admin), [], 'kept-blocked hosts leave Waiting on you');
+  assert.equal(existsSync(join(root, '.rf', 'internal.json')) ? readFileSync(join(root, '.rf', 'internal.json'), 'utf8') : '', internalBefore, 'keeping an internal host blocked never enrolls it in internal.json');
+
+  // An admin can still later override a kept-blocked host to pass, after which keep-blocked refuses with 409
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net' }))).status, 200);
+  assert.equal((await call('POST', `/logins/web/${site}/hosts?person=${bob}`, JSON.stringify({ host: 'files.example.net', allow: false }))).status, 409);
+  assert.equal((await call('DELETE', `/logins/sites/${site}`, undefined, b)).status, 200);
+});
+
+test('POST /api/messages dismissAll settles only the caller’s visible unarchived settled note notices', async () => {
+  const b = sessionOf(await login(bob))!;
+  const ws = (await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'DismissAllWS' }))).json()).id;
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [adminEmail], members: [bob] }))).status, 200);
+  const s1 = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S1', logins: [], autonomous: false }))).json()).id;
+  const s2 = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S2', logins: [], autonomous: false }))).json()).id;
+  const i1 = (await (await call('POST', `/api/series/${s1}/instances`, JSON.stringify({ label: 'Jan', quiet: true }))).json()).id;
+  // Bob leaves a series note on S1, an instance note on Jan, and a series note on S2 (which we will archive after settling)
+  const n1 = (await (await postMessage({ series: s1, text: 'Series advice' }, b)).json()).id;
+  const c1 = `c${(await postMessage({ instance: i1, text: 'Instance advice' }, b)).headers.get('X-RF-Comment-Seq')}`;
+  const n2 = (await (await postMessage({ series: s2, text: 'Archived series advice' }, b)).json()).id;
+  // Bob also leaves an unsettled open note on S1 (owned by admin), and admin leaves an open note on a Bob-owned series S3
+  const s3 = (await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S3', logins: [], autonomous: false }), b)).json()).id;
+  await postMessage({ series: s3, text: 'Open note for Bob' });
+  // Admin settles n1, c1, n2
+  assert.equal((await postMessage({ series: s1, id: n1, how: 'taken', text: 'Done 1' })).status, 200);
+  assert.equal((await postMessage({ instance: i1, id: c1, how: 'aside', text: 'Done 2' })).status, 200);
+  assert.equal((await postMessage({ series: s2, id: n2, how: 'taken', text: 'Done 3' })).status, 200);
+  // Archive S2 so its settled notice is hidden and read-only
+  assert.equal((await call('PUT', `/api/series/${s2}`, JSON.stringify({ archived: true }))).status, 200);
+
+  // Validation checks
+  assert.equal((await postMessage({ dismissAll: 'open' }, b)).status, 400);
+  assert.equal((await postMessage({ dismissAll: 'settled', series: s1 }, b)).status, 400);
+
+  const bNotices = async () => (await workspaces(b)).find((w: any) => w.id === ws).series.flatMap((s: any) => s.noteNotices);
+  assert.deepEqual((await bNotices()).map((n: any) => [n.id, n.kind]).sort(), [[c1, 'settled'], [n1, 'settled'], ['n1', 'open']].sort());
+
+  const res = await postMessage({ dismissAll: 'settled' }, b);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { dismissed: 2 });
+  assert.deepEqual((await bNotices()).map((n: any) => [n.id, n.kind]), [['n1', 'open']], 'open notices remain intact');
+  assert.deepEqual(await (await postMessage({ dismissAll: 'settled' }, b)).json(), { dismissed: 0 }, 'dismissAll is idempotent');
+
+  // Unarchiving S2 proves archived series was not modified by dismissAll
+  assert.equal((await call('PUT', `/api/series/${s2}`, JSON.stringify({ archived: false }))).status, 200);
+  assert.deepEqual((await bNotices()).filter((n: any) => n.kind === 'settled').map((n: any) => n.id), [n2]);
+  assert.deepEqual(await (await postMessage({ dismissAll: 'settled' }, b)).json(), { dismissed: 1 });
+  assert.equal((await call('PUT', `/api/series/${s3}/owner`, JSON.stringify({ owner: adminEmail }))).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [adminEmail], members: [] }))).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);
 });
 
 test("only the series owner starts a request, its wake and text logged beside that owner's act as a note, though the old server saved the request without the instance that set it", async () => {

@@ -667,6 +667,25 @@ if (cmd === 'login' && url) {
 } else if (cmd === 'waiting' && !args.length) {
   const [me, s, all] = await Promise.all([get('/me'), get('/api/status'), get('/api')]), mine = (who: string | null) => (who ?? me.email) === me.email;
   const series = all.flatMap(w => w.series.map(x => ({ ...x, path: `${w.name}/${x.name}` })));
+  const refusedByHost = new Map<string, { path: string; since: string; t: number; run: number; site: string; person: string; host: string; why: string; count: number }>();
+  for (const w of all) if (!w.archived) for (const x of w.series) if (!x.archived) for (const i of x.instances) for (const r of i.refused ?? []) for (const h of r.hosts ?? []) {
+    const key = `${r.login}\0${r.site}\0${h}`, c = r.counts?.[h] ?? r.count ?? 1, t = Date.parse(r.at ?? '') || 0;
+    const prev = refusedByHost.get(key);
+    if (!prev) refusedByHost.set(key, { path: `${w.name}/${x.name}/${i.label}`, since: r.at, t, run: r.run, site: r.site, person: r.login, host: h, why: r.why?.[h] ?? '', count: c });
+    else {
+      prev.count += c;
+      if (t > prev.t || (t === prev.t && (r.run ?? 0) >= prev.run)) Object.assign(prev, { path: `${w.name}/${x.name}/${i.label}`, since: r.at, t, run: r.run, why: r.why?.[h] || prev.why });
+    }
+  }
+  const refusedRows = new Map<string, { path: string; since: string; run: number; site: string; person: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number> }>();
+  for (const h of refusedByHost.values()) {
+    const rowKey = `${h.person}\0${h.site}\0${h.path}\0${h.run}`;
+    let row = refusedRows.get(rowKey);
+    if (!row) refusedRows.set(rowKey, row = { path: h.path, since: h.since, run: h.run, site: h.site, person: h.person, hosts: [], why: {}, counts: {} });
+    row.hosts.push(h.host);
+    if (h.why) row.why[h.host] = h.why;
+    row.counts[h.host] = h.count;
+  }
   const rows = [
     ...s.ownership.map(s => ({ kind: 'owner', path: s.path, text: s.text })),
     ...s.asks.filter(a => a.who === me.email && !a.legacyNotice).map(a => ({ kind: a.note ? 'note' : 'ask', path: a.path, since: a.since, text: a.text })),
@@ -674,7 +693,7 @@ if (cmd === 'login' && url) {
     ...series.flatMap(x => x.requests.filter(r => mine(r.who)).map(r => ({ kind: 'request', path: x.path, since: r.at, id: r.id, text: `${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}` }))),
     ...all.filter(w => w.manage && w.proposal?.into === w.id).map(({ proposal: p }) => ({ kind: 'proposal', path: p.to, since: p.at, text: `${p.by} proposes to ${p.kind === 'merge' ? `merge ${p.from} into it` : `move ${p.from}/${p.series} to it`}` })),
     ...s.expired.filter(e => e.who === me.email).map(e => ({ kind: 'expired', login: e.login, holding: e.holding, text: `your ${e.login} login expired` })),
-    ...series.flatMap(x => x.instances.flatMap(i => i.refused.map(r => ({ kind: 'refused', path: `${x.path}/${i.label}`, since: r.at, site: r.site, hosts: r.hosts, person: r.login, why: r.why, text: `run ${r.run}'s browser on ${r.login}'s ${r.site} was refused ${r.hosts.map((h: string) => r.why[h] ? `${h} (${r.why[h]})` : h).join(', ')}` })))),
+    ...[...refusedRows.values()].map(r => ({ kind: 'refused', path: r.path, since: r.since, site: r.site, hosts: r.hosts, person: r.person, why: r.why, counts: r.counts, text: `run ${r.run}'s browser on ${r.person}'s ${r.site} was refused ${r.hosts.map(h => { const c = r.counts[h]; const meta = [c > 1 ? `${c}×` : '', r.why[h] ?? ''].filter(Boolean).join(', '); return meta ? `${h} (${meta})` : h; }).join(', ')}` })),
     ...all.filter(w => w.manage).flatMap(w => w.grants.filter(g => g.state === 'pending').map(g => ({ kind: 'grant', path: w.name, since: g.at, id: g.id, text: grantText(g) }))),
   ];
   if (flags.json) console.log(JSON.stringify(rows, null, 1));

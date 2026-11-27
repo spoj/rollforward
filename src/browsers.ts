@@ -336,10 +336,24 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
     setLetIn([h], by.email, true);
     act(by.email, { op: 'internal', person: email, site, hosts: [h], let: true });
   }
+  changes.emit('change', 'tree');
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (!id) return;
   await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
   await browserJson('POST', `/sessions/${id}/reload`);
+}
+
+// Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
+export async function refuseHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void) {
+  if (by.role !== 'admin') throw new HttpError(403, 'admins decide website hosts');
+  const before = website(email, site), h = host.trim().toLowerCase();
+  if (!h || h.startsWith('*.')) throw new HttpError(400, `${h || '(empty)'}: name an exact host to keep blocked`);
+  if (!Object.hasOwn(before.checks ?? {}, h)) await checkHost(h, true);
+  recheck?.();
+  const w = website(email, site);
+  if (reached(w).some(p => covers(p, h))) throw new HttpError(409, `${site} already reaches ${h}`);
+  changeWebsite(email, site, { checks: { ...w.checks, [h]: { verdict: 'refused', why: 'An admin kept it blocked.' } } });
+  changes.emit('change', 'tree');
 }
 
 // A host its person no longer lets their website reach: it stays refused from then on, the check passing it no more.

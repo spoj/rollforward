@@ -19,7 +19,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, removeHost, removeSite, revokeInternalHosts, risks, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -316,11 +316,40 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
     deleted: i.hole ? { by: i.log[0].by, at: i.log[0].at } : null,
     // Corrections wait on the owner for a week; they are never withdrawn.
     wrong: k.wrong.filter(fresh).length,
-    // Only admins decide hosts: those rated high or internal, with why, for a week.
-    refused: k.refused.filter(e => fresh(e.at) && e.login && websitesOf(e.login)[e.site]).map(e => {
-      const checks = websitesOf(e.login)[e.site].checks ?? {}, hosts = unreached(e.login, e.site, e.hosts).filter(h => me.role === 'admin' && checks[h] && ['high', 'internal'].includes(checks[h].verdict));
-      return { ...e, hosts, why: Object.fromEntries(hosts.filter(h => checks[h]).map(h => [h, checks[h].why])) };
-    }).filter(e => e.hosts.length),
+    // Only admins decide hosts: those rated high or internal, with why, for a week, deduplicated per (login, site, host).
+    refused: (() => {
+      if (me.role !== 'admin') return [];
+      const byHost = new Map<string, { at: string; t: number; run: number; site: string; login: string; host: string; count: number; why: string }>();
+      for (const e of k.refused) {
+        if (!fresh(e.at) || !e.login) continue;
+        const w = websitesOf(e.login)[e.site];
+        if (!w) continue;
+        const checks = w.checks ?? {};
+        const hosts = unreached(e.login, e.site, e.hosts).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
+        if (!hosts.length) continue;
+        const t = Date.parse(e.at) || 0;
+        for (const h of hosts) {
+          const key = `${e.login}\0${e.site}\0${h}`, prev = byHost.get(key);
+          if (!prev) byHost.set(key, { at: e.at, t, run: e.run, site: e.site, login: e.login, host: h, count: 1, why: checks[h].why });
+          else {
+            prev.count++;
+            if (t > prev.t || (t === prev.t && e.run >= prev.run)) { prev.at = e.at; prev.t = t; prev.run = e.run; }
+            prev.why = checks[h].why;
+          }
+        }
+      }
+      const byRow = new Map<string, { at: string; t: number; run: number; site: string; login: string; hosts: string[]; why: Record<string, string>; counts: Record<string, number> }>();
+      for (const h of byHost.values()) {
+        const key = `${h.login}\0${h.site}\0${h.run}`;
+        let row = byRow.get(key);
+        if (!row) byRow.set(key, row = { at: h.at, t: h.t, run: h.run, site: h.site, login: h.login, hosts: [], why: {}, counts: {} });
+        else if (h.t > row.t) { row.at = h.at; row.t = h.t; }
+        row.hosts.push(h.host);
+        row.why[h.host] = h.why;
+        row.counts[h.host] = h.count;
+      }
+      return [...byRow.values()].map(({ t: _, ...r }) => ({ ...r, count: Math.max(...Object.values(r.counts)) }));
+    })(),
   };
 }
 
@@ -1103,6 +1132,26 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
   }
   if (writing) {
+    if (unified && payload.dismissAll !== undefined) {
+      if (run) throw new HttpError(403, 'runs cannot dismiss notices');
+      if (Object.keys(payload).length !== 1 || payload.dismissAll !== 'settled') throw new HttpError(400, 'dismissAll: settled');
+      const t = tree(), by = me.email, at = new Date().toISOString(), instancesOf = instancesBySeries();
+      let dismissed = 0;
+      for (const [sid, s] of Object.entries(t.series)) {
+        const w = t.workspaces[s.workspace];
+        if (!w || w.archived || s.archived || !canSee(me, w)) continue;
+        const periods = instancesOf(sid);
+        if (s.single && periods.some(i => i.doc.status === 'deleted')) continue;
+        const dir = seriesDir(sid), settings = seriesSettings(dir), thread = seriesConversation(sid, periods, settings.epoch);
+        const due = notices(thread.notes, thread.dismissed, by, settings.owner, s.name).filter(n => n.kind === 'settled');
+        for (const n of due) {
+          const seq = n.anchor?.seq ?? Number(n.id.slice(1));
+          appendMessage(dir, n.anchor ? { instance: n.anchor.inst } : {}, { seq, by, at, op: 'dismiss-note', on: seq, notice: 'settled' });
+          dismissed++;
+        }
+      }
+      return send(res, 200, { dismissed });
+    }
     const inst = payload.instance, sid = payload.series;
     if ((inst === undefined) === (sid === undefined) || typeof (inst ?? sid) !== 'string' || !/^[\w-]+$/.test(inst ?? sid))
       throw new HttpError(400, 'name exactly one instance or series id');
@@ -2176,7 +2225,13 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       await closeUnlent();
       send(res, 200, 'ok');
     }
-    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') send(res, 200, (await allowHost(me, decodeURIComponent(url.pathname.split('/')[3]), String((await json(req)).host ?? ''), url.searchParams.get('person') ?? me.email, () => recheckRequest(req)), 'ok'));
+    else if (/^\/logins\/web\/[^/]+\/hosts$/.test(url.pathname) && req.method === 'POST') {
+      const data = await json(req), site = decodeURIComponent(url.pathname.split('/')[3]), host = String(data.host ?? ''), person = url.searchParams.get('person') ?? me.email;
+      if (data.allow !== undefined && typeof data.allow !== 'boolean') throw new HttpError(400, 'allow: true or false');
+      if (data.allow === false) await refuseHost(me, site, host, person, () => recheckRequest(req));
+      else await allowHost(me, site, host, person, () => recheckRequest(req));
+      send(res, 200, 'ok');
+    }
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])), 'ok'));
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
       const site = decodeURIComponent(url.pathname.slice(12)), header = String((await json(req)).header ?? ''), since = Date.now();

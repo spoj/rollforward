@@ -101,6 +101,7 @@ a { color: inherit; }
 .waits { margin-bottom: 8px; cursor: pointer; }
 .wt { padding: 7px 0; border-bottom: 1px solid var(--rule); }
 .wt .btn { margin-left: 8px; }
+.vl > .wt-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 10px 0 4px; border-bottom: 1px solid var(--rule); }
 .vl > .note-notice { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--rule); }
 .vl > .note-notice > span { flex: 1; min-width: 0; }
 .note-notice > b, .needs > .note-notice > b { color: var(--ink-3); font-size: 12px; }

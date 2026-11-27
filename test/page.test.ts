@@ -1379,31 +1379,39 @@ test('grant decisions say who can do what, why an admin is needed, owner concern
   await page.mouse.click(5, 5);
 });
 
-test('only admins see Allow hosts in Waiting, for high and internal hosts, never in a sign-in', async () => {
-  const at = new Date().toISOString(), allowed: [string, { host: string }][] = [];
-  const refused = [{ at, run: 1, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'], why: { 'files.example.net': 'A file-sharing site.' } },
-    { at, run: 2, site: 'portal', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
-  // The server's answer, with an instance's refused hosts as the server would give them, until each is allowed.
+test('only admins see Allow and Keep blocked for deduplicated refused hosts in Waiting, never in a sign-in', async () => {
+  const t1 = new Date(Date.now() - 2000).toISOString(), t2 = new Date().toISOString();
+  const decisions: [string, { host: string; allow?: boolean }][] = [];
+  const refused1 = [{ at: t1, run: 1, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'], counts: { 'files.example.net': 2 }, why: { 'files.example.net': 'A file-sharing site.' } },
+    { at: t1, run: 2, site: 'portal', login: 'admin@demo.test', hosts: ['sso.other.test'], why: {} }];
+  const refused2 = [{ at: t2, run: 5, site: 'gg', login: 'bob@demo.test', hosts: ['files.example.net'], counts: { 'files.example.net': 3 }, why: { 'files.example.net': 'A file-sharing site.' } }];
+  const kept = (list: typeof refused1) => list.map(e => ({ ...e, hosts: e.hosts.filter(h => !decisions.some(([, b]) => b.host === h)) })).filter(e => e.hosts.length);
+  // The server's answer, with refused hosts across two instances until each is allowed or kept blocked.
   await page.route('**/api', async r => {
     const res = await r.fetch(), all = await res.json();
-    all.find((w: any) => !w.archived).series.find((s: any) => !s.archived && s.instances.length).instances[0].refused = refused
-      .map(e => ({ ...e, hosts: e.hosts.filter(h => !allowed.some(([, b]) => b.host === h)) })).filter(e => e.hosts.length);
+    const insts = all.find((w: any) => !w.archived).series.filter((s: any) => !s.archived).flatMap((s: any) => s.instances);
+    insts[0].refused = kept(refused1);
+    if (insts[1]) insts[1].refused = kept(refused2);
     await r.fulfill({ response: res, json: all });
   });
-  await page.route('**/logins/web/*/hosts?*', r => (allowed.push([new URL(r.request().url()).pathname + new URL(r.request().url()).search, r.request().postDataJSON()]), r.fulfill({ body: 'ok' })));
+  await page.route('**/logins/web/*/hosts?*', r => (decisions.push([new URL(r.request().url()).pathname + new URL(r.request().url()).search, r.request().postDataJSON()]), r.fulfill({ body: 'ok' })));
   await page.reload();
   await page.click('[data-act=waiting]');
   const lines = page.locator('#pv .wt', { hasText: 'was refused' });
   await page.evaluate(() => { me.role = 'user'; renderPv(); });
-  assert.equal(await page.locator('#pv [data-act=allow-host]').count(), 0, 'a person never gets an Allow action, even if a cached response contains refused hosts');
+  assert.equal(await page.locator('#pv [data-act=allow-host], #pv [data-act=refuse-host]').count(), 0, 'a person never gets Allow or Keep blocked, even if a cached response contains refused hosts');
   await page.evaluate(() => { me.role = 'admin'; renderPv(); });
-  assert.match(await lines.nth(0).innerText(), /: run 1's browser on Bob( <bob@demo\.test>)?'s gg was refused files\.example\.net A file-sharing site\. Allow$/);
-  assert.match(await lines.nth(1).innerText(), /: run 2's browser on portal was refused sso\.other\.test Allow$/);
-  await lines.nth(0).locator('[data-act=allow-host]').click();
+  assert.equal(await lines.count(), 2, 'repeated refusals across instances deduplicate per (login, site, host)');
+  assert.match(await lines.nth(0).innerText(), /: run 5's browser on Bob( <bob@demo\.test>)?'s gg was refused files\.example\.net 5× A file-sharing site\. Allow · Keep blocked$/);
+  assert.match(await lines.nth(1).innerText(), /: run 2's browser on portal was refused sso\.other\.test Allow · Keep blocked$/);
+  await lines.nth(0).locator('[data-act=refuse-host]').click();
   await page.waitForSelector('#pv .creds:has-text("files.example.net")', { state: 'detached' });
   await page.locator('#pv [data-act=allow-host][data-host="sso.other.test"]').click();
   await page.waitForSelector('#pv .creds:has-text("sso.other.test")', { state: 'detached' });
-  assert.deepEqual(allowed, [['/logins/web/gg/hosts?person=bob%40demo.test', { host: 'files.example.net' }], ['/logins/web/portal/hosts?person=admin%40demo.test', { host: 'sso.other.test' }]]);
+  assert.deepEqual(decisions, [
+    ['/logins/web/gg/hosts?person=bob%40demo.test', { host: 'files.example.net', allow: false }],
+    ['/logins/web/portal/hosts?person=admin%40demo.test', { host: 'sso.other.test' }],
+  ]);
   await page.unroute('**/api');
   await page.unroute('**/logins/web/*/hosts?*');
   await page.mouse.click(5, 5);
@@ -2952,4 +2960,82 @@ test('conversation view defaults to Threaded and toggles cleanly to chronologica
   // Switch back to Threaded
   await page.click('#lh .view-seg button[data-act="conv-view"]');
   assert.equal(await page.evaluate(() => localStorage.convView), 'threaded');
+});
+
+test('Waiting on you separates red actionable count from FYI note notices and offers Dismiss all for settled notices', async () => {
+  const origin = new URL(page.url()).origin;
+  const noteWriter = 'note-batch-writer@demo.test';
+  const noteOwner = 'note-batch-owner@demo.test';
+  entra.who.as = noteOwner;
+  const owner = await browser.newPage();
+  await owner.goto(`${origin}/auth/login`);
+  entra.who.as = noteWriter;
+  const writer = await browser.newPage();
+  await writer.goto(`${origin}/auth/login`);
+  entra.who.as = 'admin@demo.test';
+  try {
+    const ws = await page.evaluate(async ([ownerEmail, writerEmail]) => {
+      const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+      const { id } = await post('/api/workspaces', { name: 'WaitingBadgeWS' });
+      await api(`/api/workspaces/${id}`, { method: 'PUT', body: JSON.stringify({ owners: ['admin@demo.test'], members: [ownerEmail, writerEmail] }) });
+      return id;
+    }, [noteOwner, noteWriter]);
+    const { s1, i1 } = await owner.evaluate(async ws => {
+      const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+      const { id: s1 } = await post('/api/series', { workspace: ws, name: 'Alpha', logins: [], autonomous: false });
+      const { id: i1 } = await post(`/api/series/${s1}/instances`, { label: 'Jan', quiet: true });
+      return { s1, i1 };
+    }, ws);
+    const { s2 } = await writer.evaluate(async ws => {
+      const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+      const { id: s2 } = await post('/api/series', { workspace: ws, name: 'Beta', logins: [], autonomous: false });
+      return { s2 };
+    }, ws);
+    // Writer leaves 2 notes on owner's series/instance; owner settles both, and leaves 1 open note on writer's series
+    const { n1, c1 } = await writer.evaluate(async ([s1, i1]) => {
+      const n = await writeMessage({ series: s1, text: 'Settled note one' });
+      const r = await fetch('/api/messages', { method: 'POST', body: JSON.stringify({ instance: i1, text: 'Settled note two' }) });
+      return { n1: n.id, c1: 'c' + r.headers.get('X-RF-Comment-Seq') };
+    }, [s1, i1]);
+    await owner.evaluate(async ([s1, i1, s2, n1, c1]) => {
+      await writeMessage({ series: s1, id: n1, how: 'taken', text: 'Applied one' });
+      await writeMessage({ instance: i1, id: c1, how: 'aside', text: 'Applied two' });
+      await writeMessage({ series: s2, text: 'Open FYI for writer' });
+    }, [s1, i1, s2, n1, c1]);
+
+    // 1. Writer has 0 actionable and 3 FYIs (2 settled + 1 open): badge must be muted .fyi "3", no red .q
+    await writer.goto(`${origin}/#/${i1}`);
+    await writer.locator('.row.waits').waitFor();
+    assert.equal(await writer.locator('.row.waits .q').count(), 0, 'FYIs alone never show a red actionable badge');
+    assert.equal((await writer.locator('.row.waits .fyi').innerText()).trim(), '3');
+
+    // 2. Add 1 actionable item (a pending start request on writer's series s2): red .q must be "1" (NOT "4"), muted .fyi "· 3"
+    await writer.evaluate(s2 => {
+      const s = tree.flatMap(w => w.series).find(x => x.id === s2);
+      s.requests = [{ id: 'req1', from: 'note-batch-owner@demo.test', label: 'Feb', at: new Date().toISOString() }];
+      renderSide();
+    }, s2);
+    assert.equal((await writer.locator('.row.waits .q').innerText()).trim(), '1', 'red badge counts only actionable items, never FYIs');
+    assert.equal((await writer.locator('.row.waits .fyi').innerText()).trim(), '· 3', 'FYIs show separately in muted style');
+
+    // 3. Open Waiting on you, verify Dismiss all settles both settled notices while keeping the open notice
+    await writer.click('#tree [data-act=waiting]');
+    await writer.locator('#pv .wt-head [data-act=note-dismiss-all]').waitFor();
+    assert.match(await writer.locator('#pv .wt-head').innerText(), /Settled notes \(2\)/);
+    assert.equal(await writer.locator('#pv .note-notice').count(), 3);
+    const [dismissed] = await Promise.all([
+      writer.waitForResponse(r => r.request().method() === 'POST' && r.url() === origin + '/api/messages'),
+      writer.click('#pv [data-act=note-dismiss-all]'),
+    ]);
+    assert.deepEqual(dismissed.request().postDataJSON(), { dismissAll: 'settled' });
+    await writer.locator('#pv .wt-head').waitFor({ state: 'detached' });
+    assert.equal(await writer.locator('#pv .note-notice').count(), 1, 'open note notice stays');
+    assert.match(await writer.locator('#pv .note-notice').innerText(), /Open FYI for writer/);
+    assert.equal(await writer.locator('.row.waits .q').count(), 0);
+    assert.equal((await writer.locator('.row.waits .fyi').innerText()).trim(), '1');
+    await page.evaluate(ws => api(`/api/workspaces/${ws}`, { method: 'PUT', body: JSON.stringify({ archived: true }) }), ws);
+  } finally {
+    entra.who.as = 'admin@demo.test';
+    await Promise.all([owner.close(), writer.close()]);
+  }
 });
