@@ -2912,3 +2912,44 @@ test('markdown preview resolves relative image paths and dialog preserves scroll
   assert.ok(left > 0, `expected scrollLeft > 0 after redraw, got ${left}`);
   await page.click('#pv [data-act=unpv]');
 });
+
+test('conversation view defaults to Threaded and toggles cleanly to chronological Timeline with reply quotes', async () => {
+  await page.evaluate(() => {
+    delete localStorage.convView;
+    ui.timeline = false;
+    ui.audit = false;
+    ui.open = true;
+    data = {
+      ...data,
+      doc: { ...data.doc, status: 'open', items: [] },
+      owner: { by: me.email },
+      standing: {},
+      waiting: [],
+      log: [
+        { seq: 1, op: 'create', by: me.email, at: '2026-11-27T01:00:00Z' },
+        { seq: 2, op: 'comment', thread: 'c2', by: me.email, at: '2026-11-27T01:01:00Z', text: 'Thread A root' },
+        { seq: 3, op: 'comment', thread: 'c3', by: 'agent', at: '2026-11-27T01:02:00Z', text: 'Thread B root' },
+        { seq: 4, op: 'comment', thread: 'c2', parent: 2, by: 'agent', at: '2026-11-27T01:03:00Z', text: 'Reply to Thread A' },
+      ],
+    };
+    threads = threadsOf();
+    renderLog();
+  });
+  // Default: Threaded (c4 is nested inside c2's .kids, so DOM order is 2, 4, 3)
+  const threadedOrder = await page.evaluate(() => [...document.querySelectorAll('#conv .post')].map(el => +(el as HTMLElement).dataset.seq!));
+  assert.deepEqual(threadedOrder, [2, 4, 3]);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#lh .view-seg button.sel')[0]?.textContent), 'Threaded');
+
+  // Switch to Timeline: flat chronological order (2, 3, 4) with reply quote on c4
+  await page.click('#lh .view-seg button[data-act="conv-view"]');
+  const timelineOrder = await page.evaluate(() => [...document.querySelectorAll('#conv .post')].map(el => +(el as HTMLElement).dataset.seq!));
+  assert.deepEqual(timelineOrder, [2, 3, 4]);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#conv .kids').length), 0);
+  const quote = await page.evaluate(() => document.querySelector('#conv .post[data-seq="4"] a.up')?.textContent ?? '');
+  assert.match(quote, /c2: Thread A root/);
+  assert.equal(await page.evaluate(() => localStorage.convView), 'timeline');
+
+  // Switch back to Threaded
+  await page.click('#lh .view-seg button[data-act="conv-view"]');
+  assert.equal(await page.evaluate(() => localStorage.convView), 'threaded');
+});

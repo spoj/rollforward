@@ -97,7 +97,7 @@ function toast(text, kind = '') {
 // one you took control of, as instance/site; full, the long comments opened in full; alone, the comment the conversation shows
 // alone, with what hangs under it, when a thread runs deeper than the panel shows; and withdrawn, those withdrawn opened to show
 // what they said.
-const ui = { open: innerWidth > 800, audit: false, sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null, withdrawn: new Set() };
+const ui = { open: innerWidth > 800, audit: false, timeline: localStorage.convView === 'timeline', sect: {}, site: null, drive: null, sort: {}, full: new Set(), alone: null, withdrawn: new Set() };
 const drawn = new WeakMap();
 
 function put(el, html) {
@@ -214,7 +214,7 @@ function showComment(seq) {
   }
   localStorage[k] = JSON.stringify(folds);
   closePv();
-  Object.assign(ui, { open: true, audit: false, alone: depth > 4 ? seq : null });
+  Object.assign(ui, { open: true, audit: false, alone: !ui.timeline && depth > 4 ? seq : null });
   renderLog(); renderBar(); renderAudit();
   const el = $(`#conv .post[data-seq="${seq}"]`);
   if (!el) return;
@@ -645,7 +645,7 @@ function renderNeeds() {
 // Where a correction says the change is: a later instance, by its label now, and its thread.
 const seeHtml = see => see ? ` \u00b7 see <a href="#/${esc(see.inst)}">${esc(cur.s?.instances.find(i => i.id === see.inst)?.label ?? labelOf(see.inst, see.label))}</a>${see.thread ? ` ${esc(see.thread)}` : ''}` : '';
 
-function renderLog() {
+function renderLog(force = false) {
   // Either side opens at its latest, as the panel does, and keeps there as posts come, unless the reader has scrolled up.
   if (ui.open && data && !$('#log').classList.contains('open')) $('#log').dataset.end = 'yes';
   $('#log').className = 'log' + (ui.open && data ? ' open' : '');
@@ -657,13 +657,18 @@ function renderLog() {
   const focused = document.activeElement?.id === 'newcomment';
   // Its two sides, the conversation and the audit, one shown at a time: a half-written comment waits on the other's.
   put($('#lh'), `<span class="seg">${[['Conversation', !ui.audit], ['Audit', ui.audit]].map(([side, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="audit"'}>${ICON[side === 'Audit' ? 'person' : 'chat']}${side}</button>`).join('')}</span>`
+    + (!ui.audit ? `<span class="seg view-seg">${[['Threaded', !ui.timeline], ['Timeline', ui.timeline]].map(([label, on]) => `<button class="${on ? 'sel' : ''}" ${on ? '' : 'data-act="conv-view"'}>${label}</button>`).join('')}</span>` : '')
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
-  if (!drafting) put($('#conv'), conversationHtml());
+  if (force || !drafting) put($('#conv'), conversationHtml());
   else for (const el of $('#conv').querySelectorAll('.post > .tm > .note-state')) put(el, noteChip(data.noteStates?.[`c${el.closest('.post').dataset.seq}`]));
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
     if (box) { box.value = v; delete draft.kept[k]; }
+  }
+  for (const [k, fl] of Object.entries(draft.keptFiles ?? {})) {
+    const [seq, mode] = k.split(':'), inp = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] input[type=file]`) : $(`#${k}`);
+    if (inp) { inp.files = fl; delete draft.keptFiles[k]; }
   }
   if (!ui.audit && $('#log').dataset.end !== 'no') $('#log').scrollTop = $('#log').scrollHeight;
   // Only on the instance it's for: a render for the one before, as the page catches up, leaves it. The box keeps the focus it had.
@@ -824,19 +829,21 @@ function noteChip(state) {
 // since, which may have changed what it links; then what hangs under it, three levels deep, past which a link opens the rest as a
 // thread of its own. A long one folds until More. Its twisty collapses it, with what hangs under it, to its first line, as this
 // browser keeps it until someone adds to it. One the agent withdrew shows as why, a line until a click opens it.
-function postHtml(t, p, depth) {
-  const kids = t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
+function postHtml(t, p, depth, flat = false) {
+  const kids = flat ? [] : t.posts.filter(k => k.under === p.seq), open = editable(), off = data.run ? ' disabled title="Available when the run ends"' : '';
   // An ask from before questions and proposals, ask true, may have been either.
   const proposal = p.ask === 'proposal' || p.ask === true, kind = p.ask === 'proposal' ? 'propose' : p.ask ? 'ask' : '';
   const decides = open && proposal && canDecideProposal(p) && p.seq > copied() && !p.withdrawn && !t.posts.some(k => k.on === p.seq && (p.noteFor || k.by === me.email)), since = decides && data.log.filter(e => e.op === 'run' && e.seq > p.seq).length;
   const chip = `<span class="note-state">${noteChip(data.noteStates?.[`c${p.seq}`])}</span>`;
   const long = !ui.full.has(p.seq) && (p.text.length > 900 || p.text.split('\n').length > 12), all = n => t.posts.filter(k => k.under === n).reduce((c, k) => c + 1 + all(k.seq), 0);
-  const end = q => Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${p.see ? agentOf(p) : who(p.by)}</b> <span class="tm">`;
+  const end = q => flat ? q.seq : Math.max(q.seq, ...t.posts.filter(k => k.under === q.seq).map(end)), head = `<b class="${p.by === 'agent' ? '' : 'p'}">${p.see ? agentOf(p) : who(p.by)}</b> <span class="tm">`;
+  const parent = flat && p.under ? t.posts.find(x => x.seq === p.under) : null;
+  const quote = parent ? `<a class="up" data-act="cref" data-inst="${esc(cur.i.id)}" data-seq="${parent.seq}">\u21a9 ${who(parent.by)} c${parent.seq}: ${esc(firstLine(parent.text))}</a>` : '';
   const gone = p.withdrawn && `withdrawn: ${esc(p.withdrawn.text)}${p.withdrawn.see ? ` \u00b7 see ${cref(p.withdrawn.see, `c${p.withdrawn.see}`)}` : ''}`;
   if (gone && !ui.withdrawn.has(p.seq)) return `<div class="post withdrawn folded" data-seq="${p.seq}" data-act="withdrawn" title="Show what it said"><span class="fold">\u25B8</span>${gone}${kids.length ? ` \u00b7 ${all(p.seq)} more` : ''}</div>`;
   if (JSON.parse(localStorage[`folds:${cur.i.id}`] ?? '{}')[p.seq] === end(p)) return `<div class="post folded ${kind} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"><button class="fold" data-act="fold" data-seq="${p.seq}" title="Expand">\u25B8</button>${head}${hhmm(p.at)}${chip}</span> ${esc(firstLine(p.text))}${kids.length ? `<span class="tm"> \u00b7 ${all(p.seq)} more</span>` : ''}</div>`;
   const box = (mode, hint, placeholder, button) => `<div class="reply" data-mode="${mode}" ${draft.replying.get(p.seq) === mode ? '' : 'hidden'}>${hint ? `<div class="hint">${hint}</div>` : ''}<textarea rows="2" placeholder="${placeholder}"></textarea>${mode === 'reply' ? '<input type="file" multiple>' : ''}<div class="row2">${button}<button class="quiet" data-act="reply" data-mode="${mode}" data-seq="${p.seq}">Cancel</button></div></div>`;
-  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"${p.noteFor ? ' data-note-proposal' : ''}>${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${chip}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
+  let h = `<div class="post ${kind} ${gone ? 'withdrawn' : ''} ${p.waits ? 'waits' : ''}" data-seq="${p.seq}"${p.noteFor ? ' data-note-proposal' : ''}>${gone ? `<div class="gone" data-act="withdrawn" data-seq="${p.seq}" title="Fold it again"><span class="fold">\u25BE</span>${gone}</div>` : ''}${quote}<button class="fold" data-act="fold" data-seq="${p.seq}" data-end="${end(p)}" title="Collapse">\u25BE</button>${head}${hhmm(p.at)}${p.op === 'comment' ? ` <a class="cn" data-act="copylink" data-seq="${p.seq}" title="Copy a link to this comment">c${p.seq}</a>` : ''}${p.to ? ` \u00b7 to ${who(p.to)}` : ''}${chip}${p.waits ? ` \u00b7 waits on ${who(p.waits)}` : ''}${since ? ` \u00b7 <span title="What it links may have changed since: check it before approving">${since} run${since > 1 ? 's' : ''} since</span>` : ''}${p.commit ? ` \u00b7 commit <code>${p.commit.slice(0, 7)}</code>` : ''}</span>`
     + `<div class="pb ${long ? 'long' : ''}">${p.see ? esc(p.text) : crefs(p.by === 'agent' && p.op === 'comment' ? md(p.text) : esc(p.text))}</div>${long ? `<a class="more" data-act="more" data-seq="${p.seq}">More</a>` : ''}`
     + (p.files ?? []).map(f => `<div class="f">${attachmentHtml(f, true)}</div>`).join('');
   if (p.op === 'comment') h += `<div class="pa">${reactHtml(p.seq)}${open && !proposal ? `<button class="quiet reply-to" data-act="reply" data-seq="${p.seq}">Reply</button>` : ''}`
@@ -882,7 +889,10 @@ function conversationHtml() {
       + up.map(a => `<a class="up" data-act="alone" data-seq="${a.seq}">${who(a.by)}: ${esc(firstLine(a.text))}</a>`).join('') + postHtml(alone, p, 0) + '</div>';
   }
   const ended = r => data.log.find(e => e.op === 'done' && e.run === r.run)?.seq ?? Infinity;
-  h += [...threads.map(t => [t.posts[0].seq, threadHtml(t)]), ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
+  const entries = ui.timeline
+    ? threads.flatMap(t => t.posts.map((p, i) => [p.seq, `<div class="thread tl ${p.waits ? 'waits' : ''}" data-thread="${esc(t.id)}">${t.item ? `<div class="on">${place(t)}</div>` : ''}${i === 0 ? data.log.filter(e => e.op === 'done' && e.rules && e.thread === t.id).map(processNote).join('') : ''}${postHtml(t, p, 0, true)}</div>`]))
+    : threads.map(t => [t.posts[0].seq, threadHtml(t)]);
+  h += [...entries, ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
     + (!data.starts ? `<div class="sub">${mine ? 'Save series credentials to start runs' : `Owned by ${esc(nameOf(data.owner.by))} — comments here are notes and won't start a run`}</div>` : '')
@@ -1630,6 +1640,22 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'audit') await toggleAudit();
+  if (act === 'conv-view') {
+    if ($('#conv [aria-busy]')) return;
+    for (const t of $('#conv').querySelectorAll('textarea')) if (!t.closest('.reply[hidden]') && t.value.trim()) {
+      draft.kept[t.id || `${t.closest('.post').dataset.seq}:${t.closest('.reply').dataset.mode}`] = t.value;
+    }
+    draft.keptFiles ??= {};
+    for (const f of $('#conv').querySelectorAll('input[type=file]')) if (!f.closest('.reply[hidden]') && f.files.length) {
+      draft.keptFiles[f.id || `${f.closest('.post').dataset.seq}:${f.closest('.reply').dataset.mode}`] = f.files;
+    }
+    const req = $('#comment-request')?.checked;
+    ui.timeline = !ui.timeline;
+    ui.alone = null;
+    localStorage.convView = ui.timeline ? 'timeline' : 'threaded';
+    renderLog(true);
+    if (req && $('#comment-request')) $('#comment-request').checked = true;
+  }
   if (act === 'watch') { ui.site = el.dataset.site; renderPlayer(); }
   if (act === 'drive') { ui.drive = ui.drive ? null : `${cur.i.id}/${el.dataset.site}`; renderPlayer(); }
   if (act === 'player') { localStorage.player = localStorage.player === 'folded' ? 'open' : 'folded'; renderPlayer(); }
