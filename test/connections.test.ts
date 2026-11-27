@@ -834,7 +834,7 @@ test("writes share nothing, and make, move or copy nothing outside the ticks; ma
     [mime(`From: Finance: ${ALICE};`), /its From is one plain address/],
     [mime(`From: ${ALICE}, ${AP}`), /its From is one plain address/],
     [mime(`From: ${ALICE} (${AP})`), /its From is one plain address/],
-    [mime(`From : ${ALICE}`), /its MIME header "From : alice@demo.test" doesn't parse/],
+    [mime(`From : ${ALICE}`), /its MIME header at line 1 doesn't parse/],
     [mime('To: controller@demo.test'), /a message has one From header, not 0/],
     ['not base64!', /mail is a JSON object, or MIME in base64 as text\/plain/],
   ] as [string, RegExp][]) {

@@ -35,17 +35,19 @@ function mime(body: Buffer | undefined, box: string, bare: string) {
   const b64 = body?.toString('latin1').replace(/[ \t\r\n]/g, '') ?? '';
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4) throw refuse('mail is a JSON object, or MIME in base64 as text/plain');
   const lines = Buffer.from(b64, 'base64').toString('latin1').split(/\r?\n/), headers: [string, string][] = [];
-  for (const line of lines.slice(0, lines.indexOf('') < 0 ? lines.length : lines.indexOf(''))) {
+  const headerLines = lines.slice(0, lines.indexOf('') < 0 ? lines.length : lines.indexOf(''));
+  for (let i = 0; i < headerLines.length; i++) {
+    const line = headerLines[i];
     if (/^[ \t]/.test(line) && headers.length && !/[\r\0]/.test(line)) headers.at(-1)![1] += line;
     else if (/^[!-9;-~]+:[^\r\0]*$/.test(line)) headers.push([line.slice(0, line.indexOf(':')).toLowerCase(), line.slice(line.indexOf(':') + 1).trim()]);
-    else throw refuse(`its MIME header ${JSON.stringify(line.slice(0, 60))} doesn't parse`);
+    else throw refuse(`its MIME header at line ${i + 1} doesn't parse`);
   }
   const named = (n: string) => headers.filter(([k]) => k === n).map(([, v]) => v);
   for (const n of ['Sender', 'Resent-From', 'Resent-Sender']) if (named(n.toLowerCase()).length) throw refuse(`its ${n} header would name another sender`);
   const from = named('from');
   if (from.length !== 1) throw refuse(`a message has one From header, not ${from.length}`);
   const m = FROM.exec(from[0].trim()), address = m?.[1] ?? m?.[2];
-  if (!address || address.includes('=?')) throw refuse(`its From is one plain address, with a display name if any: not ${JSON.stringify(from[0])}`);
+  if (!address || address.includes('=?')) throw refuse('its From is one plain address, with a display name if any');
   if (address.toLowerCase() !== box) throw refuse(`mail from ${box} goes out as ${box}, not ${address}`);
 }
 

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import zlib from 'node:zlib'
 import {
   buildBodyShape,
@@ -7,7 +8,6 @@ import {
   parseJsonSafe,
   redactFormBody,
   redactJsonValue,
-  redactPlainText,
   sanitizeUrl,
   scrubStructuralKey,
   scrubText,
@@ -747,7 +747,20 @@ export function extractSoapBodyRoot(xml: string): string | undefined {
       continue
     }
     const qname = xml.slice(pos + 1, nameEnd)
-    const gt = xml.indexOf('>', nameEnd)
+    // Quote-aware scan for tag end '>' so '>' inside attribute values cannot spoof SOAP body root!
+    let gt = -1
+    let quote = 0
+    for (let j = nameEnd; j < len; j++) {
+      const ch = xml.charCodeAt(j)
+      if (quote) {
+        if (ch === quote) quote = 0
+      } else if (ch === 34 || ch === 39) {
+        quote = ch
+      } else if (ch === 62) {
+        gt = j
+        break
+      }
+    }
     if (gt < 0) return undefined
     const selfClosing = xml.charCodeAt(gt - 1) === 47
     if (inBody) {
@@ -771,6 +784,7 @@ export type SqlClassification = {
   destructive: boolean
   hasDropOrTruncate: boolean
   hasDelete: boolean
+  ambiguous?: boolean
 }
 
 const SQL_READ_VERBS = new Set(['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'VALUES', 'LIST'])
@@ -783,41 +797,94 @@ export function classifySqlStatement(sql: string): SqlClassification {
   const tokens: Tok[] = []
   let i = 0
   const len = sql.length
+  let ambiguous = false
 
   while (i < len) {
     const ch = sql[i]
     if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') { i++; continue }
+    // Spark SqlBaseLexer SIMPLE_COMMENT: ends on \r OR \n, and honors \+newline continuation (fail-closed ambiguous on \r or continuation).
     if (ch === '-' && sql[i + 1] === '-') {
       i += 2
-      while (i < len && sql[i] !== '\n') i++
+      while (i < len) {
+        const c0 = sql[i]
+        if (c0 === '\\' && (sql[i + 1] === '\n' || sql[i + 1] === '\r')) {
+          ambiguous = true
+          i++
+          if (sql[i] === '\r' && sql[i + 1] === '\n') i += 2
+          else i++
+          continue
+        }
+        if (c0 === '\r') {
+          ambiguous = true
+          if (sql[i + 1] === '\n') i += 2
+          else i++
+          break
+        }
+        if (c0 === '\n') {
+          i++
+          break
+        }
+        i++
+      }
       continue
     }
+    // Spark SqlBaseLexer BRACKETED_COMMENT: nests /* ... */ (fail-closed ambiguous on nesting or unclosed comment).
     if (ch === '/' && sql[i + 1] === '*') {
       i += 2
-      while (i < len && !(sql[i] === '*' && sql[i + 1] === '/')) i++
+      let commentDepth = 1
+      while (i < len && commentDepth > 0) {
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+          ambiguous = true
+          commentDepth++
+          i += 2
+          continue
+        }
+        if (sql[i] === '*' && sql[i + 1] === '/') {
+          commentDepth--
+          i += 2
+          continue
+        }
+        i++
+      }
+      if (commentDepth > 0) ambiguous = true
+      continue
+    }
+    // Spark raw string literals: r'...', R'...', r"...", R"..." (backslash does NOT escape quotes).
+    if ((ch === 'r' || ch === 'R') && (sql[i + 1] === "'" || sql[i + 1] === '"')) {
+      const q = sql[i + 1]
       i += 2
+      let closed = false
+      while (i < len) {
+        if (sql[i] === q) { i++; closed = true; break }
+        i++
+      }
+      if (!closed) ambiguous = true
       continue
     }
     if (ch === "'") {
       i++
+      let closed = false
       while (i < len) {
         if (sql[i] === '\\') { i += 2; continue }
         if (sql[i] === "'" && sql[i + 1] === "'") { i += 2; continue }
-        if (sql[i] === "'") { i++; break }
+        if (sql[i] === "'") { i++; closed = true; break }
         i++
       }
+      if (!closed) ambiguous = true
       continue
     }
     if (ch === '"' || ch === '`') {
       const q = ch
       const start = i
       i++
+      let closed = false
       while (i < len) {
         if (sql[i] === '\\') { i += 2; continue }
         if (sql[i] === q && sql[i + 1] === q) { i += 2; continue }
-        if (sql[i] === q) { i++; break }
+        if (sql[i] === q) { i++; closed = true; break }
         i++
       }
+      if (!closed) ambiguous = true
       tokens.push({ kind: 'word', text: sql.slice(start, i) })
       continue
     }
@@ -882,20 +949,16 @@ export function classifySqlStatement(sql: string): SqlClassification {
       if (stmt[p]?.kind === 'word' && stmt[p].text === 'RECURSIVE') p++
       let ok = false
       for (;;) {
-        // CTE name (may be any identifier, even a keyword like `select`!)
         if (stmt[p]?.kind !== 'word') { ok = false; break }
         p++
-        // Optional column list (...)
         if (stmt[p]?.kind === 'lparen') {
           p = skipParenGroup(stmt, p)
           if (p < 0) { ok = false; break }
         }
         if (stmt[p]?.kind !== 'word' || stmt[p].text !== 'AS') { ok = false; break }
         p++
-        // Optional NOT MATERIALIZED / MATERIALIZED
         if (stmt[p]?.kind === 'word' && stmt[p].text === 'NOT') p++
         if (stmt[p]?.kind === 'word' && stmt[p].text === 'MATERIALIZED') p++
-        // Required CTE subquery (...)
         if (stmt[p]?.kind !== 'lparen') { ok = false; break }
         p = skipParenGroup(stmt, p)
         if (p < 0) { ok = false; break }
@@ -921,7 +984,6 @@ export function classifySqlStatement(sql: string): SqlClassification {
         if (tk.kind === 'lparen') d++
         else if (tk.kind === 'rparen' && d > 0) d--
         else if (d === 0 && tk.kind === 'word' && k > 0 && stmt[k - 1]?.text !== 'AS') {
-          // Only flag unmistakable destructive/DML top-level keywords (not e.g. `ORDER` or column aliases)
           if (tk.text === 'DELETE' || tk.text === 'DROP' || tk.text === 'TRUNCATE' || tk.text === 'MERGE' || tk.text === 'INSERT' || tk.text === 'UPDATE') {
             hasMutatingTopLevel = true
             verb = tk.text
@@ -938,13 +1000,22 @@ export function classifySqlStatement(sql: string): SqlClassification {
     statements.push(normalizedVerb)
   }
 
-  if (!statements.length) {
-    return { sqlClass: 'unknown', statements: [], destructive: false, hasDropOrTruncate: false, hasDelete: false }
+  let hasDropOrTruncate = statements.some(v => v === 'DROP' || v === 'TRUNCATE')
+  let hasDelete = statements.some(v => v === 'DELETE')
+  // Fail-closed: if lexer hit ambiguous Spark comment/string constructs, also scan raw text for destructive verbs
+  // and NEVER classify as 'read'.
+  if (ambiguous) {
+    if (!hasDropOrTruncate && /\b(?:DROP|TRUNCATE)\b/i.test(sql)) hasDropOrTruncate = true
+    if (!hasDelete && /\bDELETE\b/i.test(sql)) hasDelete = true
   }
-
-  const hasDropOrTruncate = statements.some(v => v === 'DROP' || v === 'TRUNCATE')
-  const hasDelete = statements.some(v => v === 'DELETE')
   const destructive = hasDropOrTruncate || hasDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
+
+  if (!statements.length) {
+    return { sqlClass: 'unknown', statements: [], destructive, hasDropOrTruncate, hasDelete, ...(ambiguous && { ambiguous: true }) }
+  }
+  if (ambiguous) {
+    return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ambiguous: true }
+  }
   if (statements.some(v => SQL_DDL_VERBS.has(v))) {
     return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
   }
@@ -1001,23 +1072,103 @@ function extractAttachmentCount(obj: Record<string, unknown> | undefined): numbe
   return Array.isArray(att) ? att.length : 0
 }
 
-function extractMimeRecipientDomains(rawText: string): { domains: string[]; count: number } {
+const MAX_MIME_HEAD_BYTES = 8192
+
+function isValidEmailLocal(s: string): boolean {
+  if (!s.length || s.length > 256) return false
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    const ok =
+      (c >= 65 && c <= 90) ||
+      (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c === 46 || c === 95 || c === 37 || c === 43 || c === 45
+    if (!ok) return false
+  }
+  return true
+}
+
+function isValidEmailDomain(s: string): boolean {
+  if (!s.length || s.length > 253) return false
+  const lastDot = s.lastIndexOf('.')
+  if (lastDot <= 0 || s.length - lastDot - 1 < 2) return false
+  // TLD must be ASCII letters only
+  for (let i = lastDot + 1; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return false
+  }
+  let labelLen = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c === 46) {
+      if (labelLen === 0) return false
+      labelLen = 0
+      continue
+    }
+    const ok =
+      (c >= 65 && c <= 90) ||
+      (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c === 45
+    if (!ok) return false
+    labelLen++
+  }
+  return labelLen > 0
+}
+
+function isMimeDelim(c: number): boolean {
+  return c === 44 || c === 59 || c === 60 || c === 62 || c === 32 || c === 9 || c === 13 || c === 10 || c === 34 || c === 40 || c === 41
+}
+
+// Linear O(N) MIME recipient header scanner (capped at 8 KiB, zero backtracking regexes).
+export function extractMimeRecipientDomains(rawText: string): { domains: string[]; count: number } {
   try {
-    const b64 = rawText.replace(/[ \t\r\n]/g, '')
-    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(b64) || b64.length % 4) return { domains: [], count: 0 }
-    const decoded = Buffer.from(b64, 'base64').toString('latin1')
+    // Only need enough base64 to decode the first 8 KiB of MIME headers (+ padding margin).
+    const maxB64Chars = Math.ceil((MAX_MIME_HEAD_BYTES * 4) / 3) + 64
+    let b64 = ''
+    for (let i = 0; i < rawText.length && b64.length < maxB64Chars; i++) {
+      const c = rawText.charCodeAt(i)
+      if (c === 32 || c === 9 || c === 13 || c === 10) continue
+      const ok =
+        (c >= 65 && c <= 90) ||
+        (c >= 97 && c <= 122) ||
+        (c >= 48 && c <= 57) ||
+        c === 43 || c === 47 || c === 61
+      if (!ok) return { domains: [], count: 0 }
+      b64 += rawText[i]
+    }
+    if (!b64.length) return { domains: [], count: 0 }
+    // Align partial prefix to 4-char base64 boundary when truncated
+    const aligned = b64.length < rawText.length ? b64.slice(0, b64.length - (b64.length % 4)) : b64
+    if (!aligned.length || aligned.length % 4 !== 0) return { domains: [], count: 0 }
+    const decoded = Buffer.from(aligned, 'base64').toString('latin1')
     const headEnd = decoded.indexOf('\r\n\r\n')
-    const head = headEnd >= 0 ? decoded.slice(0, headEnd) : decoded.slice(0, 8192)
+    const lfEnd = headEnd < 0 ? decoded.indexOf('\n\n') : -1
+    const cut = headEnd >= 0 ? Math.min(headEnd, MAX_MIME_HEAD_BYTES) : lfEnd >= 0 ? Math.min(lfEnd, MAX_MIME_HEAD_BYTES) : Math.min(decoded.length, MAX_MIME_HEAD_BYTES)
+    const head = decoded.slice(0, cut)
     const unfolded = head.replace(/\r?\n[ \t]+/g, ' ')
     const domains = new Set<string>()
     let count = 0
     for (const line of unfolded.split(/\r?\n/)) {
-      if (!/^(?:to|cc|bcc):/i.test(line)) continue
-      const matches = line.match(/[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g) ?? []
-      for (const m of matches) {
+      const colon = line.indexOf(':')
+      if (colon <= 0) continue
+      const hdrName = line.slice(0, colon).trim().toLowerCase()
+      if (hdrName !== 'to' && hdrName !== 'cc' && hdrName !== 'bcc') continue
+      const val = line.slice(colon + 1, colon + 1 + MAX_MIME_HEAD_BYTES)
+      let pos = 0
+      while (pos < val.length) {
+        while (pos < val.length && isMimeDelim(val.charCodeAt(pos))) pos++
+        const start = pos
+        while (pos < val.length && !isMimeDelim(val.charCodeAt(pos))) pos++
+        if (pos <= start) continue
+        const tok = val.slice(start, pos)
+        const at = tok.lastIndexOf('@')
+        if (at <= 0 || at >= tok.length - 1) continue
+        const local = tok.slice(0, at)
+        const dom = tok.slice(at + 1)
+        if (!isValidEmailLocal(local) || !isValidEmailDomain(dom)) continue
         count++
-        const dom = m.slice(m.lastIndexOf('@') + 1).toLowerCase()
-        if (domains.size < 32) domains.add(dom)
+        if (domains.size < 32) domains.add(dom.toLowerCase())
       }
     }
     return { domains: [...domains].sort(), count }
@@ -1267,12 +1418,16 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           coverage: isBinary ? 'complete' : defaultCov,
         })
         extractStatus = 'complete'
-      } else if (input.isWrite && (eff === 'DELETE' || input.method === 'DELETE') && (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares'))) {
+      } else if (
+        input.isWrite &&
+        (eff === 'DELETE' || input.method === 'DELETE' || lastSeg.split('.').pop() === 'permanentdelete') &&
+        (segs.includes('drives') || segs.includes('drive') || segs.includes('items') || segs.includes('shares'))
+      ) {
         actions.push({
           family: 'graph',
           op: 'graph:file_delete',
           resource: input.sanitizedPath,
-          details: { hasIfMatch },
+          details: { hasIfMatch, ...(lastSeg.split('.').pop() === 'permanentdelete' && { permanentDelete: true }) },
           coverage: defaultCov,
         })
         extractStatus = fullyIntact ? 'complete' : 'partial'
@@ -1307,6 +1462,8 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           destructive: cls.destructive,
           ...(cls.hasDropOrTruncate && { hasDropOrTruncate: true }),
           ...(cls.hasDelete && { hasDelete: true }),
+          ...(cls.ambiguous && { ambiguous: true }),
+          ...(stmtRaw && { sqlHash: crypto.createHash('sha256').update(stmtRaw.trim()).digest('hex') }),
         }
         const wh = validateStructuralIdent(obj?.warehouse_id, DBX_IDENT_RE, input.vault, true)
         vaultRedactions += wh.vaultRedactions
@@ -1435,8 +1592,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       })
       extractStatus = fullyIntact ? 'complete' : 'partial'
     } else if (lowerPath.includes('/_api/') || lowerPath.includes('/_vti_bin/')) {
-      const apiIdx = lowerPath.indexOf('/_api/') >= 0 ? lowerPath.indexOf('/_api/') : lowerPath.indexOf('/_vti_bin/')
-      const spResource = input.sanitizedPath.slice(Math.max(0, apiIdx)) || input.sanitizedPath
+      const sanLower = input.sanitizedPath.toLowerCase()
+      const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
+      const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
       if (lowerPath.includes('/$batch')) {
         actions.push({
           family: 'sharepoint',
@@ -1450,9 +1608,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         })
         extractStatus = 'opaque'
       } else {
+        const destructiveAction = /\/(?:recycle|deleteobject|deletebyid)(?:\(|$|\/)/i.test(lowerPath)
         const details: Record<string, unknown> = {
           hasIfMatch: Boolean(input.rawHeaders['if-match']),
           hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
+          ...(destructiveAction && { destructiveAction: true }),
         }
         if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
         const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
@@ -1462,7 +1622,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 
         actions.push({
           family: 'sharepoint',
-          op: `sharepoint:${input.effectiveMethod}`,
+          op: destructiveAction ? 'sharepoint:delete' : `sharepoint:${input.effectiveMethod}`,
           resource: spResource,
           details,
           coverage: defaultCov,
@@ -1626,7 +1786,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       } else if (input.sampleBudgetOk === false) {
         reqOmitted = 'budget'
       } else if (decodedText !== undefined) {
-        let redactedText: string
+        let redactedText: string | undefined
         if (isJson) {
           const rj = redactJsonValue(parsedJson, input.vault, false)
           vaultRedactions += rj.vaultRedactions
@@ -1636,15 +1796,16 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           vaultRedactions += rf.vaultRedactions
           redactedText = rf.text
         } else {
-          const rp = redactPlainText(decodedText, input.vault)
-          vaultRedactions += rp.vaultRedactions
-          redactedText = rp.text
+          // Never emit unparsed plaintext body samples (fail-closed policy-profile omission).
+          reqOmitted = 'policy-profile'
         }
-        if (Buffer.byteLength(redactedText, 'utf8') > MAX_SAMPLE_BODY_BYTES) {
-          reqBody = truncateUtf8HeadTail(redactedText, MAX_SAMPLE_BODY_BYTES, 3072, 1020)
-          reqTrunc = true
-        } else {
-          reqBody = redactedText
+        if (redactedText !== undefined) {
+          if (Buffer.byteLength(redactedText, 'utf8') > MAX_SAMPLE_BODY_BYTES) {
+            reqBody = truncateUtf8HeadTail(redactedText, MAX_SAMPLE_BODY_BYTES, 3072, 1020)
+            reqTrunc = true
+          } else {
+            reqBody = redactedText
+          }
         }
       }
     }
