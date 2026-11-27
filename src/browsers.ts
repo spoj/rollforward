@@ -156,7 +156,33 @@ function website(email: string, name: string): Website {
 // run's browser.
 
 type SignIn = { email: string; site: string; name: string; token?: string; since: number; expires: number; website: Website; websiteGeneration?: number; generation: number; loginSince?: string };
-const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, number>();
+const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, number>(), signInHostUpdates = new Map<string, Promise<void>>();
+
+function syncSignInHosts(id: string, email: string, site: string, opts: { reload?: boolean; closeOnError?: boolean } = {}) {
+  const run = async () => {
+    if (!signIns.has(id)) return;
+    let cur: Website | undefined;
+    try { cur = websitesOf(email)[site]; } catch (e) {
+      if (opts.closeOnError) await endSignIn(email, id, false);
+      throw e;
+    }
+    if (!cur) {
+      if (opts.closeOnError) await endSignIn(email, id, false);
+      return;
+    }
+    try {
+      await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) });
+      if (opts.reload && signIns.has(id)) await browserJson('POST', `/sessions/${id}/reload`);
+    } catch (e) {
+      if (opts.closeOnError) await endSignIn(email, id, false);
+      else throw e;
+    }
+  };
+  const next = (signInHostUpdates.get(id) ?? Promise.resolve()).catch(() => {}).then(run);
+  const tail = next.catch(() => {}).finally(() => { if (signInHostUpdates.get(id) === tail) signInHostUpdates.delete(id); });
+  signInHostUpdates.set(id, tail);
+  return next;
+}
 
 function currentSignIn(s: SignIn) {
   const key = `${s.email} ${s.site}`, w = websitesOf(s.email)[s.site];
@@ -285,35 +311,39 @@ export async function revokeInternalHosts(hosts: string[]) {
   for (const h of hosts) internalRevocations.set(h, (internalRevocations.get(h) ?? 0) + 1);
   const dir = join(rfDir(), 'people'), byFolder = new Map([...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(e => [personDir(e), e]));
   const folders = new Set([...byFolder.keys(), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
-  const live: [string, string, string][] = [];
+  const live = new Map<string, [string, string]>();
+  let firstError: unknown;
   for (const folder of folders) {
     const file = join(folder, 'websites.json');
     if (!existsSync(file)) continue;
-    const all: Record<string, Website> = Object.assign(Object.create(null), JSON.parse(readFileSync(file, 'utf8'))), email = byFolder.get(folder);
-    let changed = false;
-    for (const [site, w] of Object.entries(all)) {
-      const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
-      const bumped = [...new Set([...hit, ...hosts.filter(h => !throughVpn(w, h) && Object.hasOwn(w.checks ?? {}, h) && ['internal', 'high'].includes(w.checks![h].verdict))])];
-      if (!bumped.length) continue;
-      all[site] = {
-        ...w,
-        ...(hit.length && {
-          hosts: w.hosts.filter(h => !hit.includes(h)),
-          checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
-        }),
-        hostRevs: bumpHostRevs(w.hostRevs, bumped),
-      };
-      changed = true;
-      const id = hit.length && email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-      if (id) live.push([id, email, site]);
+    try {
+      const all: Record<string, Website> = Object.assign(Object.create(null), JSON.parse(readFileSync(file, 'utf8'))), email = byFolder.get(folder);
+      let changed = false;
+      for (const [site, w] of Object.entries(all)) {
+        const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
+        const bumped = [...new Set([...hit, ...hosts.filter(h => !throughVpn(w, h) && Object.hasOwn(w.checks ?? {}, h) && ['internal', 'high'].includes(w.checks![h].verdict))])];
+        if (!bumped.length) continue;
+        all[site] = {
+          ...w,
+          ...(hit.length && {
+            hosts: w.hosts.filter(h => !hit.includes(h)),
+            checks: { ...w.checks, ...Object.fromEntries(hit.map(h => [h, { verdict: 'internal' as const, why: 'It is at an internal address.' }])) },
+          }),
+          hostRevs: bumpHostRevs(w.hostRevs, bumped),
+        };
+        changed = true;
+        const id = hit.length && email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
+        if (id) live.set(id, [email, site]);
+      }
+      if (changed) replaceFile(file, JSON.stringify(all, null, 1));
+    } catch (e) {
+      firstError ??= e;
     }
-    if (changed) replaceFile(file, JSON.stringify(all, null, 1));
   }
-  const revoked = await Promise.allSettled(live.map(async ([id, email, site]) => {
-    const cur = websitesOf(email)[site];
-    if (cur && signIns.has(id)) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) }).catch(() => endSignIn(email, id, false));
-  }));
-  for (const result of revoked) if (result.status === 'rejected') throw result.reason;
+  for (const [id, s] of signIns) live.set(id, [s.email, s.site]);
+  const revoked = await Promise.allSettled([...live].map(([id, [email, site]]) => syncSignInHosts(id, email, site, { closeOnError: true })));
+  for (const result of revoked) if (result.status === 'rejected') firstError ??= result.reason;
+  if (firstError) throw firstError;
 }
 
 // A website set --internal true before 0.3.12 carries that as a flag of its own, which grants nothing now. At the server's start
@@ -382,8 +412,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   changes.emit('change', 'tree');
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (!id) return;
-  await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) });
-  await browserJson('POST', `/sessions/${id}/reload`);
+  await syncSignInHosts(id, email, site, { reload: true });
 }
 
 // Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
@@ -414,7 +443,7 @@ export async function removeHost(email: string, site: string, host: string) {
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [host]) });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-  if (id) await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(website(email, site)) }).catch(() => endSignIn(email, id, false));
+  if (id) await syncSignInHosts(id, email, site, { closeOnError: true });
 }
 
 // The hosts a person's website doesn't reach, of those asked for.

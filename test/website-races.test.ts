@@ -2,7 +2,7 @@ import { after, beforeEach, test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changes, initSystem, rfDir, saveTree, writeJson } from '../src/system.ts';
@@ -10,13 +10,15 @@ import { upsertUser, type Me } from '../src/auth.ts';
 import type { Trace } from '../src/logins.ts';
 
 type Pause = { seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> };
-const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [];
+const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [];
 const email = 'alice@company.test', url = 'https://vendor.review.test/';
 const profile = { what: 'A vendor accounting portal', category: 'vendor', risk: 'low', flags: [] };
 let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0;
 const service = createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://service');
-  const body = req.method === 'POST' ? JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString()) : undefined;
+  const raw = req.method === 'POST' || req.method === 'PUT' ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() : '';
+  const body = raw ? JSON.parse(raw) : undefined;
+  if (req.method === 'PUT' && u.pathname.endsWith('/hosts')) hostPuts.push({ path: u.pathname, hosts: body.hosts });
   if (u.pathname === '/api/v1/chat/completions') models.push(body);
   const pending = pauses.get(`${req.method} ${u.pathname}`);
   if (pending) {
@@ -526,4 +528,23 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.deepEqual([r1.status, r2.status].sort(), ['fulfilled', 'rejected']);
   assert.equal((r1.status === 'rejected' ? r1.reason : (r2 as PromiseRejectedResult).reason).status, 409);
   assert.equal(websitesOf(email).dup.url, 'https://first.review.test/');
+
+  // Serialized sign-in host updates + corrupt websites.json resilience on global revocation
+  await addSite(email, 'intralive', 'https://10.9.8.17/');
+  setLetIn(['10.9.8.17'], admin.email, true);
+  const liveId = await startSignIn(email, 'intralive', '');
+  hostPuts.length = 0;
+  const firstPut = pause(t, `PUT /sessions/${liveId}/hosts`);
+  const allowing = allowHost(admin, 'intralive', '10.9.8.18', email);
+  await firstPut.seen.promise;
+  // While Allow's PUT is in flight, corrupt another user's websites.json and globally revoke 10.9.8.18
+  const corruptDir = personDir('corrupt@company.test');
+  mkdirSync(corruptDir, { recursive: true });
+  writeFileSync(join(corruptDir, 'websites.json'), '{not-json');
+  setLetIn(['10.9.8.18'], admin.email, false);
+  const revoking = assert.rejects(revokeInternalHosts(['10.9.8.18']), SyntaxError);
+  firstPut.release.resolve();
+  await Promise.all([allowing, revoking]);
+  assert.deepEqual(hostPuts.filter(p => p.path === `/sessions/${liveId}/hosts`).at(-1)?.hosts, ['10.9.8.17'], 'serialized sign-in update ends with 10.9.8.18 revoked even with a corrupt sibling websites.json');
+  await endSignIn(email, liveId, false);
 });
