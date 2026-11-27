@@ -124,6 +124,7 @@ export type Profile = (Classification & { flags: string[]; curated?: true }) | {
 export const profiles = () => readJson<Record<string, Classification & { by: string; at: string }>>('profiles.json', {});
 export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; hostRevs?: Record<string, number>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
+const internalRevocations = new Map<string, number>();
 const bumpHostRevs = (prev: Record<string, number> | undefined, hosts: string[]) => {
   const next: Record<string, number> = Object.assign(Object.create(null), prev);
   for (const h of hosts) next[h] = (next[h] ?? 0) + 1;
@@ -255,14 +256,16 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const next = website(person, name), let_ = change.internal === true || change.internal === 'true', siteKey = `${person} ${name}`, beforeGen = websiteGenerations.get(siteKey);
   const candidates = [...new Set([...reached(next), ...Object.keys(next.checks ?? {})])].filter(h => !throughVpn(next, h) && !h.startsWith('*.'));
   const beforeHostRevs = Object.fromEntries(candidates.map(h => [h, Object.hasOwn(next.hostRevs ?? {}, h) ? next.hostRevs![h] : 0]));
+  const beforeRevokes = Object.fromEntries(candidates.map(h => [h, internalRevocations.get(h) ?? 0]));
   const hosts = let_ ? (await Promise.all(candidates.map(async h => await resolvesInternal(h) && h))).filter(h => h) as string[] : candidates.filter(h => letIn()[h]);
   recheck?.();
   const latest = website(person, name);
   if (latest.url !== next.url || latest.via !== next.via || latest.added !== next.added || (latest.generation ?? 0) !== (next.generation ?? 0) || websiteGenerations.get(siteKey) !== beforeGen)
     throw new HttpError(409, `${name} changed while updating internal access; retry`);
   const hostRev = (h: string) => Object.hasOwn(latest.hostRevs ?? {}, h) ? latest.hostRevs![h] : 0;
-  const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && hostRev(h) === beforeHostRevs[h] && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
+  const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && hostRev(h) === beforeHostRevs[h] && (internalRevocations.get(h) ?? 0) === beforeRevokes[h] && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
   setLetIn(effective, by.email, let_);
+  act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ });
   if (!let_) await revokeInternalHosts(effective);
   else {
     const passed = effective.filter(h => latest.checks?.[h]?.verdict === 'internal');
@@ -275,11 +278,11 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
       changes.emit('change', 'tree');
     }
   }
-  act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ });
 }
 
 export async function revokeInternalHosts(hosts: string[]) {
   if (!hosts.length) return;
+  for (const h of hosts) internalRevocations.set(h, (internalRevocations.get(h) ?? 0) + 1);
   const dir = join(rfDir(), 'people'), byFolder = new Map([...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(e => [personDir(e), e]));
   const folders = new Set([...byFolder.keys(), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
   const live: [string, string, string][] = [];
@@ -357,7 +360,7 @@ export function removeSite(email: string, name: string) {
 // Admins may override a host verdict, including an exact internal host for everyone's websites.
 export async function allowHost(by: Me, site: string, host: string, email = by.email, recheck?: () => void, expectedRev?: string) {
   if (by.role !== 'admin') throw new HttpError(403, 'admins allow website hosts');
-  const before = website(email, site), h = host.trim().toLowerCase(), beforeRev = siteRevision(email, site, before, h);
+  const before = website(email, site), h = host.trim().toLowerCase(), beforeRev = siteRevision(email, site, before, h), beforeRevoke = internalRevocations.get(h) ?? 0;
   if (expectedRev !== undefined) {
     if (beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
     if (reached(before).some(p => covers(p, h)) || !Object.hasOwn(before.checks ?? {}, h) || !['high', 'internal'].includes(before.checks![h].verdict))
@@ -367,7 +370,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   await checkHost(h, routed || inside);
   recheck?.();
   const w = website(email, site);
-  if (siteRevision(email, site, w, h) !== beforeRev)
+  if (siteRevision(email, site, w, h) !== beforeRev || (internalRevocations.get(h) ?? 0) !== beforeRevoke)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
   if (expectedRev !== undefined && (reached(w).some(p => covers(p, h)) || !Object.hasOwn(w.checks ?? {}, h) || !['high', 'internal'].includes(w.checks![h].verdict)))
     throw new HttpError(409, `${h} is no longer waiting on a decision; refresh and retry`);

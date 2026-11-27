@@ -502,6 +502,14 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal(Boolean(letIn()['10.9.8.15']), false, 'in-flight setSite internal approval must not re-enroll a host revoked during DNS lookup');
   assert.equal(websitesOf(email).portal.checks?.['10.9.8.15']?.verdict, 'internal');
 
+  // Explicit Allow (without siteRev) for a brand-new host fails 409 if that host is globally revoked during DNS lookup
+  const explicitRevokes: Promise<void>[] = [];
+  await assert.rejects(allowHost(admin, 'portal', '10.9.8.16', email, () => {
+    explicitRevokes.push(revokeInternalHosts(['10.9.8.16']));
+  }), { status: 409 });
+  await Promise.all(explicitRevokes);
+  assert.equal(Boolean(letIn()['10.9.8.16']), false, 'in-flight explicit Allow must not re-enroll a host revoked mid-flight');
+
   // Internal revocation during in-flight startSignIn POST /sessions closes the session and rejects sign-in
   await addSite(email, 'intrasign', 'https://10.9.8.13/');
   setLetIn(['10.9.8.13'], admin.email, true);
