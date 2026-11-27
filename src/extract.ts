@@ -895,15 +895,19 @@ export function validateSharePointDeleteIds(
   return { ok: true, ids, bodySelector: JSON.stringify({ op: 'deletebyids', ids }) }
 }
 
-export function isUploadSessionEndpointPath(rawPathname: string): boolean {
+export function isUploadSessionEndpointPath(rawPathname: string, host?: string): boolean {
   const { decodedPath, invalidEncoding } = decodePathSegmentsStrict(rawPathname)
   if (invalidEncoding) return false
   const p = decodedPath.toLowerCase()
-  return (
-    /\/_api\/v2\.\d+\/.+\/uploadsession\/?$/i.test(p) ||
-    /\/attachmentsessions\/[^/]+\/?$/i.test(p) ||
-    /^\/(?:[^/]+\/)*uploadsession\/?$/i.test(p)
-  )
+  const h = (host ?? '').trim().toLowerCase()
+  const isSpUpload = /^(?:\/(?:sites|teams)\/[^/]+)?\/_api\/v2\.[01]\/(?:drives\/[^/]+\/items\/[^/]+|me\/drive\/items\/[^/]+)\/uploadsession\/?$/i.test(p)
+  const isOutlookUpload = /^\/(?:(?:api\/)?v2\.0|v1\.0|beta)\/(?:me|users\/[^/]+)\/(?:messages\/[^/]+|mailfolders\/[^/]+\/messages\/[^/]+)\/attachmentsessions\/[^/]+\/?$/i.test(p)
+  if (h) {
+    if (/(?:^|\.)(?:sharepoint\.com|svc\.ms)$/i.test(h)) return isSpUpload
+    if (/(?:^|\.)outlook\.office(?:365)?\.com$/i.test(h)) return isOutlookUpload
+    return false
+  }
+  return isSpUpload || isOutlookUpload
 }
 
 export function computeTargetDigest(
@@ -1852,9 +1856,22 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         ))
       )
     const isUploadSessionHost = /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(input.url.hostname)
-    const spDestructiveOp = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
+    // Scope SharePoint destructive operation matching strictly to the REST endpoint portion AFTER /_api/ or /_vti_bin/
+    // so a site named /sites/recycle/_api/... is never misclassified as a delete!
+    const spApiIdx = decodedLowerPath.indexOf('/_api/') >= 0
+      ? decodedLowerPath.indexOf('/_api/')
+      : decodedLowerPath.indexOf('/_vti_bin/')
+    const spRestPath = spApiIdx >= 0 ? decodedLowerPath.slice(spApiIdx) : ''
+    const spDestructiveOp = spRestPath !== '' && /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(spRestPath)
+    const isDeleteByIdsPath = spRestPath !== '' && /\/deletebyids(?:\(|$|\/)/i.test(spRestPath)
     const isSpBatchPath = /(?:^|\/)(?:_api|_vti_bin)(?:\/[^/]*)?\/\$batch\/?$/i.test(decodedLowerPath)
     const isSpDeleteOrAmbiguous = isSharePointRoute && (spDestructiveOp || isSpBatchPath || decodedPathInfo.invalidEncoding)
+    // Authoritative linkKind provenance: when linkKind is known, ONLY 'upload_session' qualifies (never 'download'/'redirect');
+    // when provenance is absent, require strict host-specific upload-session endpoint structure!
+    const knownLinkKind = input.linkProvenance?.linkKind
+    const qualifiesAsUploadChunk = knownLinkKind !== undefined
+      ? knownLinkKind === 'upload_session'
+      : isUploadSessionEndpointPath(input.url.pathname, input.url.hostname)
     const isGrantedUploadChunk =
       !isSpDeleteOrAmbiguous &&
       input.surface === 'api' &&
@@ -1862,7 +1879,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       input.method === 'PUT' &&
       input.effectiveMethod === 'PUT' &&
       isUploadSessionHost &&
-      (input.linkProvenance?.linkKind === 'upload_session' || isUploadSessionEndpointPath(input.url.pathname))
+      qualifiesAsUploadChunk
 
     if (isGrantedUploadChunk) {
       actions.push({
@@ -1883,7 +1900,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
       const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
-      const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
+      const isDeleteByIds = isDeleteByIdsPath
       // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values on DeleteByIds
       // AND on ambiguously/double-encoded SharePoint routes BEFORE any sub-op branching!
       const suppressSpBody = isDeleteByIds || decodedPathInfo.invalidEncoding

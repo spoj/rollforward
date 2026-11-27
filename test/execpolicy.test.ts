@@ -1645,6 +1645,107 @@ test('R9 Astra convergence: ambiguous SharePoint body/shape/metadata suppression
   }
 });
 
+test('R10 Astra convergence: authoritative linkKind provenance, strict host-specific upload-session endpoints without suffix fallback, REST-scoped spDestructiveOp for /sites/recycle/, and global site+connection 400 rejection', () => {
+  const hmacKey = Buffer.alloc(32, 0xea);
+
+  // 1. Known non-upload linkKind ('download' / 'redirect') PUT to uploadSession path MUST NOT receive allow_upload_session_chunk!
+  for (const linkKind of ['download', 'redirect'] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'link', linkProvenance: { sourceType: 'graph', linkKind },
+      hmacKey, seq: 1, method: 'PUT',
+      url: new URL('https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=1'),
+      headers: { 'content-type': 'application/octet-stream' },
+      rawBody: Buffer.from([1, 2, 3, 4]),
+      bodyComplete: false, transport: 'truncated',
+    }).descriptor;
+    assert.notEqual(desc.safe.actions[0].op, 'graph:upload_session_chunk', `linkKind=${linkKind} must NOT classify as upload_session_chunk`);
+    const dec = evaluateStage1(desc.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
+    assert.notEqual(dec.ruleId, 'allow_upload_session_chunk', `linkKind=${linkKind} must NOT get allow_upload_session_chunk`);
+    assert.equal(dec.action, 'escalate');
+  }
+
+  // 2. Known linkKind='upload_session' PUT to genuine upload session -> allow_upload_session_chunk!
+  const knownUpload = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'link', linkProvenance: { sourceType: 'graph', linkKind: 'upload_session' },
+    hmacKey, seq: 2, method: 'PUT',
+    url: new URL('https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=2'),
+    headers: { 'content-type': 'application/octet-stream' },
+    rawBody: Buffer.from([1, 2, 3, 4]),
+    bodyComplete: false, transport: 'truncated',
+  }).descriptor;
+  assert.equal(knownUpload.safe.actions[0].op, 'graph:upload_session_chunk');
+  assert.equal(evaluateStage1(knownUpload.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_upload_session_chunk');
+
+  // 3. Missing linkKind PUT to genuine SharePoint / Outlook upload session -> allow_upload_session_chunk!
+  for (const urlStr of [
+    'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=3',
+    'https://contoso.sharepoint.com/_api/v2.0/drives/d1/items/i1/uploadSession',
+    'https://outlook.office365.com/v1.0/me/messages/m1/attachmentSessions/s1',
+  ]) {
+    const missingProvOk = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'link', hmacKey, seq: 3, method: 'PUT',
+      url: new URL(urlStr),
+      headers: { 'content-type': 'application/octet-stream' },
+      rawBody: Buffer.from([1, 2, 3, 4]),
+      bodyComplete: false, transport: 'truncated',
+    }).descriptor;
+    assert.equal(missingProvOk.safe.actions[0].op, 'graph:upload_session_chunk', `genuine missing-provenance upload session allowed: ${urlStr}`);
+    assert.equal(evaluateStage1(missingProvOk.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_upload_session_chunk');
+  }
+
+  // 4. Missing linkKind PUT to ordinary resource ending in /uploadSession or wrong-host attachmentSessions -> NOT allow_upload_session_chunk!
+  for (const urlStr of [
+    'https://contoso.sharepoint.com/sites/fin/_api/web/files/uploadSession',
+    'https://contoso.sharepoint.com/custom/uploadSession',
+    'https://contoso.sharepoint.com/v1.0/me/messages/m1/attachmentSessions/s1',
+  ]) {
+    const ordinaryPut = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'link', hmacKey, seq: 4, method: 'PUT',
+      url: new URL(urlStr),
+      headers: { 'content-type': 'application/octet-stream' },
+      rawBody: Buffer.from([1, 2, 3, 4]),
+      bodyComplete: false, transport: 'truncated',
+    }).descriptor;
+    assert.notEqual(ordinaryPut.safe.actions[0].op, 'graph:upload_session_chunk', `ordinary path must NOT qualify: ${urlStr}`);
+    const dec = evaluateStage1(ordinaryPut.safe, 'enforce', { approved: false, recentApprovedProposals: [] });
+    assert.notEqual(dec.ruleId, 'allow_upload_session_chunk', `ordinary path must NOT get allow_upload_session_chunk: ${urlStr}`);
+  }
+
+  // 5. P2 #1: Site named /sites/recycle/_api/... is NOT misclassified as a delete (ordinary list POST & genuine uploadSession under /sites/recycle/ work)!
+  const recycleSiteList = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 5, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/recycle/_api/web/lists'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ Title: 'NewList' })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(recycleSiteList.safe.actions[0].op, 'sharepoint:POST', '/sites/recycle/_api/web/lists must NOT classify as sharepoint:delete');
+
+  const recycleSiteUpload = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'link', linkProvenance: { sourceType: 'graph', linkKind: 'upload_session' },
+    hmacKey, seq: 6, method: 'PUT',
+    url: new URL('https://contoso.sharepoint.com/sites/recycle/_api/v2.0/drives/d1/items/i1/uploadSession'),
+    headers: { 'content-type': 'application/octet-stream' },
+    rawBody: Buffer.from([1, 2, 3]),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(recycleSiteUpload.safe.actions[0].op, 'graph:upload_session_chunk', 'genuine uploadSession under /sites/recycle/ must NOT be misclassified as delete');
+
+  // 6. P2 #2: Shared upfront 400 rejection of simultaneous site + connection across ALL scope actions!
+  for (const bad of [
+    { action: 'e1_ais_write', target: 'P0411_W0411A', site: 'e1', connection: 'e1-svc' },
+    { action: 'graph:file_delete', target: '/v1.0/drives/d1/items/i1', site: 'sp', connection: 'graph' },
+    { action: 'graph:excel_write', target: '/v1.0/drives/d1/items/i1/workbook/worksheets', site: 'sp', connection: 'graph' },
+    { action: 'sharepoint_destructive_write', host: 'tenant.sharepoint.com', target: '/sites/fin/_api/web/lists/items(1)/recycle()', site: 'sp', connection: 'sp-svc' },
+  ]) {
+    assert.throws(
+      () => validateAndNormalizeApprovalScope(bad, { workspace: 'w', hmacKey }),
+      (err: any) => err?.status === 400,
+      `must reject simultaneous site + connection on ${bad.action}`,
+    );
+  }
+});
+
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
   const unguarded = buildApiRequestDescriptor({
     connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',

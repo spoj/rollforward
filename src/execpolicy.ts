@@ -13,7 +13,6 @@ import {
   computeTargetDigest,
   decodePathSegmentsStrict,
   effectiveAuthority,
-  isUploadSessionEndpointPath,
   isValidEmailDomain,
   parseSemanticMethods,
   validateSharePointDeleteIds,
@@ -352,6 +351,9 @@ export function validateAndNormalizeApprovalScope(
     }
     site = obj.site
   }
+  if (site && connection) {
+    throw new HttpError(400, 'execpolicy scope cannot specify both site and connection')
+  }
 
   let port: number | undefined
   if (obj.port !== undefined) {
@@ -547,9 +549,6 @@ export function validateAndNormalizeApprovalScope(
     }
   } else if (action === 'http_delete') {
     if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
-    if (site && connection) {
-      throw new HttpError(400, 'http_delete scope cannot specify both site and connection')
-    }
     if (site) {
       if (!explicitHost) {
         throw new HttpError(400, 'browser http_delete scope requires host')
@@ -1117,20 +1116,6 @@ export function evaluateStage1(
   // 5. Method-override escalation from safe wire verb
   if (escalatedFromSafe) {
     return make('escalate', 'method_override_escalation', `Safe wire verb ${safe.method} escalated to ${safe.effectiveMethod}`)
-  }
-
-  // 5b. Fallback for granted SharePoint / Outlook upload-session PUT chunks (anchored endpoint only, prefix inspected)
-  if (
-    safe.surface === 'api' &&
-    safe.method === 'PUT' &&
-    safe.effectiveMethod === 'PUT' &&
-    /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(safe.authority) &&
-    isUploadSessionEndpointPath(safe.path) &&
-    !writeDupKeys &&
-    safe.completeness.transport !== 'not-read' &&
-    safe.completeness.decode !== 'error'
-  ) {
-    return make('allow', 'allow_upload_session_chunk')
   }
 
   // 6. Integrity/completeness escalations on writes
