@@ -777,8 +777,8 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
       series: [{
         id: 's1', name: 'Ser', archived: false, requests: [],
         instances: [
-          { id: 'i1', label: 'Jan', owner: 'admin@demo.test', wrong: 2, active: t3, refused: [{ at: t3, run: 1, site: 'portal', login: 'bob@demo.test', hosts: ['a.test', 'b.test'], counts: { 'a.test': 2, 'b.test': 1 }, ats: { 'a.test': t1, 'b.test': t3 }, why: { 'a.test': 'File sharing.', 'b.test': 'Internal.' } }] },
-          { id: 'i2', label: 'Feb', owner: 'bob@demo.test', wrong: 1, active: t2, refused: [{ at: t2, run: 4, site: 'portal', login: 'bob@demo.test', hosts: ['a.test'], counts: { 'a.test': 5 }, ats: { 'a.test': t2 }, why: { 'a.test': 'File sharing.' } }] },
+          { id: 'i1', label: 'Jan', owner: 'admin@demo.test', wrong: 2, active: t3, refused: [{ at: t3, run: 1, site: 'portal', siteRev: 'rev-portal-1', login: 'bob@demo.test', hosts: ['a.test', 'b.test'], counts: { 'a.test': 2, 'b.test': 1 }, ats: { 'a.test': t1, 'b.test': t3 }, why: { 'a.test': 'File sharing.', 'b.test': 'Internal.' } }] },
+          { id: 'i2', label: 'Feb', owner: 'bob@demo.test', wrong: 1, active: t2, refused: [{ at: t2, run: 4, site: 'portal', siteRev: 'rev-portal-1', login: 'bob@demo.test', hosts: ['a.test'], counts: { 'a.test': 5 }, ats: { 'a.test': t2 }, why: { 'a.test': 'File sharing.' } }] },
         ],
       }],
     }]));
@@ -801,16 +801,21 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
   const bRow = rows.find((r: any) => r.kind === 'refused' && r.hosts.includes('b.test'));
   const cRow = rows.find((r: any) => r.kind === 'correction');
   assert.equal(aRow.path, 'WS/Ser/Feb', 'per-host ats links a.test to Feb (t2 > t1)');
+  assert.equal(aRow.siteRev, 'rev-portal-1', 'rf waiting --json preserves siteRev');
   assert.equal(aRow.counts['a.test'], 7, 'counts sum across instances (2 + 5)');
   assert.match(aRow.text, /a\.test \(7×, File sharing\.\)/);
   assert.equal(bRow.path, 'WS/Ser/Jan', 'b.test stays linked to Jan (t3)');
   assert.equal(cRow.path, 'WS/Ser/Jan', 'only the owner’s wrong corrections appear in rf waiting');
   assert.equal(cRow.count, 2);
 
-  const ref = await runRf(home, ['logins', 'refuse', 'portal', 'a.test', '--person', 'bob@demo.test']);
+  const ref = await runRf(home, ['logins', 'refuse', 'portal', 'a.test', '--person', 'bob@demo.test', '--rev', aRow.siteRev]);
   assert.equal(ref.code, 0, ref.stderr);
   assert.match(ref.stdout, /portal keeps a\.test blocked/);
-  assert.deepEqual(calls.at(-1), { method: 'POST', url: '/logins/web/portal/hosts?person=bob%40demo.test', body: { host: 'a.test', allow: false } });
+  assert.deepEqual(calls.at(-1), { method: 'POST', url: '/logins/web/portal/hosts?person=bob%40demo.test', body: { host: 'a.test', allow: false, siteRev: 'rev-portal-1' } });
+
+  const allow = await runRf(home, ['logins', 'allow', 'portal', 'b.test', '--person', 'bob@demo.test', '--rev', bRow.siteRev]);
+  assert.equal(allow.code, 0, allow.stderr);
+  assert.deepEqual(calls.at(-1), { method: 'POST', url: '/logins/web/portal/hosts?person=bob%40demo.test', body: { host: 'b.test', siteRev: 'rev-portal-1' } });
 
   const dis = await runRf(home, ['waiting', '--dismiss-settled']);
   assert.equal(dis.code, 0, dis.stderr);

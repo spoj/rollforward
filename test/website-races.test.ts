@@ -455,6 +455,15 @@ test('concurrent route change or website replacement rejects pending internal, a
   await assert.rejects(refuseHost(admin, 'portal', 'files.example.net', email, undefined, staleRev), { status: 409 });
   assert.equal(websitesOf(email).portal.checks?.['files.example.net'], undefined);
 
+  // Two admins race on the same Waiting item: Keep blocked wins, stale Waiting Allow with same siteRev fails 409
+  changeWebsite(email, 'portal', { checks: { '10.9.8.10': { verdict: 'internal', why: 'It is at an internal address.' } } });
+  const waitingRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  await assert.rejects(allowHost(admin, 'portal', '10.9.8.10', email, () => {
+    void refuseHost(admin, 'portal', '10.9.8.10', email, undefined, waitingRev);
+  }, waitingRev), { status: 409 });
+  assert.deepEqual(websitesOf(email).portal.checks?.['10.9.8.10'], { verdict: 'refused', why: 'An admin kept it blocked.' });
+  assert.equal(Boolean(letIn()['10.9.8.10']), false, 'stale Waiting Allow must not undo Keep blocked or enroll internal host');
+
   // Concurrent addSite for the same name must not let the second overwrite the first
   const [r1, r2] = await Promise.allSettled([addSite(email, 'dup', 'https://first.review.test/'), addSite(email, 'dup', 'https://second.review.test/')]);
   assert.deepEqual([r1.status, r2.status].sort(), ['fulfilled', 'rejected']);
