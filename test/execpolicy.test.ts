@@ -172,8 +172,8 @@ test('API-native semantic extractors: Microsoft Graph, Databricks SQL, and custo
   assert.deepEqual(classifySqlStatement('/* comment */ WITH cte AS (SELECT 1) SELECT * FROM fin.gl'), { sqlClass: 'read', statements: ['SELECT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
   assert.deepEqual(classifySqlStatement('WITH select AS (SELECT 1) DELETE FROM fin.gl'), { sqlClass: 'write', statements: ['DELETE'], destructive: true, hasDropOrTruncate: false, hasDelete: true });
   assert.deepEqual(classifySqlStatement('WITH RECURSIVE a(x) AS (SELECT 1), b AS (SELECT 2) UPDATE fin.gl SET x = 1'), { sqlClass: 'write', statements: ['UPDATE'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
-  assert.deepEqual(classifySqlStatement('WITH broken AS (SELECT 1'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
-  assert.deepEqual(classifySqlStatement('"SECRET_QUOTED_IDENTIFIER" 123'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
+  assert.deepEqual(classifySqlStatement('WITH broken AS (SELECT 1'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false, hasUnknownStatement: true });
+  assert.deepEqual(classifySqlStatement('"SECRET_QUOTED_IDENTIFIER" 123'), { sqlClass: 'unknown', statements: ['UNKNOWN'], destructive: false, hasDropOrTruncate: false, hasDelete: false, hasUnknownStatement: true });
   assert.deepEqual(classifySqlStatement("SELECT 'DROP TABLE x' AS literal"), { sqlClass: 'read', statements: ['SELECT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
   assert.deepEqual(classifySqlStatement('INSERT INTO fin.gl VALUES (1);'), { sqlClass: 'write', statements: ['INSERT'], destructive: false, hasDropOrTruncate: false, hasDelete: false });
   assert.deepEqual(classifySqlStatement('SELECT 1; DROP TABLE fin.gl'), { sqlClass: 'ddl', statements: ['SELECT', 'DROP'], destructive: true, hasDropOrTruncate: true, hasDelete: false });
@@ -1431,6 +1431,128 @@ test('R7 Astra convergence: DeleteByIds bodyShape/metadataType suppression, Shar
     assert.equal(dec.action, 'deny', `must deny unconditionally: ${label}`);
     assert.equal(dec.ruleId, 'databricks_sql_uninspectable', `expected databricks_sql_uninspectable: ${label}`);
     assert.equal(stage2Called, false, `permissive Stage-2 MUST NOT be invoked: ${label}`);
+  }
+});
+
+test('R8 Astra convergence: Graph-only /v1.0/ exemption, anchored SharePoint $batch + early DeleteByIds suppression, empty E1 wrapper rejection, multi-statement UNKNOWN SQL terminal deny, and RFC 1035/1123 host bounds + service host/port validation', async () => {
+  const hmacKey = Buffer.alloc(32, 0xc8);
+
+  // 1. Astra P1-1: /v1.0/ exemption applies ONLY to graph.microsoft.com, NEVER to non-Graph SharePoint services!
+  const svcVersionedSp = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/v1.0/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['svc-ver-secret'] })),
+    bodyComplete: true, projection: 'semantic+samples',
+  }).descriptor;
+  assert.equal(svcVersionedSp.safe.actions[0].family, 'sharepoint', 'non-Graph /v1.0/_api/... must classify as sharepoint');
+  assert.equal(svcVersionedSp.safe.actions[0].op, 'sharepoint:delete');
+  assert.equal(svcVersionedSp.safe.bodyShape, undefined);
+  assert.equal(svcVersionedSp.safe.reqBody, undefined);
+  assert.equal(JSON.stringify(svcVersionedSp.safe).includes('svc-ver-secret'), false);
+  assert.equal(evaluateStage1(svcVersionedSp.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'sharepoint_destructive_write');
+
+  const graphVersionedPath = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 2, method: 'PUT',
+    url: new URL('https://graph.microsoft.com/v1.0/drives/d1/items/root:/_api/file.txt:/content'),
+    headers: { 'content-type': 'application/octet-stream', 'if-match': '"etag-1"' },
+    rawBody: Buffer.from([1, 2, 3]),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(graphVersionedPath.safe.actions[0].family, 'graph', 'genuine graph.microsoft.com /v1.0/... retains Graph handler');
+  assert.equal(graphVersionedPath.safe.actions[0].op, 'graph:file_write');
+
+  const conns = [{ name: 'sp-svc', type: 'service' }, { name: 'graph', type: 'graph' }];
+  assert.throws(
+    () => validateAndNormalizeApprovalScope({ action: 'http_delete', connection: 'sp-svc', target: '/v1.0/_api/web/RecycleBin/DeleteByIds' }, { workspace: 'w', hmacKey, connections: conns }),
+    (err: any) => err?.status === 400,
+    'non-Graph service /v1.0/_api/... rejected under http_delete',
+  );
+  const graphHttpDelOk = validateAndNormalizeApprovalScope(
+    { action: 'http_delete', connection: 'graph', target: '/v1.0/drives/d1/items/root:/_api/file.txt' },
+    { workspace: 'w', hmacKey, connections: conns },
+  );
+  assert.equal(graphHttpDelOk.host, 'graph.microsoft.com');
+
+  // 2. Astra P1-2: /sites/$batch/_api/web/RecycleBin/DeleteByIds is NOT hijacked by $batch and suppresses bodyShape + reqBody!
+  const batchPrefixSp = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 3, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/$batch/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['batch-prefix-secret'] })),
+    bodyComplete: true, projection: 'semantic+samples',
+  }).descriptor;
+  assert.equal(batchPrefixSp.safe.actions[0].op, 'sharepoint:delete', 'site prefix $batch must NOT route to sharepoint:batch');
+  assert.equal(batchPrefixSp.safe.bodyShape, undefined);
+  assert.equal(batchPrefixSp.safe.reqBody, undefined);
+  assert.equal(JSON.stringify(batchPrefixSp.safe).includes('batch-prefix-secret'), false);
+
+  const realSpBatch = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 4, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/fin/_api/$batch'),
+    headers: { 'content-type': 'multipart/mixed; boundary=b1' },
+    rawBody: Buffer.from('--b1--\r\n'),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(realSpBatch.safe.actions[0].op, 'sharepoint:batch', 'true /_api/$batch suffix still routes to sharepoint:batch');
+
+  // 3. Astra P1-3: Empty E1 wrappers { formRequest: {} } and { actionRequest: {} } escalate e1_ais_ambiguous_or_malformed!
+  for (const [label, ep, payload] of [
+    ['empty formRequest wrapper', '/jderest/v2/formservice', { formRequest: {} }],
+    ['empty actionRequest wrapper', '/jderest/v2/formservice', { actionRequest: {} }],
+    ['batch with valid write + empty formRequest wrapper', '/jderest/v2/batchformservice', { formRequests: [{ formName: 'P01012_W01012A', formServiceAction: 'W' }, { formRequest: {} }] }],
+    ['batch with valid write + empty actionRequest wrapper', '/jderest/v2/batchformservice', { formRequests: [{ formName: 'P01012_W01012A', formServiceAction: 'W' }, { actionRequest: {} }] }],
+  ] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'e1-svc', connectionType: 'service', hmacKey, seq: 5, method: 'POST',
+      url: new URL(`https://e1-svc.rf.internal${ep}`),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify(payload)),
+      bodyComplete: true,
+    }).descriptor;
+    assert.equal(desc.safe.actions[0].details?.malformedE1Action, true, `must flag malformedE1Action: ${label}`);
+    assert.equal(evaluateStage1(desc.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed', `must escalate: ${label}`);
+  }
+
+  // 4. Astra P1-4: Multi-statement SQL mixing non-destructive INSERT + UNKNOWN verb denies terminally (databricks_sql_uninspectable), while DROP + UNKNOWN keeps databricks_destructive_ddl!
+  let stage2Called = false;
+  const permissiveEngine = new ExecPolicyEngine(() => { stage2Called = true; return { action: 'allow' }; });
+  const mixedUnknownDesc = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 6, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement: 'INSERT INTO staging VALUES (1); FOOBAR baz' })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(mixedUnknownDesc.safe.actions[0].details?.hasUnknownStatement, true);
+  const mixedDec = await permissiveEngine.evaluate(mixedUnknownDesc, { mode: 'enforce' });
+  assert.equal(mixedDec.action, 'deny');
+  assert.equal(mixedDec.ruleId, 'databricks_sql_uninspectable');
+  assert.equal(stage2Called, false, 'Stage-2 MUST NOT run on multi-statement UNKNOWN SQL');
+
+  const dropPlusUnknown = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 7, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement: 'DROP TABLE prod.gl; FOOBAR baz' })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(evaluateStage1(dropPlusUnknown.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'databricks_destructive_ddl');
+
+  // 5. Astra P2s: RFC 1035/1123 hostname label/total length bounds + http_delete service host/port conflict rejection!
+  const over63Label = `${'a'.repeat(64)}.example.com`;
+  const over253Host = `${'a'.repeat(50)}.${'b'.repeat(50)}.${'c'.repeat(50)}.${'d'.repeat(50)}.${'e'.repeat(55)}.com`;
+  for (const [label, bad] of [
+    ['DNS label > 63 chars', { action: 'e1_ais_write', target: 'P0411_W0411A', host: over63Label }],
+    ['DNS host > 253 chars', { action: 'e1_ais_write', target: 'P0411_W0411A', host: over253Host }],
+    ['http_delete host conflicts with configured service connection', { action: 'http_delete', connection: 'sp-svc', target: '/api/items/1', host: 'other.example.com' }],
+    ['http_delete port conflicts with configured service connection', { action: 'http_delete', connection: 'sp-svc', target: '/api/items/1', host: 'sp-svc.rf.internal', port: 8443 }],
+  ] as const) {
+    assert.throws(
+      () => validateAndNormalizeApprovalScope(bad, { workspace: 'w', hmacKey, connections: conns }),
+      (err: any) => err?.status === 400,
+      `must return 400: ${label}`,
+    );
   }
 });
 

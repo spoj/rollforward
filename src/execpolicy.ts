@@ -186,6 +186,13 @@ const HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0
 const DBX_IDENT_RE = /^[A-Za-z0-9_.-]{1,64}$/
 const MAX_APPROVAL_USES = 20
 
+function isValidHostname(raw: string): boolean {
+  const h = raw.trim()
+  if (h.length === 0 || h.length > 253) return false
+  if (!HOST_RE.test(h)) return false
+  return h.split('.').every(lbl => lbl.length >= 1 && lbl.length <= 63)
+}
+
 // Agent-submitted proposal scope keys ONLY: digests and free-text displays are NEVER accepted from the agent;
 // the server always computes both the verbatim display fields and the keyed HMAC digests from exact concrete inputs!
 const ALLOWED_SCOPE_KEYS = new Set([
@@ -455,7 +462,7 @@ export function validateAndNormalizeApprovalScope(
     const target = obj.target.trim()
     let host: string | undefined
     if (obj.host !== undefined) {
-      if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+      if (typeof obj.host !== 'string' || !isValidHostname(obj.host)) {
         throw new HttpError(400, 'e1_ais_write host must be a valid hostname')
       }
       host = obj.host.trim().toLowerCase()
@@ -494,7 +501,7 @@ export function validateAndNormalizeApprovalScope(
 
   let explicitHost: string | undefined
   if (obj.host !== undefined) {
-    if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+    if (typeof obj.host !== 'string' || !isValidHostname(obj.host)) {
       throw new HttpError(400, `${action} host must be a valid hostname`)
     }
     explicitHost = obj.host.trim().toLowerCase()
@@ -539,10 +546,6 @@ export function validateAndNormalizeApprovalScope(
     }
   } else if (action === 'http_delete') {
     if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
-    const isGraphApiPath = decodedTargetLower.startsWith('/v1.0/') || decodedTargetLower.startsWith('/beta/')
-    if (!isGraphApiPath && (decodedTargetLower.includes('/_api/') || decodedTargetLower.includes('/_vti_bin/'))) {
-      throw new HttpError(400, 'SharePoint /_api/ and /_vti_bin/ deletes must use action sharepoint_destructive_write')
-    }
     if (site) {
       if (!explicitHost) {
         throw new HttpError(400, 'browser http_delete scope requires host')
@@ -553,20 +556,33 @@ export function validateAndNormalizeApprovalScope(
       surface = 'api'
       const found = ctx.connections?.find(c => c.name === connection)
       connType = found?.type
-      if (explicitHost) {
-        if (found?.type === 'graph' && explicitHost !== 'graph.microsoft.com') {
+      if (found?.type === 'service') {
+        const expectedSvcHost = `${connection.toLowerCase()}.rf.internal`
+        if (explicitHost && explicitHost !== expectedSvcHost) {
+          throw new HttpError(400, 'http_delete host conflicts with service connection')
+        }
+        if (port !== undefined && port !== 443) {
+          throw new HttpError(400, 'http_delete port conflicts with service connection')
+        }
+        host = expectedSvcHost
+      } else if (found?.type === 'graph') {
+        if (explicitHost && explicitHost !== 'graph.microsoft.com') {
           throw new HttpError(400, 'http_delete host conflicts with graph connection')
         }
-        host = explicitHost
-      } else if (found?.type === 'service') {
-        host = `${connection}.rf.internal`
-      } else if (found?.type === 'graph') {
         host = 'graph.microsoft.com'
+      } else if (explicitHost) {
+        host = explicitHost
       } else {
         throw new HttpError(400, 'http_delete scope requires a valid host or known connection')
       }
     } else {
       throw new HttpError(400, 'http_delete scope requires connection or site+host')
+    }
+    // Restrict /v1.0/ and /beta/ exemption strictly to established Graph destinations!
+    const isGraphDest = connType === 'graph' || host === 'graph.microsoft.com'
+    const isGraphApiPath = isGraphDest && (decodedTargetLower.startsWith('/v1.0/') || decodedTargetLower.startsWith('/beta/'))
+    if (!isGraphApiPath && (decodedTargetLower.includes('/_api/') || decodedTargetLower.includes('/_vti_bin/'))) {
+      throw new HttpError(400, 'SharePoint /_api/ and /_vti_bin/ deletes must use action sharepoint_destructive_write')
     }
   }
 
@@ -612,10 +628,10 @@ function normalizeSafeAuthority(safe: SafeRequestProjection): string {
     return effectiveAuthority(host, undefined, scheme)
   }
   const colon = raw.lastIndexOf(':')
-  if (colon > 0) {
-    return effectiveAuthority(raw.slice(0, colon), raw.slice(colon + 1), scheme)
-  }
-  return effectiveAuthority(raw, undefined, scheme)
+  const host = colon > 0 ? raw.slice(0, colon) : raw
+  const portPart = colon > 0 ? raw.slice(colon + 1) : undefined
+  if (!isValidHostname(host) && host !== 'localhost') return ''
+  return effectiveAuthority(host, portPart, scheme)
 }
 
 function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope): boolean {

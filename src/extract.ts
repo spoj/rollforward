@@ -1024,6 +1024,7 @@ export type SqlClassification = {
   hasDropOrTruncate: boolean
   hasDelete: boolean
   hasMergeDelete?: boolean
+  hasUnknownStatement?: boolean
   ambiguous?: boolean
 }
 
@@ -1288,6 +1289,7 @@ export function classifySqlStatement(sql: string): SqlClassification {
 
   let hasDropOrTruncate = hasOverwriteOrReplaceWhere || statements.some(v => v === 'DROP' || v === 'TRUNCATE')
   let hasDelete = hasMergeDelete || statements.some(v => v === 'DELETE')
+  const hasUnknownStatement = statements.some(v => v === 'UNKNOWN')
   // Fail-closed: if lexer hit ambiguous Spark comment/string constructs, also scan raw text for destructive verbs
   // and NEVER classify as 'read'.
   if (ambiguous) {
@@ -1296,23 +1298,27 @@ export function classifySqlStatement(sql: string): SqlClassification {
     if (!hasDelete && /\bDELETE\b/i.test(sql)) hasDelete = true
   }
   const destructive = hasDropOrTruncate || hasDelete || hasMergeDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
+  const extraFlags = {
+    ...(hasMergeDelete && { hasMergeDelete: true }),
+    ...(hasUnknownStatement && { hasUnknownStatement: true }),
+  }
 
   if (!statements.length) {
-    return { sqlClass: 'unknown', statements: [], destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }), ...(ambiguous && { ambiguous: true }) }
+    return { sqlClass: 'unknown', statements: [], destructive, hasDropOrTruncate, hasDelete, ...extraFlags, ...(ambiguous && { ambiguous: true }) }
   }
   if (ambiguous) {
-    return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }), ambiguous: true }
+    return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...extraFlags, ambiguous: true }
   }
   if (statements.some(v => SQL_DDL_VERBS.has(v))) {
-    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
+    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...extraFlags }
   }
   if (statements.some(v => SQL_WRITE_VERBS.has(v))) {
-    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
+    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...extraFlags }
   }
   if (statements.every(v => SQL_READ_VERBS.has(v))) {
     return { sqlClass: 'read', statements: statements.slice(0, 16), destructive: false, hasDropOrTruncate: false, hasDelete: false }
   }
-  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
+  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...extraFlags }
 }
 
 // ---- Graph API semantic helpers (domains & counts only, NEVER raw addresses/subject/body PII) ----
@@ -1809,10 +1815,12 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         ...(resourceId && { resourceId }),
         ...(bodySelector && { bodySelector }),
       }, input.hmacKey)
-    const isGraph = input.connectionType === 'graph' || (input.surface === 'api' && input.url.hostname.toLowerCase() === 'graph.microsoft.com')
+    const isGraphHost = input.url.hostname.toLowerCase() === 'graph.microsoft.com'
+    const isGraph = input.connectionType === 'graph' || (input.surface === 'api' && isGraphHost)
     const isDatabricks = input.connectionType === 'databricks' || (input.surface === 'api' && input.url.hostname.toLowerCase().endsWith('.azuredatabricks.net'))
     const isService = input.connectionType === 'service'
-    const isGraphApiPath = decodedLowerPath.startsWith('/v1.0/') || decodedLowerPath.startsWith('/beta/')
+    // Restrict /v1.0/ and /beta/ exemption strictly to established Graph destinations (graph.microsoft.com)!
+    const isGraphApiPath = isGraphHost && (decodedLowerPath.startsWith('/v1.0/') || decodedLowerPath.startsWith('/beta/'))
     const isSharePointRoute =
       !isGraphApiPath && (
         decodedLowerPath.includes('/_api/') ||
@@ -1857,7 +1865,15 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
       const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
-      if (decodedLowerPath.includes('/$batch')) {
+      const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
+      if (isDeleteByIds) {
+        // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values BEFORE any sub-op branching!
+        omitSampleBody = true
+        bodyShape = undefined
+      }
+      // Anchor $batch strictly to the SharePoint REST endpoint suffix (NOT arbitrary site prefixes like /sites/$batch/_api/...)!
+      const isSpBatch = /(?:^|\/)(?:_api|_vti_bin)(?:\/[^/]*)?\/\$batch\/?$/i.test(decodedLowerPath)
+      if (isSpBatch) {
         actions.push({
           family: 'sharepoint',
           op: 'sharepoint:batch',
@@ -1873,12 +1889,6 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         extractStatus = 'opaque'
       } else {
         const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
-        const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
-        if (isDeleteByIds) {
-          // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values on DeleteByIds!
-          omitSampleBody = true
-          bodyShape = undefined
-        }
         let bodySelector: string | undefined
         let selectedIdCount: number | undefined
         let bodySelectionIncomplete = false
@@ -2067,6 +2077,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           !fullyIntact ||
           isBinary ||
           cls.ambiguous === true ||
+          cls.hasUnknownStatement === true ||
           cls.sqlClass === 'unknown'
         const details: Record<string, unknown> = {
           sqlClass: cls.sqlClass,
@@ -2075,6 +2086,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(cls.hasDropOrTruncate && { hasDropOrTruncate: true }),
           ...(cls.hasDelete && { hasDelete: true }),
           ...(cls.hasMergeDelete && { hasMergeDelete: true }),
+          ...(cls.hasUnknownStatement && { hasUnknownStatement: true }),
           ...(cls.ambiguous && { ambiguous: true }),
           ...(uninspectableSql && { uninspectable: true }),
         }
@@ -2160,8 +2172,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       let sawFormActionsField = false
 
       // Process each E1 request unit (top-level + each batch formRequests[] entry) independently so per-form
-      // mutation associations are preserved and a single-form approval can NEVER cover another form in the batch!
-      const inspectE1Unit = (unit: Record<string, unknown>) => {
+      // mutation associations are preserved, every logical unit must carry at least one usable leaf E1 field
+      // (rejecting empty wrappers like { formRequest: {} }), and a single-form approval NEVER covers another form!
+      const inspectE1Unit = (unit: Record<string, unknown>): boolean => {
         const containers: Record<string, unknown>[] = [unit]
         for (const subKey of ['actionRequest', 'formRequest'] as const) {
           if (subKey in unit && unit[subKey] !== undefined) {
@@ -2172,6 +2185,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             }
           }
         }
+        let hasUsableField = false
         const unitFormNames: string[] = []
         for (const c of containers) {
           for (const fk of ['formName', 'targetName'] as const) {
@@ -2179,7 +2193,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
               if (typeof c[fk] === 'string' && (c[fk] as string).trim()) {
                 const ident = validateStructuralIdent(c[fk], STRUCT_IDENT_RE, input.vault)
                 vaultRedactions += ident.vaultRedactions
-                if (ident.value) unitFormNames.push(ident.value)
+                if (ident.value) { unitFormNames.push(ident.value); hasUsableField = true }
                 else malformedE1Action = true
               } else {
                 malformedE1Action = true
@@ -2200,6 +2214,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
                 const v = (c[k] as string).trim()
                 unitScalars.push(v)
                 scalarActionValues.push(v)
+                hasUsableField = true
               } else {
                 malformedE1Action = true
               }
@@ -2225,6 +2240,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
                   malformedE1Action = true
                   continue
                 }
+                hasUsableField = true
                 if (E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())) {
                   unitMutates = true
                   hasMutatingFormAction = true
@@ -2234,27 +2250,31 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
               malformedE1Action = true
             }
           }
+          // Legitimate read/data-service leaf fields (never counting bare empty wrappers formRequest/actionRequest!)
+          if (typeof c.dataServiceType === 'string' && c.dataServiceType.trim()) hasUsableField = true
+          if ((typeof c.findOnEntry === 'string' && c.findOnEntry.trim()) || typeof c.findOnEntry === 'boolean') hasUsableField = true
+          if (typeof c.returnControlIDs === 'string' && c.returnControlIDs.trim()) hasUsableField = true
+          if (
+            (typeof c.maxPageSize === 'string' && c.maxPageSize.trim()) ||
+            (typeof c.maxPageSize === 'number' && Number.isFinite(c.maxPageSize)) ||
+            isRawJsonLeaf(c.maxPageSize)
+          ) {
+            hasUsableField = true
+          }
         }
         if (unitMutates) {
           if (unitForm) mutatingForms.add(unitForm)
           else unattributedMutation = true
         }
+        return hasUsableField
       }
 
-      const E1_KNOWN_UNIT_KEYS = new Set([
-        'formName', 'formServiceAction', 'action', 'formActions', 'formRequest', 'actionRequest',
-        'dataServiceType', 'targetName', 'findOnEntry', 'returnControlIDs', 'maxPageSize',
-      ])
-      const hasKnownE1Key = (rec: Record<string, unknown>) => Object.keys(rec).some(k => E1_KNOWN_UNIT_KEYS.has(k))
-
       if (obj) {
-        inspectE1Unit(obj)
+        const rootUsable = inspectE1Unit(obj)
         if ('formRequests' in obj && obj.formRequests !== undefined) {
           if (Array.isArray(obj.formRequests) && obj.formRequests.length > 0) {
             for (const item of obj.formRequests) {
-              if (isPlainRecord(item) && hasKnownE1Key(item)) {
-                inspectE1Unit(item)
-              } else {
+              if (!isPlainRecord(item) || !inspectE1Unit(item)) {
                 malformedE1Action = true
               }
             }
@@ -2263,7 +2283,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           }
         } else if (endpoint === 'batchformservice' && input.isWrite) {
           malformedE1Action = true
-        } else if (input.isWrite && (endpoint === 'formservice' || endpoint === 'dataservice') && !hasKnownE1Key(obj)) {
+        } else if (input.isWrite && (endpoint === 'formservice' || endpoint === 'dataservice') && !rootUsable) {
           malformedE1Action = true
         }
       } else if (
