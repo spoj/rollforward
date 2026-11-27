@@ -817,6 +817,14 @@ test('rf waiting deduplicates refused hosts with per-host timestamps and counts;
   assert.equal(allow.code, 0, allow.stderr);
   assert.deepEqual(calls.at(-1), { method: 'POST', url: '/logins/web/portal/hosts?person=bob%40demo.test', body: { host: 'b.test', siteRev: 'rev-portal-1' } });
 
+  const callsBeforeEmpty = calls.length;
+  for (const verb of ['allow', 'refuse']) {
+    const emptyRev = await runRf(home, ['logins', verb, 'portal', 'a.test', '--person', 'bob@demo.test', '--rev', '']);
+    assert.equal(emptyRev.code, 1, `empty --rev must fail locally for ${verb}`);
+    assert.match(emptyRev.stderr, /--rev: site revision cannot be empty/);
+  }
+  assert.equal(calls.length, callsBeforeEmpty, 'empty --rev never sends an unconditional request');
+
   const dis = await runRf(home, ['waiting', '--dismiss-settled']);
   assert.equal(dis.code, 0, dis.stderr);
   assert.match(dis.stdout, /dismissed 3 settled note notices/);

@@ -464,6 +464,13 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.deepEqual(websitesOf(email).portal.checks?.['10.9.8.10'], { verdict: 'refused', why: 'An admin kept it blocked.' });
   assert.equal(Boolean(letIn()['10.9.8.10']), false, 'stale Waiting Allow must not undo Keep blocked or enroll internal host');
 
+  // If a host becomes covered by a wildcard while Waiting is open, a stale Waiting Allow must fail 409 without global enrollment
+  changeWebsite(email, 'portal', { checks: { ...websitesOf(email).portal.checks, 'sub.internal.test': { verdict: 'internal', why: 'It is at an internal address.' } } });
+  const wildRev = siteRevision(email, 'portal', websitesOf(email).portal);
+  changeWebsite(email, 'portal', { hosts: [...websitesOf(email).portal.hosts, '*.internal.test'] });
+  await assert.rejects(allowHost(admin, 'portal', 'sub.internal.test', email, undefined, wildRev), { status: 409 });
+  assert.equal(Boolean(letIn()['sub.internal.test']), false, 'stale Waiting Allow for a wildcard-covered host must not enroll it');
+
   // Concurrent addSite for the same name must not let the second overwrite the first
   const [r1, r2] = await Promise.allSettled([addSite(email, 'dup', 'https://first.review.test/'), addSite(email, 'dup', 'https://second.review.test/')]);
   assert.deepEqual([r1.status, r2.status].sort(), ['fulfilled', 'rejected']);

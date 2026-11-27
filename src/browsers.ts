@@ -124,6 +124,8 @@ export type Profile = (Classification & { flags: string[]; curated?: true }) | {
 export const profiles = () => readJson<Record<string, Classification & { by: string; at: string }>>('profiles.json', {});
 export type Website = { url: string; hosts: string[]; writeback: boolean; via?: string; header?: string; keepalive?: string; every?: number; profile?: Profile; checks?: Record<string, { verdict: 'pass' | 'refused' | 'high' | 'internal'; why: string }>; added: string; generation?: number };
 const websiteGenerations = new Map<string, number>();
+export const siteIdentity = (w: Pick<Website, 'url' | 'added'>) =>
+  createHash('sha256').update(JSON.stringify([w.url, w.added])).digest('hex').slice(0, 16);
 export const siteRevision = (email: string, site: string, w: Website) =>
   createHash('sha256').update(JSON.stringify([w.url, w.via ?? '', w.added, w.generation ?? 0, websiteGenerations.get(`${email} ${site}`) ?? 0])).digest('hex').slice(0, 16);
 const sitesFile = (email: string) => join(personDir(email), 'websites.json');
@@ -341,7 +343,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   const before = website(email, site), beforeRev = siteRevision(email, site, before), h = host.trim().toLowerCase();
   if (expectedRev !== undefined) {
     if (beforeRev !== expectedRev) throw new HttpError(409, `${site} was replaced or changed; refresh and retry`);
-    if (!Object.hasOwn(before.checks ?? {}, h) || !['high', 'internal'].includes(before.checks![h].verdict))
+    if (reached(before).some(p => covers(p, h)) || !Object.hasOwn(before.checks ?? {}, h) || !['high', 'internal'].includes(before.checks![h].verdict))
       throw new HttpError(409, `${h} is no longer waiting on a decision; refresh and retry`);
   }
   const routed = throughVpn(before, h), inside = !routed && await resolvesInternal(h);
@@ -350,7 +352,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   const w = website(email, site);
   if (siteRevision(email, site, w) !== beforeRev)
     throw new HttpError(409, `${site} was replaced or changed while deciding ${h}; retry`);
-  if (expectedRev !== undefined && (!Object.hasOwn(w.checks ?? {}, h) || !['high', 'internal'].includes(w.checks![h].verdict)))
+  if (expectedRev !== undefined && (reached(w).some(p => covers(p, h)) || !Object.hasOwn(w.checks ?? {}, h) || !['high', 'internal'].includes(w.checks![h].verdict)))
     throw new HttpError(409, `${h} is no longer waiting on a decision; refresh and retry`);
   changeWebsite(email, site, { hosts: [...new Set([...w.hosts, h])], checks: { ...w.checks, [h]: { verdict: 'pass', why: 'An admin allowed it.' } } });
   if (inside && !letIn()[h]) {
@@ -496,7 +498,7 @@ const IDLE_MS = Number(process.env.RF_BROWSER_IDLE_MS ?? 5 * 60_000);
 
 // The runs' browsers open on the service, by id, in .rf/browsers.json, so those a restart cut from their runs still leave what
 // their runs would have kept (reap).
-type Opened = { inst: string; run: number; site: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteAdded?: string; siteUrl?: string };
+type Opened = { inst: string; run: number; site: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string };
 const journal = () => readJson<Record<string, Opened>>('browsers.json', {});
 const setJournal = (all: Record<string, Opened>) => replaceReadOnly(join(rfDir(), 'browsers.json'), JSON.stringify(all));
 
@@ -537,7 +539,7 @@ function keep(inst: Instance, b: Opened, { state, log }: { state: unknown; log: 
   replaceReadOnly(join(inst.dir, b.file), log.map(e => JSON.stringify(e) + '\n').join(''));
   const writes = log.filter(e => !e.blocked && !['GET', 'HEAD', 'OPTIONS'].includes(e.method)).length, hosts: Record<string, number> = Object.create(null);
   for (const h of log.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) hosts[h] = (hosts[h] ?? 0) + 1;
-  inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), ...(b.siteAdded && { siteAdded: b.siteAdded }), ...(b.siteUrl && { siteUrl: b.siteUrl }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
+  inst.append('server', 'browser', { run: b.run, site: b.site, ...(b.email && { login: b.email }), ...(b.siteId && { siteId: b.siteId }), requests: log.length, writes, blocked: log.filter(e => e.blocked).length, file: b.file,
     ...(Object.keys(hosts).length && { hosts }) });
   if (Object.keys(hosts).length && source?.()) checkRefused(inst, b.run, b.email, b.site, log, source).catch(e => console.error(`checking the hosts ${b.site} was refused:`, e));
 }
@@ -750,7 +752,7 @@ export async function reap() {
 export class Browsers {
   inst: Instance;
   run: number;
-  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteAdded?: string; siteUrl?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
+  bySite = new Map<string, { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> }>();
   private opening = new Map<string, Promise<string | undefined>>();
   private closing = new Set<Promise<unknown>>();
   private opens = new Map<string, number>();
@@ -866,8 +868,8 @@ export class Browsers {
       } : undefined;
       const internal = w ? internalHosts(w) : [], opening = w ? openSession(w, 7200, state, via, this.run > 0) : printer().then(id => ({ id, shots: undefined }));
       const ready = opening.then(async ({ id, shots: shotsPath }) => {
-        const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`, siteAdded = w?.added, siteUrl = w?.url;
-        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteAdded?: string; siteUrl?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, siteAdded, siteUrl, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
+        const n = (this.opens.get(site) ?? 0) + 1, file = `browser/run ${this.run} ${site}${n > 1 ? ` ${n}` : ''}.jsonl`, siteId = w ? siteIdentity(w) : undefined;
+        const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; siteId?: string; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, siteId, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
         if (shotsPath && !this.cutted) {
@@ -875,7 +877,7 @@ export class Browsers {
           b.shotPoll.unref?.();
         }
         changes.emit('change', this.inst.id); // for its instance's page to show it
-        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file, generation, ...(siteAdded && { siteAdded }), ...(siteUrl && { siteUrl }) } });
+        setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file, generation, ...(siteId && { siteId }) } });
         if (this.ended) {
           if (!this.cutted) await this.close(site);
           return undefined;
@@ -1098,7 +1100,7 @@ export class Browsers {
   // overwrite, and lets the next run have its person's browser there.
   close(only?: string) {
     const closing = Promise.all([...this.bySite].filter(([site]) => !only || site === only).map(async ([site, b]) => {
-      const { id, email, since, writeback, file, generation, siteAdded, siteUrl, source, idle, shotPoll } = b;
+      const { id, email, since, writeback, file, generation, siteId, source, idle, shotPoll } = b;
       this.bySite.delete(site);
       clearTimeout(idle);
       clearInterval(shotPoll);
@@ -1109,7 +1111,7 @@ export class Browsers {
         const closed = await close(id), all = journal();
         delete all[id];
         setJournal(all);
-        keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file, generation, ...(siteAdded && { siteAdded }), ...(siteUrl && { siteUrl }) }, closed, source);
+        keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file, generation, ...(siteId && { siteId }) }, closed, source);
       } finally {
         if (writeback) this.release(`${email} ${site}`);
       }

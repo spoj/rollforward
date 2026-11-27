@@ -19,7 +19,7 @@ import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
 import { syncCosts } from './costs.ts';
-import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteRevision, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
+import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, passAllowed, passUpgrade, profiles, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteIdentity, siteRevision, startSignIn, unreached, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
 import { ask, decide, forgetGrants, forgetWorkspace, lapse, pruneGrants, revoke, visible } from './grants.ts';
 import { offer } from './connections/graph.ts';
@@ -274,7 +274,7 @@ function guard(before: string[], after: string[], force: unknown) {
 
 // The cached sidebar projection also depends on series authority, including consent additions that keep the same epoch.
 const kept = new WeakMap<Instance, { key: string; active: string; asks: { who: string; kind: string; from?: string; started?: boolean }[]; owner: string; acted: string[]; cost: number; estimated: boolean; corrections: number; wrong: string[];
-  refused: { at: string; run: number; site: string; login: string; siteAdded?: string; siteUrl?: string; hosts: Record<string, number> }[] }>();
+  refused: { at: string; run: number; site: string; login: string; siteId?: string; hosts: Record<string, number> }[] }>();
 function owner(inst: Instance) {
   const r = ownerOf(inst), offers = logins(r.by).flatMap(l => l.offers);
   return { ...r, name: users()[r.by]?.name ?? r.by, since: seriesSettings(inst.series()).since, ticked: r.logins.map(id => offers.find(o => o.id === id)?.name ?? id) };
@@ -307,7 +307,7 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
   let k = kept.get(i);
   if (k?.key !== key) kept.set(i, k = { key, active: i.log.at(-1)!.at, asks: waits(i, workspace, settings).map(({ who, e }) => ({ who, kind: e.ask === true ? 'ask' : (e.ask as string | undefined) ?? 'note', ...(isPerson(e) && { from: e.by, started: e.op === 'create' }) })), owner: by, acted: [...new Set(i.log.filter(isPerson).map(e => e.by))], cost: costOf(i), estimated: estimatedOf(i), corrections: i.log.filter(e => e.op === 'correction').length,
     wrong: i.log.filter(e => e.op === 'correction' && e.kind === 'wrong').map(e => e.at),
-    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, ...(typeof e.siteAdded === 'string' && { siteAdded: e.siteAdded }), ...(typeof e.siteUrl === 'string' && { siteUrl: e.siteUrl }), hosts: e.hosts as Record<string, number> })) });
+    refused: i.log.filter(e => e.op === 'browser' && e.hosts).map(e => ({ at: e.at, run: e.run as number, site: e.site as string, login: e.login as string, ...(typeof e.siteId === 'string' && { siteId: e.siteId }), hosts: e.hosts as Record<string, number> })) });
   return {
     id: i.id, label: i.label, status: i.doc.status, rev: i.doc.rev, running: active.get(i.seriesId)?.inst === i, queued: !!queued(i),
     asks: k.asks, wakeCheck: wakeCheckStatus(i), wakes: wakesFor(i.id), fired: w8.fired[i.id] ?? null, owner: k.owner, cost: k.cost, ...(k.estimated && { estimated: true }), active: k.active,
@@ -323,11 +323,12 @@ function summary(i: Instance, me: Me, workspace: string, w8 = wakes(), settings 
       for (const e of k.refused) {
         if (!fresh(e.at) || !e.login) continue;
         const w = websitesOf(e.login)[e.site];
-        if (!w || (e.siteAdded && w.added !== e.siteAdded) || (e.siteUrl && w.url !== e.siteUrl)) continue;
+        if (!w) continue;
+        const t = Date.parse(e.at) || 0;
+        if (e.siteId ? siteIdentity(w) !== e.siteId : (w.added && t < (Date.parse(w.added) || 0))) continue;
         const checks = w.checks ?? {}, siteRev = siteRevision(e.login, e.site, w);
         const hosts = unreached(e.login, e.site, Object.keys(e.hosts)).filter(h => Object.hasOwn(checks, h) && ['high', 'internal'].includes(checks[h].verdict));
         if (!hosts.length) continue;
-        const t = Date.parse(e.at) || 0;
         for (const h of hosts) {
           const n = Math.max(1, Number(e.hosts[h]) || 1);
           const key = `${e.login}\0${e.site}\0${h}`, prev = byHost.get(key);

@@ -76,7 +76,8 @@ before(async () => {
     [1, -500, { 'later.example.net': 1 }, {}],
     [2, -2000, { 'files.example.net': 4 }, {}],
     [3, -1000, { 'files.example.net': 1 }, {}],
-    [4, -400, { 'files.example.net': 9, 'old-site.example.net': 1 }, { siteAdded: '2020-01-01T00:00:00.000Z', siteUrl: 'https://old.test/' }],
+    [4, -400, { 'files.example.net': 9, 'old-site.example.net': 1 }, { siteId: '0000000000000000' }],
+    [5, -120_000, { 'legacy-old.example.net': 3 }, {}],
   ] as const).entries()) {
     appendFileSync(refusedLog, JSON.stringify({ seq: entries.length + 2 + idx, at: new Date(t0 + offset).toISOString(), by: 'server', op: 'browser', run: n, site: 'waiting-hosts-dedup', login: bob, requests: 3, writes: 0, blocked: 2, hosts, ...extra }) + '\n');
   }
@@ -825,7 +826,7 @@ test('only admins receive high or internal refused hosts in Waiting; unchecked, 
   const b = sessionOf(await login(bob))!, site = 'waiting-hosts';
   assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: site, url: 'https://portal.test/' }), b)).status, 200);
   const { changeWebsite } = await import('../src/browsers.ts');
-  changeWebsite(bob, site, { checks: {
+  changeWebsite(bob, site, { added: new Date(Date.now() - 60_000).toISOString(), checks: {
     'files.example.net': { verdict: 'high', why: 'Can receive company files.' },
     'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
     'cdn.example.net': { verdict: 'pass', why: 'Its CDN.' },
@@ -844,11 +845,12 @@ test('refused hosts deduplicate per (login, site, host) with counts and admins c
   const b = sessionOf(await login(bob))!, site = 'waiting-hosts-dedup';
   assert.equal((await call('POST', '/logins/sites', JSON.stringify({ name: site, url: 'https://portal.test/' }), b)).status, 200);
   const { changeWebsite } = await import('../src/browsers.ts');
-  changeWebsite(bob, site, { checks: {
+  changeWebsite(bob, site, { added: new Date(Date.now() - 60_000).toISOString(), checks: {
     'files.example.net': { verdict: 'high', why: 'Can receive company files.' },
     'intra.acme.localhost': { verdict: 'internal', why: 'It is at an internal address.' },
     'later.example.net': { verdict: 'high', why: 'Later refusal in run 1.' },
     'old-site.example.net': { verdict: 'high', why: 'Only refused by a predecessor website.' },
+    'legacy-old.example.net': { verdict: 'high', why: 'Legacy event predating website added timestamp.' },
   } });
   const refused = async (cookie: string) => (await workspaces(cookie)).flatMap((w: any) => w.series.flatMap((s: any) => s.instances.flatMap((i: any) => i.refused))).filter((r: any) => r.site === site);
   const rows = await refused(admin);

@@ -952,8 +952,11 @@ else if (cmd === 'comment' && args.length < 2) {
   if (what === 'offer') await post(`${at}/offers`, { add: x });
   else if (what === 'unoffer') await api(`${at}/offers/${encodeURIComponent(x)}`, { method: 'DELETE' });
   else if (what === 'disallow') await api(`/logins/web/${encodeURIComponent(login)}/hosts/${encodeURIComponent(x)}`, { method: 'DELETE' });
-  else if (what === 'refuse') await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x, allow: false, ...(flags.rev ? { siteRev: String(flags.rev) } : {}) });
-  else await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x, ...(flags.rev ? { siteRev: String(flags.rev) } : {}) });
+  else if (what === 'refuse' || what === 'allow') {
+    if (flags.rev !== undefined && !String(flags.rev).trim()) throw new Error('--rev: site revision cannot be empty');
+    const rev = flags.rev !== undefined ? { siteRev: String(flags.rev) } : {};
+    await post(`/logins/web/${encodeURIComponent(login)}/hosts${flags.person ? `?person=${encodeURIComponent(String(flags.person))}` : ''}`, { host: x, ...(what === 'refuse' && { allow: false }), ...rev });
+  }
   console.log(what === 'refuse' ? `${login} keeps ${x} blocked` : `${login} ${{ offer: 'offers', unoffer: 'no longer offers', allow: 'reaches', disallow: 'no longer reaches' }[what]} ${x}`);
 } else if (cmd === 'vpns' && !args.length) {
   const all = await get('/vpns');
