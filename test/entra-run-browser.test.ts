@@ -14,6 +14,7 @@ let serial = 0;
 const browserService = createServer(async (req, res) => {
   const path = new URL(req.url!, 'http://browser.test').pathname, id = path.split('/')[2];
   res.setHeader('content-type', 'application/json');
+  if (path === '/capabilities') return res.writeHead(404).end('{"error":"no such route"}');
   if (path === '/sessions' && req.method === 'POST') {
     const id = `b${++serial}`;
     sessions.set(id, JSON.parse(Buffer.concat(await Array.fromAsync(req)).toString()));

@@ -20,6 +20,7 @@ const sessions = new Set<string>();
 const closed: string[] = [], received: { auth: string | undefined; runner: string | undefined; path: string }[] = [];
 const service = createServer(async (req, res) => {
   const body = Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString();
+  if (req.method === 'GET' && req.url === '/capabilities') return res.writeHead(404).end('{"error":"no such route"}');
   if (req.method === 'GET' && req.url === '/sessions') return res.end(JSON.stringify([...sessions].map(id => ({ id }))));
   if (req.method === 'POST' && req.url === '/sessions') {
     const id = `synthetic-${++session}`;

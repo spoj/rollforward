@@ -33,6 +33,7 @@ let browserState: { cookies: { domain: string; name: string; value: string }[]; 
 const told: string[] = [], openings: { site: { hosts: string[]; open?: boolean; public?: boolean; except?: string[]; start_url?: string }; state?: unknown; ttl_s: number }[] = [];
 const service = createServer(async (req, res) => {
   const blocked = refused.map(url => ({ method: 'GET', url, status: 403, blocked: 'host not on the list' })), log = [...browserLog, ...blocked];
+  if (req.method === 'GET' && new URL(req.url!, 'http://browser').pathname === '/capabilities') return void res.writeHead(404).end('{"error":"no such route"}');
   if (req.method === 'GET' && new URL(req.url!, 'http://browser').pathname === '/blocked') return void res.end('{}');
   if (req.method === 'POST' && req.url === '/sessions') {
     openings.push(JSON.parse(Buffer.concat(await Array.fromAsync(req)).toString()));

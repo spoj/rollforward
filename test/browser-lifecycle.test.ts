@@ -16,6 +16,7 @@ let Browsers: typeof RunBrowsers, addSite: typeof import('../src/browsers.ts').a
 let opening = Promise.resolve(), closing = Promise.resolve(), screenshot = Promise.resolve(), closeFail = false, sessionSeq = 0;
 let opened = Promise.withResolvers<void>(), closed = Promise.withResolvers<void>(), shot = Promise.withResolvers<void>();
 const service = createServer(async (req, res) => {
+  if (req.url === '/capabilities') return void res.writeHead(404).end('{"error":"no such route"}');
   if (req.url!.startsWith('/blocked?')) {
     const hosts = new URL(req.url!, 'http://browser.test').searchParams.getAll('host');
     return void res.end(JSON.stringify(Object.fromEntries(hosts.map(h => [h, false]))));
