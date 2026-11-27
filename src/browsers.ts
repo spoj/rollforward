@@ -213,9 +213,9 @@ export async function startSignIn(email: string, site: string, given: string, ca
   const before = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (before) await endSignIn(email, before, false).catch(e => console.error(`ending the previous sign-in to ${site}:`, e));
   recheck?.();
-  currentSignIn(signing);
-  const openedInternal = internalHosts(w);
-  const id = (await browserJson('POST', '/sessions', { site: { hosts: openedInternal, open: true, except: except(), start_url: w.url, via, ...(token && { headers: { [w.header!]: token } }) }, ttl_s })).id;
+  const current = currentSignIn(signing);
+  const openedInternal = internalHosts(current);
+  const id = (await browserJson('POST', '/sessions', { site: { hosts: openedInternal, open: true, except: except(), start_url: current.url, via, ...(token && { headers: { [current.header!]: token } }) }, ttl_s })).id;
   try {
     recheck?.();
     const now = currentSignIn(signing);
@@ -254,7 +254,7 @@ export async function addSite(email: string, name: string, url: string, header =
 // Its person changes the header its sign-in needs, its keepalive page and how often, and whether runs write its state back; admins
 // alone let it reach internal addresses, by exact hosts, as an intranet's need, anyone's: its hosts at internal addresses, its
 // address's among them, every person's websites reach from then on, with no admin again, until an admin sets one at them false.
-export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email, recheck?: () => void) {
+export async function setSite(by: Me, name: string, change: Record<string, unknown>, person = by.email, recheck?: () => void, onMutated?: () => void) {
   const keys = ['header', 'keepalive', 'every', 'writeback', 'internal', 'via'], other = Object.keys(change).filter(k => !keys.includes(k));
   if (other.length) throw new HttpError(400, `${other.join(', ')}: a website's settings are ${keys.join(', ')}; its hosts are allowed one by one`);
   // Taking a VPN off a website, as one left with it once the VPN is gone, needs no capability, and an admin may on anyone's.
@@ -278,6 +278,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   if (viaChanged) {
     const key = `${person} ${name}`;
     websiteGenerations.set(key, (websiteGenerations.get(key) ?? 0) + 1);
+    onMutated?.();
   }
   if (change.internal === undefined) return;
   const next = website(person, name), let_ = change.internal === true || change.internal === 'true', siteKey = `${person} ${name}`, beforeGen = websiteGenerations.get(siteKey);
@@ -292,6 +293,7 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const hostRev = (h: string) => Object.hasOwn(latest.hostRevs ?? {}, h) ? latest.hostRevs![h] : 0;
   const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && hostRev(h) === beforeHostRevs[h] && (internalRevocations.get(h) ?? 0) === beforeRevokes[h] && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
   setLetIn(effective, by.email, let_);
+  if (!let_ && effective.length) onMutated?.();
   let auditErr: unknown;
   try { act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ }); } catch (e) { auditErr = e; }
   if (!let_) await revokeInternalHosts(effective);
@@ -437,10 +439,11 @@ export async function refuseHost(by: Me, site: string, host: string, email = by.
 }
 
 // A host its person no longer lets their website reach: it stays refused from then on, the check passing it no more.
-export async function removeHost(email: string, site: string, host: string) {
+export async function removeHost(email: string, site: string, host: string, onMutated?: () => void) {
   const w = website(email, site);
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [host]) });
+  onMutated?.();
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (id) await syncSignInHosts(id, { closeOnError: true });
 }

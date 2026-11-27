@@ -10,7 +10,7 @@ import { upsertUser, type Me } from '../src/auth.ts';
 import type { Trace } from '../src/logins.ts';
 
 type Pause = { seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> };
-const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [];
+const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [], sessionPosts: { hosts: string[]; start_url: string }[] = [];
 const email = 'alice@company.test', url = 'https://vendor.review.test/';
 const profile = { what: 'A vendor accounting portal', category: 'vendor', risk: 'low', flags: [] };
 let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0, activeHostPuts = 0, maxHostPuts = 0;
@@ -43,6 +43,7 @@ const service = createServer(async (req, res) => {
   }
   if (req.method === 'POST' && u.pathname === '/sessions') {
     const id = `b${++serial}`;
+    sessionPosts.push({ hosts: body.site.hosts, start_url: body.site.start_url });
     sessions.set(id, new URL(body.site.start_url).hostname);
     return void res.writeHead(201).end(JSON.stringify({ id }));
   }
@@ -559,4 +560,30 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal(maxHostPuts, 1, 'per-session sign-in host updates never run concurrently');
   assert.deepEqual(puts.map(p => p.hosts), [['10.9.8.17', '10.9.8.18'], []], 'queued update reads current internalHosts at execution time and finishes last');
   await endSignIn(email, liveId, false);
+
+  // Removing a website host before startSignIn's POST /sessions omits it from the created browser's hosts payload
+  await addSite(email, 'intrapre', 'https://10.9.8.19/');
+  setLetIn(['10.9.8.19', '10.9.8.20'], admin.email, true);
+  changeWebsite(email, 'intrapre', { hosts: ['10.9.8.20'], checks: { '10.9.8.20': { verdict: 'pass', why: 'Allowed.' } } });
+  const prevId = await startSignIn(email, 'intrapre', '');
+  sessionPosts.length = 0;
+  const closingPrev = pause(t, `DELETE /sessions/${prevId}`);
+  const reopening = startSignIn(email, 'intrapre', '');
+  await closingPrev.seen.promise;
+  let removedMutated = 0;
+  await removeHost(email, 'intrapre', '10.9.8.20', () => { removedMutated++; });
+  assert.equal(removedMutated, 1, 'valid removeHost reports mutation for cleanup');
+  closingPrev.release.resolve();
+  const reopenedId = await reopening;
+  assert.equal(sessionPosts.length, 1);
+  assert.deepEqual(sessionPosts[0], { hosts: ['10.9.8.19'], start_url: 'https://10.9.8.19/' }, 'POST /sessions reads fresh hosts after awaiting previous session closure');
+  await endSignIn(email, reopenedId, false);
+
+  // Rejected setSite / removeHost do not trigger cleanup callback, while persisted internal revocation still does
+  let mutatedCount = 0;
+  await assert.rejects(setSite(owner, 'intrapre', { internal: false }, email, undefined, () => { mutatedCount++; }), { status: 403 });
+  await assert.rejects(removeHost(email, 'intrapre', 'absent.example.test', () => { mutatedCount++; }), { status: 404 });
+  assert.equal(mutatedCount, 0, 'rejected mutations must not trigger server-wide closeUnlent');
+  await assert.rejects(setSite(admin, 'intrapre', { internal: false }, email, undefined, () => { mutatedCount++; }), SyntaxError);
+  assert.equal(mutatedCount, 1, 'persisted internal revocation still triggers cleanup even when sibling websites.json is corrupt');
 });

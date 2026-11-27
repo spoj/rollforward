@@ -2210,8 +2210,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'PATCH') {
       const change = await json(req);
-      try { await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req)); }
-      finally { if (change.via !== undefined || change.internal !== undefined) await closeUnlent(); }
+      let closeNeeded = false;
+      try { await setSite(me, decodeURIComponent(url.pathname.split('/')[3]), change, url.searchParams.get('person') ?? me.email, () => recheckRequest(req), () => { closeNeeded = true; }); }
+      finally { if (closeNeeded) await closeUnlent(); }
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/sites\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') send(res, 200, (removeSite(me.email, decodeURIComponent(url.pathname.split('/')[3])), await closeUnlent(), 'ok'));
@@ -2240,7 +2241,9 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+\/hosts\/[^/]+$/.test(url.pathname) && req.method === 'DELETE') {
-      try { await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5])); } finally { await closeUnlent(); }
+      let closeNeeded = false;
+      try { await removeHost(me.email, decodeURIComponent(url.pathname.split('/')[3]), decodeURIComponent(url.pathname.split('/')[5]), () => { closeNeeded = true; }); }
+      finally { if (closeNeeded) await closeUnlent(); }
       send(res, 200, 'ok');
     }
     else if (/^\/logins\/web\/[^/]+$/.test(url.pathname) && req.method === 'POST') {
