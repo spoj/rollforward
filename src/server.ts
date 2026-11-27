@@ -18,6 +18,7 @@ import { checkTicks, logins, runnerAt, ownerOf, saveLogin, signOut, unoffer } fr
 import { agentCall } from './agent-api.ts';
 import { checkLogins } from './entra.ts';
 import { answered as callsAnswered, byLogin, call, connections, intercepts, keyStatus, openrouterCreditError, refreshKeys, letIn, loginOf, removeConnection, setConnection, setLetIn, upstreams } from './connections.ts';
+import { validateAndNormalizeApprovalScope, type ApprovalScope } from './execpolicy.ts';
 import { syncCosts } from './costs.ts';
 import { addSite, allowHost, Browsers, categories, endSignIn, endSignIns, endUnpermittedSignIns, enrolFlagged, isSignIn, isCheckingWebsite, drainWebsiteChecks, keepAlive, listBrowserAudits, passAllowed, passUpgrade, profiles, readBrowserAudit, reap, refuseHost, removeHost, removeSite, revokeInternalHosts, risks, setSite, siteIdentity, siteRevision, startSignIn, unreached, viewActivity, viewPage, websitesOf } from './browsers.ts';
 import { addVpn, cancelVpnSignIn, disconnectVpn, dropUnpermittedVpns, isVpnSignIn, reapVpns, removeVpn, saveVpnSignIn, startVpnSignIn, vpns } from './vpns.ts';
@@ -1178,7 +1179,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     } else {
       if (payload.id !== undefined) throw new HttpError(400, 'a new message has no id yet');
       if (payload.ask !== undefined && !run) throw new HttpError(403, 'only a run asks or proposes');
-      if (kind === 'series' && [payload.ask, payload.to, payload.item, payload.ref, payload.thread, payload.for].some(v => v !== undefined))
+      if (kind === 'series' && [payload.ask, payload.to, payload.item, payload.ref, payload.thread, payload.for, payload.execpolicy].some(v => v !== undefined))
         throw new HttpError(400, 'a series comment is not an ask, proposal, or reply on an item');
       action = kind === 'series' ? 'notes' : 'comment';
     }
@@ -1745,7 +1746,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     // A comment starts a thread, on an item (at a ref, such as a cell, if given) or on the instance, or replies under one of its
     // comments, which `thread` names by its seq, as cN, a thread's own id its first comment's. A person's starts a run, unless quiet.
     // The agent's starts nothing; its questions and proposals wait on their named person or the owner.
-    const { thread, item, ref, text, files = [], ask, to, request, for: noteFor } = payload, under = commentAt(inst.log, thread);
+    const { thread, item, ref, text, files = [], ask, to, request, for: noteFor, execpolicy } = payload, under = commentAt(inst.log, thread);
     if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a comment has text');
     if (ask !== undefined && !['question', 'proposal'].includes(ask)) throw new HttpError(400, 'ask is "question" or "proposal"');
     if (thread !== undefined && !under) throw new HttpError(400, `no comment ${thread} to reply under; this instance's threads: ${inst.threads().join(', ') || 'none yet'}`);
@@ -1762,7 +1763,17 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       throw new HttpError(400, `${to} can't see this instance; ask its series owner, ${ownerOf(inst).by}, or someone in its workspace`);
     // Another instance's run leaves a non-executing note with immutable execution provenance.
     const away = run && run.inst !== inst;
-    if (away && (ask || to)) throw new HttpError(400, 'you ask and propose only in your own instance: rf comment . --ask or --propose');
+    if (away && (ask || to || execpolicy !== undefined)) throw new HttpError(400, 'you ask and propose only in your own instance: rf comment . --ask or --propose');
+    let validatedScope: ApprovalScope | undefined;
+    if (execpolicy !== undefined) {
+      if (!run || away || ask !== 'proposal') {
+        throw new HttpError(400, 'execpolicy scope is allowed only on an agent proposal in its own instance');
+      }
+      validatedScope = validateAndNormalizeApprovalScope(execpolicy, {
+        workspace: t.series[inst.seriesId].workspace,
+        connections: connections(),
+      });
+    }
     const seq = inst.log.length + 1;
     const fields = { ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${seq}`, item: item ?? null, ref: ref ?? null }),
       text: text.trim(), ...(files.length && { files }), ...(quiet && { quiet: true }) };
@@ -1776,7 +1787,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       linked = seriesConversation(inst.seriesId).notes.find(n => n.id === noteFor && (n.anchor?.inst ?? inst.id) === inst.id);
       if (!linked || linked.settled || linked.proposal) throw new HttpError(409, `${noteFor} is not an open note without a pending proposal`);
     }
-    const said = post({ op: 'comment', inst, by, text, under, item, ref, files, quiet, ask, to: who, run, word: word || undefined, request, noteFor: linked?.id });
+    const said = post({ op: 'comment', inst, by, text, under, item, ref, files, quiet, ask, to: who, run, word: word || undefined, request, noteFor: linked?.id, execpolicy: validatedScope });
     if (away) {
       if (!standing(inst, said)!.starts && active.get(inst.seriesId)?.inst !== inst) commit(inst.dir, AGENT, `Note in ${said.thread}`).catch(err => inst.append('server', 'commit', { cause: said.seq, error: err.message }));
       return send(res, 200, `said c${said.seq} in ${named(t, inst.seriesId)}/${inst.label}${under ? `, under ${thread}` : ''}, a note for its series owner`);
@@ -1865,7 +1876,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
         if (action === 'reject') inst.append(by, 'reject', decision);
         else {
           if (mine) throw new HttpError(409, 'wait for the run to end');
-          const hash = await commit(inst.dir, who, [ask.text, note, `Signed-off-by: ${who.name} <${who.email}>`].filter(Boolean).join('\n\n'));
+          const scopeLine = ask.execpolicy ? `ExecPolicy-Scope: ${JSON.stringify(ask.execpolicy)}` : '';
+          const hash = await commit(inst.dir, who, [ask.text, scopeLine, note, `Signed-off-by: ${who.name} <${who.email}>`].filter(Boolean).join('\n\n'));
           if (recheck().mine) throw new HttpError(409, 'wait for the run to end');
           currentProposal();
           if (inst.log.some(e => e.op === 'withdraw' && e.on === ask.seq)) throw new HttpError(409, `the agent withdrew ${thread}`);

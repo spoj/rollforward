@@ -33,18 +33,29 @@ async function fake(t: TestContext, replies: [number, string | object][] = []) {
   return { calls, run };
 }
 
-test('comment writes plain messages, questions and proposals to the same endpoint', async t => {
-  const { calls, run } = await fake(t, [[200, 'said c7'], [200, 'asked c8, under c7'], [200, 'proposed c9']]);
+test('comment writes plain messages, questions and proposals (with optional --scope JSON) to the same endpoint', async t => {
+  const { calls, run } = await fake(t, [[200, 'said c7'], [200, 'asked c8, under c7'], [200, 'proposed c9'], [200, 'proposed c10']]);
   assert.deepEqual(await run(['comment', '.', 'Updated', 'the inputs.']), { code: 0, stdout: 'said c7\n', stderr: '' });
   const question = 'Use the revised inputs?\n[Inputs](working/inputs.csv)\n';
   assert.deepEqual(await run(['comment', '.', '--in', 'c7', '--ask', '--to', 'owner@example.test', '-'], question),
     { code: 0, stdout: 'asked c8, under c7\n', stderr: '' });
   assert.deepEqual(await run(['comment', '.', '--on', 'pack@Sheet1!C22@name', '--propose', '--for', 'n3', 'Use this value.']),
     { code: 0, stdout: 'proposed c9\n', stderr: '' });
+  const scopeJson = JSON.stringify({ action: 'graph:sendMail', domains: ['partner.test'], maxUses: 1 });
+  assert.deepEqual(await run(['comment', '.', '--propose', '--scope', scopeJson, 'Send Q4 pack.']),
+    { code: 0, stdout: 'proposed c10\n', stderr: '' });
+  // --scope requires --propose and valid JSON
+  const noProp = await run(['comment', '.', '--scope', scopeJson, 'Not a proposal.']);
+  assert.equal(noProp.code, 1);
+  assert.match(noProp.stderr, /--scope JSON requires --propose/);
+  const badJson = await run(['comment', '.', '--propose', '--scope', '{bad', 'Bad JSON.']);
+  assert.equal(badJson.code, 1);
+  assert.match(badJson.stderr, /--scope must be valid JSON/);
   assert.deepEqual(calls, [
     ['POST', '/api/messages', { instance, text: 'Updated the inputs.' }],
     ['POST', '/api/messages', { instance, text: question, thread: 'c7', ask: 'question', to: 'owner@example.test' }],
     ['POST', '/api/messages', { instance, text: 'Use this value.', item: 'pack', ref: 'Sheet1!C22@name', ask: 'proposal', for: 'n3' }],
+    ['POST', '/api/messages', { instance, text: 'Send Q4 pack.', ask: 'proposal', execpolicy: { action: 'graph:sendMail', domains: ['partner.test'], maxUses: 1 } }],
   ]);
 });
 

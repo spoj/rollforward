@@ -101,6 +101,11 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
             { seq: 1, at: '2026-11-27T09:59:00Z', by: me, op: 'create' },
             { seq: 2, at: '2026-11-27T10:00:04Z', by: 'server', op: 'shot', run: 1, site: 'erp', file: 'browser/run 1 erp s1.jpg', sessionId, shotSeq: 1, trigger: 'write' },
             { seq: 3, at: '2026-11-27T10:00:05Z', by: 'server', op: 'browser', run: 1, site: 'erp', login: me, sessionId, requests: 2, writes: 1, blocked: 0, cdp: 1, shots: 1, file: 'browser/run 1 erp.jsonl', cdpFile: 'browser/run 1 erp.cdp.jsonl' },
+            {
+              seq: 4, at: '2026-11-27T10:00:06Z', by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null,
+              ask: 'proposal', run: 1, text: 'Approve sending Q4 pack?',
+              execpolicy: { action: 'graph:sendMail', domains: ['partner.test'], workspace: 'w1', maxUses: 1 },
+            },
           ],
           standing: {},
           starts: true,
@@ -198,6 +203,17 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   // Text filter narrows results live
   await page.locator('#ba-q').fill('P0411_W0411A');
   assert.equal(await page.locator('#ba-list .ba-card').count(), 1);
+
+  // Close modal, switch back to Conversation tab, and verify verbatim HTML-escaped execpolicy scope renders on the proposal card!
+  await page.keyboard.press('Escape');
+  await page.locator('#log [data-act="audit"]').click();
+  const scopeCard = page.locator('.ep-scope');
+  await scopeCard.waitFor({ state: 'visible' });
+  const scopeText = await scopeCard.textContent() ?? '';
+  assert.match(scopeText, /Approval scope/);
+  assert.match(scopeText, /graph:sendMail/);
+  assert.match(scopeText, /partner\.test/);
+  assert.match(scopeText, /Max uses:\s*1/);
 
   await page.close();
 });

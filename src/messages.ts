@@ -1,4 +1,5 @@
 import type { Entry, Instance } from './store.ts';
+import type { ApprovalScope } from './execpolicy.ts';
 import { appendMessage, noteEntries } from './message-store.ts';
 
 export const isPerson = (e: Entry) => e.by !== 'server' && e.by !== 'agent';
@@ -180,7 +181,7 @@ export function addNote(dir: string, by: string, op: 'note' | 'taken' | 'aside',
 
 type FromRun = { inst: Instance; n: number; runner: string; thread?: string; authority?: { epoch: number } };
 type Post = { by: string; text: string } & (
-  | { op: 'comment'; inst: Instance; under?: Entry; item?: string | null; ref?: string | null; files: string[]; ask?: 'question' | 'proposal'; to?: string; quiet: boolean; run?: FromRun; word?: 'runner' | 'answer' | 'note'; request?: boolean; noteFor?: NoteId }
+  | { op: 'comment'; inst: Instance; under?: Entry; item?: string | null; ref?: string | null; files: string[]; ask?: 'question' | 'proposal'; to?: string; quiet: boolean; run?: FromRun; word?: 'runner' | 'answer' | 'note'; request?: boolean; noteFor?: NoteId; execpolicy?: ApprovalScope }
   | { op: 'withdraw'; inst: Instance; on: Entry; see?: Entry; run: FromRun }
   | { op: 'note'; book: string; files: string[]; run?: FromRun; request?: boolean }
   | { op: 'taken' | 'aside'; book: string; inst?: Instance; on: Entry; thread?: string | null; run?: FromRun }
@@ -197,13 +198,13 @@ export function post(p: Post): Entry {
     see: { inst: run.inst.id, label: run.inst.label, ...(thread !== undefined && { thread }) },
   };
   if (p.op === 'comment') {
-    const { inst, under, item, ref, files, ask, to, quiet } = p;
+    const { inst, under, item, ref, files, ask, to, quiet, execpolicy } = p;
     const said = inst.append(by, 'comment', {
       ...(under ? { thread: under.thread, parent: under.seq } : { thread: `c${inst.log.length + 1}`, item: item ?? null, ref: ref ?? null }),
       text, ...(files.length && { files }), ...(quiet && { quiet: true }),
       ...((away || p.word === 'note') && { informs: true }), ...(p.request && { request: true }),
       ...(p.word === 'runner' && under && { settlesNote: under.seq }),
-      ...(run && { run: run.n, ...(ask && { ask, ...(to && { to }), ...(run.authority && { authorityOwner: run.runner, authorityEpoch: run.authority.epoch }) }) }),
+      ...(run && { run: run.n, ...(ask && { ask, ...(to && { to }), ...(ask === 'proposal' && execpolicy && { execpolicy }), ...(run.authority && { authorityOwner: run.runner, authorityEpoch: run.authority.epoch }) }) }),
       ...(p.noteFor && { noteFor: p.noteFor, noteEpoch: run?.authority?.epoch }),
       ...(away && { ...from, note: true }),
     });

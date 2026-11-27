@@ -23,6 +23,8 @@ let activity404 = false;
 let malformedSeal = false;
 let malformedDeleteAck = false;
 let includeHttpEndError = false;
+let shotsDelayMs = 0;
+let shotsFailStatus = 0;
 let remoteSessions = new Map<string, {
   sealed: boolean;
   state: unknown;
@@ -156,6 +158,10 @@ const mockService = createServer(async (req, res) => {
   }
 
   if (rest === '/shots' && req.method === 'GET') {
+    if (shotsDelayMs > 0) await new Promise(r => setTimeout(r, shotsDelayMs));
+    if (shotsFailStatus > 0) {
+      return void res.writeHead(shotsFailStatus, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'shots failed' }));
+    }
     const after = Number(u.searchParams.get('after') ?? '0');
     const items = sess.shots.filter(s => s.seq > after);
     if (u.searchParams.get('v') === '2') {
@@ -529,4 +535,41 @@ test('graceful fallback to legacy v0.2.2 when /capabilities returns 404, and pas
   assert.equal(upgradeHeadersSeen['x-rf-custom'], undefined);
   assert.equal(upgradeHeadersSeen.cookie, undefined);
   assert.ok(String(upgradeHeadersSeen.authorization).startsWith('Bearer '));
+});
+
+test('legacy v0.2.2 drain coalescing maintains monotonic shotSeq with zero duplicate shots across 3 overlapping shoot() calls and propagates errors', async () => {
+  resetCapabilitiesCache();
+  capabilities404 = true;
+
+  const inst = makeInst('legacy-coalesce');
+  const b = new Browsers(inst, 1);
+  const id = await b.browser('erp');
+  const sess = remoteSessions.get(id)!;
+  sess.shots = [
+    { seq: 1, at: '2026-11-27T10:00:01Z', url: 'https://erp.example.com/1', trigger: 'nav', jpeg: Buffer.from('jpg-1').toString('base64') },
+    { seq: 2, at: '2026-11-27T10:00:02Z', url: 'https://erp.example.com/2', trigger: 'click', jpeg: Buffer.from('jpg-2').toString('base64') },
+    { seq: 3, at: '2026-11-27T10:00:03Z', url: 'https://erp.example.com/3', trigger: 'write', jpeg: Buffer.from('jpg-3').toString('base64') },
+  ];
+
+  // Trigger 3 overlapping shoot() calls against a slow /shots endpoint -> zero duplicates, monotonic cursor!
+  shotsDelayMs = 60;
+  try {
+    await Promise.all([b.shoot(), b.shoot(), b.shoot()]);
+    assert.equal(inst.log.filter(e => e.op === 'shot').length, 3, 'exactly 3 unique shot entries across 3 overlapping triggers');
+    // Subsequent shoot() after coalesced wave must add ZERO duplicates!
+    await b.shoot();
+    assert.equal(inst.log.filter(e => e.op === 'shot').length, 3, 'subsequent shoot() adds zero duplicate shots');
+
+    // Error propagation to coalesced waiters
+    shotsFailStatus = 500;
+    const p1 = b.shoot();
+    const p2 = b.shoot();
+    const p3 = b.shoot();
+    const settled = await Promise.allSettled([p1, p2, p3]);
+    assert.equal(settled.every(r => r.status === 'rejected'), true, 'every coalesced caller receives drain errors');
+  } finally {
+    shotsDelayMs = 0;
+    shotsFailStatus = 0;
+    await b.close('erp');
+  }
 });

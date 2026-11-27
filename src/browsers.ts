@@ -989,6 +989,8 @@ function reconcilePendingShots(openId: string, b: Opened, inst: Instance, shotSt
 
 // Coalesced per-session drain lock: at most 1 active + 1 pending non-final re-run so rapid tool calls never build
 // an unbounded serial queue of full spool re-parses, while final targetCursors drains always run to completion.
+// Returns the executed drain's monotonic cursors to every caller and propagates drain errors cleanly.
+type DrainCursors = { logCursor: number; cdpCursor: number; shotCursor: number };
 type DrainOpts = {
   deadlineMs?: number;
   targetCursors?: { log: number; cdp: number; shot: number };
@@ -996,37 +998,38 @@ type DrainOpts = {
   onLegacyShot?: () => number;
 };
 const drainActive = new Map<string, Promise<void>>();
-const drainPending = new Map<string, Promise<void>>();
+const drainPending = new Map<string, { raw: Promise<DrainCursors>; settled: Promise<void> }>();
+const drainLiveCursors = new Map<string, DrainCursors>();
 
 export function drainSession(
   id: string,
   b: Opened,
   inst: Instance,
   opts: DrainOpts = {},
-): Promise<void> {
+): Promise<DrainCursors> {
   const running = drainActive.get(id);
   if (!running) {
     const p = doDrainSession(id, b, inst, opts);
-    const settled = p.catch(() => {}).finally(() => {
+    const settled = p.then(() => {}, () => {}).finally(() => {
       if (drainActive.get(id) === settled) drainActive.delete(id);
     });
     drainActive.set(id, settled);
     return p;
   }
-  // Non-final drains coalesce into a single pending follow-up run!
+  // Non-final drains coalesce into a single pending follow-up run; all waiters get the executed cursors & errors!
   if (!opts.targetCursors) {
     const existingPending = drainPending.get(id);
-    if (existingPending) return existingPending;
-    const next = running.then(() => {
+    if (existingPending) return existingPending.raw;
+    const raw = running.then(() => {
       drainPending.delete(id);
       return drainSession(id, b, inst, opts);
     });
-    const tracked = next.catch(() => {});
-    drainPending.set(id, tracked);
-    return next;
+    const settled = raw.then(() => {}, () => {});
+    drainPending.set(id, { raw, settled });
+    return raw;
   }
   // Final targetCursors drain waits for any active + pending drain, then runs strictly to sealed cursors.
-  const waitFor = drainPending.get(id) ?? running;
+  const waitFor = drainPending.get(id)?.settled ?? running;
   return waitFor.then(() => drainSession(id, b, inst, opts));
 }
 
@@ -1040,8 +1043,25 @@ async function doDrainSession(
     abortIf?: () => boolean;
     onLegacyShot?: () => number;
   },
-): Promise<void> {
-  if (inst.hole || opts.abortIf?.()) return;
+): Promise<DrainCursors> {
+  const known = drainLiveCursors.get(id);
+  b.logCursor = Math.max(b.logCursor ?? 0, known?.logCursor ?? 0);
+  b.cdpCursor = Math.max(b.cdpCursor ?? 0, known?.cdpCursor ?? 0);
+  b.shotCursor = Math.max(b.shotCursor ?? 0, known?.shotCursor ?? 0);
+  const recordCursors = (): DrainCursors => {
+    const prev = drainLiveCursors.get(id);
+    const cur: DrainCursors = {
+      logCursor: Math.max(b.logCursor ?? 0, prev?.logCursor ?? 0),
+      cdpCursor: Math.max(b.cdpCursor ?? 0, prev?.cdpCursor ?? 0),
+      shotCursor: Math.max(b.shotCursor ?? 0, prev?.shotCursor ?? 0),
+    };
+    b.logCursor = cur.logCursor;
+    b.cdpCursor = cur.cdpCursor;
+    b.shotCursor = cur.shotCursor;
+    drainLiveCursors.set(id, cur);
+    return cur;
+  };
+  if (inst.hole || opts.abortIf?.()) return recordCursors();
   const openId = b.openId ?? id;
   const deadline = opts.deadlineMs ? Date.now() + opts.deadlineMs : Date.now() + 10_000;
   const checkDeadline = () => {
@@ -1051,39 +1071,43 @@ async function doDrainSession(
   if (!b.auditV2) {
     // Legacy v0.2.2 shot-only drain (accepts both legacy plain array and v2 envelope!)
     let cursor = b.shotCursor ?? 0;
-    for (let page = 0; page < 5; page++) {
-      if (inst.hole || opts.abortIf?.()) return;
-      const resp = await browserJson('GET', `/sessions/${id}/shots?after=${cursor}`, undefined, 5_000);
-      const isEnv = resp && !Array.isArray(resp) && Array.isArray(resp.items);
-      const items: any[] = Array.isArray(resp) ? resp : isEnv ? resp.items : [];
-      if (!items.length) {
-        if (isEnv && typeof resp.nextSeq === 'number' && resp.nextSeq > cursor) {
-          cursor = resp.nextSeq;
+    try {
+      for (let page = 0; page < 5; page++) {
+        if (inst.hole || opts.abortIf?.()) return recordCursors();
+        const resp = await browserJson('GET', `/sessions/${id}/shots?after=${cursor}`, undefined, 5_000);
+        const isEnv = resp && !Array.isArray(resp) && Array.isArray(resp.items);
+        const items: any[] = Array.isArray(resp) ? resp : isEnv ? resp.items : [];
+        if (!items.length) {
+          if (isEnv && typeof resp.nextSeq === 'number' && resp.nextSeq > cursor) {
+            cursor = resp.nextSeq;
+            b.shotCursor = cursor;
+          }
+          return recordCursors();
+        }
+        for (const item of items) {
+          if (inst.hole || opts.abortIf?.()) return recordCursors();
+          if (typeof item?.seq !== 'number' || typeof item?.jpeg !== 'string' || item.seq <= cursor) continue;
+          const shotNum = opts.onLegacyShot ? opts.onLegacyShot() : item.seq;
+          const file = `browser/run ${b.run} ${b.site} ${shotNum}.jpg`;
+          writeBrowserArtifact(inst.dir, file, Buffer.from(item.jpeg, 'base64'));
+          inst.append('server', 'shot', { run: b.run, site: b.site, file });
+          cursor = item.seq;
           b.shotCursor = cursor;
         }
-        return;
-      }
-      for (const item of items) {
-        if (inst.hole || opts.abortIf?.()) return;
-        if (typeof item?.seq !== 'number' || typeof item?.jpeg !== 'string' || item.seq <= cursor) continue;
-        const shotNum = opts.onLegacyShot ? opts.onLegacyShot() : item.seq;
-        const file = `browser/run ${b.run} ${b.site} ${shotNum}.jpg`;
-        writeBrowserArtifact(inst.dir, file, Buffer.from(item.jpeg, 'base64'));
-        inst.append('server', 'shot', { run: b.run, site: b.site, file });
-        cursor = item.seq;
-        b.shotCursor = cursor;
-      }
-      if (isEnv) {
-        if (typeof resp.nextSeq === 'number' && resp.nextSeq > cursor) {
-          cursor = resp.nextSeq;
-          b.shotCursor = cursor;
+        if (isEnv) {
+          if (typeof resp.nextSeq === 'number' && resp.nextSeq > cursor) {
+            cursor = resp.nextSeq;
+            b.shotCursor = cursor;
+          }
+          if (!resp.hasMore) return recordCursors();
+        } else if (items.length < 20) {
+          return recordCursors();
         }
-        if (!resp.hasMore) return;
-      } else if (items.length < 20) {
-        return;
       }
+      return recordCursors();
+    } finally {
+      recordCursors();
     }
-    return;
   }
 
   // v2 durable host-spool drain (/log, /cdp-log, /shots)
@@ -1115,7 +1139,7 @@ async function doDrainSession(
 
   // 1. Drain HTTP log pages
   for (;;) {
-    if (inst.hole || opts.abortIf?.()) return;
+    if (inst.hole || opts.abortIf?.()) return recordCursors();
     checkDeadline();
     const page = await browserJson('GET', `/sessions/${id}/log?after=${logCursor}&limit=500`, undefined, 5_000);
     if (!page || Array.isArray(page) || !Array.isArray(page.entries)) {
@@ -1139,7 +1163,7 @@ async function doDrainSession(
   // 2. Drain CDP log pages
   if (b.cdpFile) {
     for (;;) {
-      if (inst.hole || opts.abortIf?.()) return;
+      if (inst.hole || opts.abortIf?.()) return recordCursors();
       checkDeadline();
       let page: any;
       try {
@@ -1174,7 +1198,7 @@ async function doDrainSession(
 
   // 3. Drain Shots (supports both v2 envelope & legacy plain array; zero-deletion retention!)
   for (;;) {
-    if (inst.hole || opts.abortIf?.()) return;
+    if (inst.hole || opts.abortIf?.()) return recordCursors();
     checkDeadline();
     let resp: any;
     try {
@@ -1295,12 +1319,17 @@ async function doDrainSession(
     const missingCdp = Boolean(b.cdpFile) && cdpCursor < opts.targetCursors.cdp;
     const missingShot = shotCursor < opts.targetCursors.shot;
     if (missingLog || missingCdp || missingShot) {
+      recordCursors();
       throw new HttpError(
         502,
         `incomplete browser audit drain for ${id}: log ${logCursor}/${opts.targetCursors.log}, cdp ${cdpCursor}/${opts.targetCursors.cdp}, shot ${shotCursor}/${opts.targetCursors.shot}`,
       );
     }
   }
+  b.logCursor = logCursor;
+  b.cdpCursor = cdpCursor;
+  b.shotCursor = shotCursor;
+  return recordCursors();
 }
 
 function writebackLoginState(inst: Instance, b: Opened, state: unknown) {
@@ -2413,10 +2442,10 @@ export class Browsers {
     return drainSession(b.id, rec, this.inst, {
       abortIf: () => this.ended,
       onLegacyShot: () => ++this.shots,
-    }).then(() => {
-      b.shotSeq = rec.shotCursor;
-      b.logCursor = rec.logCursor;
-      b.cdpCursor = rec.cdpCursor;
+    }).then(cursors => {
+      b.shotSeq = Math.max(b.shotSeq ?? 0, cursors.shotCursor);
+      b.logCursor = Math.max(b.logCursor ?? 0, cursors.logCursor);
+      b.cdpCursor = Math.max(b.cdpCursor ?? 0, cursors.cdpCursor);
     });
   }
 
@@ -2473,10 +2502,12 @@ export class Browsers {
             shotCursor: b.shotSeq ?? 0,
           };
           await finalizeV2Session(id, cur, this.inst, source, true);
+          drainLiveCursors.delete(id);
         } else {
           const closed = await close(id), all = journal();
           delete all[id];
           setJournal(all);
+          drainLiveCursors.delete(id);
           keep(this.inst, { inst: this.inst.id, run: this.run, site, email, since, writeback, file, generation, ...(siteId && { siteId }) }, closed, source);
         }
       } finally {

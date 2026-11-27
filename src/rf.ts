@@ -11,7 +11,7 @@ const HELP: Record<string, string> = {
   uploaded): run rf show and merge. It fails, with the reasons, unless every item has a unique id, a name and a kind (input,
   step or output); from names items, never in a circle; file is null or an existing file under upload/ or working/; and status
   is left out or as it is.`,
-  comment: `rf comment TARGET [--in cN | --on ITEM[@REF]] [--ask | --propose] [--to EMAIL] [--request] [--for cN|nN] TEXT|-
+  comment: `rf comment TARGET [--in cN | --on ITEM[@REF]] [--ask | --propose [--scope JSON]] [--to EMAIL] [--request] [--for cN|nN] TEXT|-
 rf comment SERIES [--json]
 rf comment --mine [--json]
   TARGET is . for your own instance, or a relative path such as ../<label> for another instance or .. for your series.
@@ -19,7 +19,8 @@ rf comment --mine [--json]
   In TEXT, [name](PATH) links a file and ![name](PATH) shows an image. Link a comment with cN, [name](#cN), or
   [name](../<label>#cN) for another instance. - reads TEXT from stdin.
   In your own instance, --ask asks for information and --propose asks for approval to act. Either waits on --to EMAIL,
-  else the series owner.
+  else the series owner. --scope JSON attaches a structured execpolicy approval scope (action, exact target/domains/sql,
+  maxUses) to a proposal; the server validates it and shows the exact terms to the human signer.
   A collaborator's approval records content approval, not execution authority. Before acting on an approval, use git diff
   against the signoff commit to check that what you use is unchanged. Comments are not proposal decisions.
   --request marks a request to propose, not authority to act. --for links a proposal to the message it addresses.
@@ -89,6 +90,7 @@ async function comment() {
   try {
     parsed = parseArgs({ args, allowPositionals: true, options: {
       in: { type: 'string' }, on: { type: 'string' }, ask: { type: 'boolean' }, propose: { type: 'boolean' },
+      scope: { type: 'string' },
       to: { type: 'string' }, request: { type: 'boolean' }, for: { type: 'string' }, mine: { type: 'boolean' }, json: { type: 'boolean' },
     } });
   } catch (e) { return { ok: false, text: (e as Error).message }; }
@@ -104,13 +106,18 @@ async function comment() {
   } else {
     if (!target?.trim() || /^(?:[-/]|[a-z][a-z\d+.-]*:)|[\\\x00-\x1f\x7f\x85\u2028\u2029]/i.test(target))
       return { ok: false, text: 'rf comment needs a relative target path (such as . or ..), or --mine' };
-    const { in: thread, on, ask, propose, to, request, for: source } = flags;
+    const { in: thread, on, ask, propose, scope, to, request, for: source } = flags;
     const at = on?.indexOf('@') ?? -1, item = at < 0 ? on : on!.slice(0, at), ref = at < 0 ? undefined : on!.slice(at + 1);
     if (thread !== undefined && (on !== undefined || !/^c[1-9]\d*$/.test(thread))) return { ok: false, text: 'Use --in cN or --on ITEM[@REF], not both' };
     if (on !== undefined && (!item?.trim() || (ref !== undefined && !ref.trim()))) return { ok: false, text: 'Use --on ITEM[@REF]' };
     if ((ask && propose) || (to !== undefined && (!(ask || propose) || !/^[^\s@]+@[^\s@]+$/.test(to))))
       return { ok: false, text: 'Use --ask or --propose, with optional --to EMAIL' };
     if (source !== undefined && (!propose || !/^[cn][1-9]\d*$/.test(source))) return { ok: false, text: '--for cN|nN requires --propose' };
+    let execpolicy: unknown;
+    if (scope !== undefined) {
+      if (!propose) return { ok: false, text: '--scope JSON requires --propose' };
+      try { execpolicy = JSON.parse(scope); } catch { return { ok: false, text: '--scope must be valid JSON' }; }
+    }
     const wordsText = words.join(' '), text = wordsText === '-' ? readFileSync(0, 'utf8') : wordsText;
     if (writing && !text.trim()) return usage('comment');
 
@@ -126,6 +133,7 @@ async function comment() {
     if (writing) return send('POST', 'api/messages', JSON.stringify({
       ...(kind === 'series' ? { series: id } : { instance: id }), text, thread, item, ref,
       ask: ask ? 'question' : propose ? 'proposal' : undefined, to, request, for: source,
+      ...(execpolicy !== undefined && { execpolicy }),
     }));
     if (kind !== 'series') return { ok: false, text: `${target} is an instance: name its series to list notes` };
     listed = await send('GET', `api/series/${id}/notes`);
