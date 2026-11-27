@@ -492,6 +492,14 @@ export function validateAndNormalizeApprovalScope(
   }
   const decodedTargetLower = decodedTargetPath.decodedPath.toLowerCase()
 
+  let explicitHost: string | undefined
+  if (obj.host !== undefined) {
+    if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+      throw new HttpError(400, `${action} host must be a valid hostname`)
+    }
+    explicitHost = obj.host.trim().toLowerCase()
+  }
+
   let surface: 'api' | 'browser' = 'api'
   let connType: string | undefined
   let host = ''
@@ -502,6 +510,9 @@ export function validateAndNormalizeApprovalScope(
       throw new HttpError(400, 'graph:excel_write target must be an exact /workbook/... path')
     }
     if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
+    if (explicitHost !== undefined && explicitHost !== 'graph.microsoft.com') {
+      throw new HttpError(400, `${action} host must be graph.microsoft.com`)
+    }
     surface = 'api'
     connType = 'graph'
     host = 'graph.microsoft.com'
@@ -509,10 +520,10 @@ export function validateAndNormalizeApprovalScope(
     if (!decodedTargetLower.includes('/_api/') && !decodedTargetLower.includes('/_vti_bin/')) {
       throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
     }
-    if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+    if (!explicitHost) {
       throw new HttpError(400, 'sharepoint_destructive_write requires a valid host')
     }
-    host = obj.host.trim().toLowerCase()
+    host = explicitHost
     surface = site ? 'browser' : 'api'
     connType = 'sharepoint'
     const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedTargetLower)
@@ -528,18 +539,25 @@ export function validateAndNormalizeApprovalScope(
     }
   } else if (action === 'http_delete') {
     if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
+    const isGraphApiPath = decodedTargetLower.startsWith('/v1.0/') || decodedTargetLower.startsWith('/beta/')
+    if (!isGraphApiPath && (decodedTargetLower.includes('/_api/') || decodedTargetLower.includes('/_vti_bin/'))) {
+      throw new HttpError(400, 'SharePoint /_api/ and /_vti_bin/ deletes must use action sharepoint_destructive_write')
+    }
     if (site) {
-      if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+      if (!explicitHost) {
         throw new HttpError(400, 'browser http_delete scope requires host')
       }
       surface = 'browser'
-      host = obj.host.trim().toLowerCase()
+      host = explicitHost
     } else if (connection) {
       surface = 'api'
       const found = ctx.connections?.find(c => c.name === connection)
       connType = found?.type
-      if (typeof obj.host === 'string' && HOST_RE.test(obj.host.trim())) {
-        host = obj.host.trim().toLowerCase()
+      if (explicitHost) {
+        if (found?.type === 'graph' && explicitHost !== 'graph.microsoft.com') {
+          throw new HttpError(400, 'http_delete host conflicts with graph connection')
+        }
+        host = explicitHost
       } else if (found?.type === 'service') {
         host = `${connection}.rf.internal`
       } else if (found?.type === 'graph') {

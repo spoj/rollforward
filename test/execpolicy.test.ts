@@ -1334,6 +1334,106 @@ test('R6 Astra convergence: DeleteByIds sample omission & numeric rawJSON parity
   assert.equal(stage2Called, false, 'Stage-2 MUST NOT be called on truncated SQL deny');
 });
 
+test('R7 Astra convergence: DeleteByIds bodyShape/metadataType suppression, SharePoint ahead of Graph fallback, non-empty E1 batches & minimum entry shape, strict host rejection on Graph/http_delete, and terminal deny on blank/ambiguous SQL', async () => {
+  const hmacKey = Buffer.alloc(32, 0xb7);
+
+  // 1. Astra P1-1: Malformed DeleteByIds with secret key name & valid DeleteByIds with __metadata.type disclose ZERO body-derived keys/metadata in BOTH semantic and semantic+samples!
+  for (const projection of ['semantic', 'semantic+samples'] as const) {
+    const secretKeyDesc = buildApiRequestDescriptor({
+      connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+      url: new URL('https://sp-svc.rf.internal/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ SecretKey99: [1] })),
+      bodyComplete: true, projection,
+    }).descriptor;
+    assert.equal(secretKeyDesc.safe.bodyShape, undefined, `DeleteByIds must suppress bodyShape (${projection})`);
+    assert.equal(secretKeyDesc.safe.reqBody, undefined, `DeleteByIds must suppress reqBody (${projection})`);
+    assert.equal(JSON.stringify(secretKeyDesc.safe).includes('SecretKey99'), false, `SecretKey99 must not appear anywhere in safe projection (${projection})`);
+
+    const secretMetaDesc = buildApiRequestDescriptor({
+      connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 2, method: 'POST',
+      url: new URL('https://sp-svc.rf.internal/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ ids: ['id-1'], __metadata: { type: 'SecretMeta99' } })),
+      bodyComplete: true, projection,
+    }).descriptor;
+    assert.equal(secretMetaDesc.safe.bodyShape, undefined);
+    assert.equal(secretMetaDesc.safe.actions[0].details?.metadataType, undefined);
+    assert.equal(JSON.stringify(secretMetaDesc.safe).includes('SecretMeta99'), false, `SecretMeta99 must not appear anywhere in safe projection (${projection})`);
+  }
+
+  // 2. Astra P1-2: SharePoint REST routes resolve to sharepoint:delete (with sample + bodyShape suppression) even when connectionType === 'graph'!
+  const graphTaggedSp = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['graph-sp-secret-id'] })),
+    bodyComplete: true, projection: 'semantic+samples',
+  }).descriptor;
+  assert.equal(graphTaggedSp.safe.actions[0].family, 'sharepoint');
+  assert.equal(graphTaggedSp.safe.actions[0].op, 'sharepoint:delete');
+  assert.equal(graphTaggedSp.safe.bodyShape, undefined);
+  assert.equal(graphTaggedSp.safe.reqBody, undefined);
+  assert.equal(JSON.stringify(graphTaggedSp.safe).includes('graph-sp-secret-id'), false);
+  assert.equal(evaluateStage1(graphTaggedSp.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'sharepoint_destructive_write');
+
+  // 3. Astra P1-3: Empty E1 formRequests: [] and empty/unrecognized entries inside formRequests[] set malformedE1Action and escalate!
+  for (const [label, ep, payload] of [
+    ['empty formRequests array', '/jderest/v2/batchformservice', { formRequests: [] }],
+    ['empty object entry alongside valid write', '/jderest/v2/batchformservice', { formRequests: [{ formName: 'P01012_W01012A', formServiceAction: 'W' }, {}] }],
+    ['unrecognized entry alongside valid write', '/jderest/v2/batchformservice', { formRequests: [{ formName: 'P01012_W01012A', formServiceAction: 'W' }, { foo: 'bar' }] }],
+    ['empty object on formservice write', '/jderest/v2/formservice', {}],
+  ] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'e1-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+      url: new URL(`https://e1-svc.rf.internal${ep}`),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify(payload)),
+      bodyComplete: true,
+    }).descriptor;
+    assert.equal(desc.safe.actions[0].details?.malformedE1Action, true, `must flag malformedE1Action: ${label}`);
+    assert.equal(evaluateStage1(desc.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed', `must escalate: ${label}`);
+  }
+
+  // 4. Astra P1-4 + Astra P2: Reject conflicting host on graph:file_delete/graph:excel_write, malformed host on http_delete, and SharePoint paths on http_delete (400)!
+  const conns = [{ name: 'svc1', type: 'service' }, { name: 'graph', type: 'graph' }];
+  for (const [label, bad] of [
+    ['conflicting host on graph:file_delete', { action: 'graph:file_delete', target: '/v1.0/drives/d1/items/i1', host: 'evil.example.com' }],
+    ['conflicting host on graph:excel_write', { action: 'graph:excel_write', target: '/v1.0/drives/d1/items/i1/workbook/worksheets', host: 'evil.example.com' }],
+    ['malformed host on http_delete with known service', { action: 'http_delete', connection: 'svc1', target: '/api/items/1', host: 'bad host!' }],
+    ['conflicting host on http_delete with graph connection', { action: 'http_delete', connection: 'graph', target: '/v1.0/drives/d1/items/i1', host: 'evil.example.com' }],
+    ['SharePoint /_api/ path submitted under http_delete', { action: 'http_delete', connection: 'svc1', target: '/sites/fin/_api/web/lists/items(1)' }],
+  ] as const) {
+    assert.throws(
+      () => validateAndNormalizeApprovalScope(bad, { workspace: 'w', hmacKey, connections: conns }),
+      (err: any) => err?.status === 400,
+      `must return 400: ${label}`,
+    );
+  }
+
+  // 5. Astra P1-5: Blank whitespace SQL & lexer-ambiguous SQL return terminal Stage-1 deny (databricks_sql_uninspectable) — Stage-2 NEVER invoked!
+  let stage2Called = false;
+  const permissiveEngine = new ExecPolicyEngine(() => { stage2Called = true; return { action: 'allow' }; });
+  for (const [label, statement] of [
+    ['whitespace-only SQL', '   \t\n  '],
+    ['backslash-newline ambiguous comment SQL', '-- a\\\nSELECT 1'],
+    ['CR-in-comment ambiguous SQL', '-- note\rSELECT 1'],
+    ['unclosed block comment SQL', '/* unclosed comment'],
+  ] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 1, method: 'POST',
+      url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement })),
+      bodyComplete: true,
+    }).descriptor;
+    const dec = await permissiveEngine.evaluate(desc, { mode: 'enforce' });
+    assert.equal(dec.action, 'deny', `must deny unconditionally: ${label}`);
+    assert.equal(dec.ruleId, 'databricks_sql_uninspectable', `expected databricks_sql_uninspectable: ${label}`);
+    assert.equal(stage2Called, false, `permissive Stage-2 MUST NOT be invoked: ${label}`);
+  }
+});
+
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
   const unguarded = buildApiRequestDescriptor({
     connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',
