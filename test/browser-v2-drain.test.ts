@@ -447,6 +447,16 @@ test('fail-closed spool & protocol checks: malformed /capabilities, corrupt shot
   assert.equal(sgAudit.manifest.gaps.remoteGone, true);
   assert.equal(sgAudit.manifest.gaps.ackGap, 'remote_gone_before_drain');
   assert.equal(sgAudit.http.length, 2, 'recovers available HTTP spool even when CDP/shot streams were never drained before remote vanished');
+
+  // 7. Deleted (`hole`) instance before first drain: closes cleanly without wedging journal or leaking remote session!
+  const instHole = makeInst('v2hole');
+  const bHole = new Browsers(instHole, 1);
+  const idHole = await bHole.browser('erp');
+  Object.defineProperty(instHole, 'hole', { value: true, configurable: true });
+  await bHole.close('erp');
+  assert.equal(remoteSessions.has(idHole), false, 'remote session reclaimed on deleted instance');
+  const jHole = JSON.parse(readFileSync(join(rfDir(), 'browsers.json'), 'utf8'));
+  assert.equal(jHole[idHole], undefined, 'journal entry cleared on deleted instance');
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {

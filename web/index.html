@@ -566,7 +566,8 @@ const actor = (by, at, run) => {
 const labelOf = (id, then) => tree.flatMap(w => w.series.flatMap(s => s.instances.filter(i => i.id === id).map(i => s.single ? i.label : `${s.name} \u00b7 ${i.label}`)))[0] ?? then;
 // Another instance's agent, which left a note here or on the series, and whom it acted for.
 const agentOf = e => `Agent of <a href="#/${esc(e.see.inst)}">${esc(labelOf(e.see.inst, e.see.label))}</a>, for ${person(e.runner)}`;
-const shotsHtml = es => `<div class="shots">${es.filter(e => !e.sessionId).map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
+const isPublishedV2Session = sid => Boolean(sid && data?.log?.some(x => x.op === 'browser' && !x.action && x.sessionId === sid));
+const shotsHtml = es => `<div class="shots">${es.filter(e => !isPublishedV2Session(e.sessionId)).map(e => `<img src="${fileUrl(e.file)}" loading="lazy" alt="" title="${esc(e.site)} \u00b7 ${hhmm(e.at)}" data-act="preview" data-file="${esc(e.file)}">`).join('')}</div>`;
 
 function logText(e) {
   const w = e.see && e.op === 'comment' ? agentOf(e) : actor(e.by, e.at, e.run);
@@ -615,7 +616,7 @@ function logText(e) {
       : e.action === 'allowed' ? `${w} let ${e.login ? `${person(e.login)}'s ` : ''}${esc(e.site)} reach ${esc(e.allowed.join(', '))}${Object.entries(e.why ?? {}).map(([h, y]) => `<div class="d">${esc(h)}: ${esc(y)}</div>`).join('')}`
       : e.action === 'drive' ? `${w} took control of run ${e.run}'s browser on ${esc(e.site)}`
       : `${w} closed run ${e.run}'s browser${e.site ? ` on ${esc(e.site)}, in ${person(e.login)}'s login` : ''}<div class="d">${e.error ? esc(e.error) : `${e.requests} requests${e.writes ? `, ${e.writes} writes` : ''}${e.blocked ? `, ${e.blocked} blocked` : ''}${e.cdp ? `, ${e.cdp} CDP` : ''}${e.shots ? `, ${e.shots} shots` : ''}`}</div><div class="f">${e.sessionId ? `<button class="btn" data-act="browser-audit" data-session="${esc(e.sessionId)}">Audit timeline</button> ` : ''}${e.file ? `<a data-act="preview" data-file="${esc(e.file)}">${esc(e.file)}</a>` : ''}${e.cdpFile ? ` · <a data-act="preview" data-file="${esc(e.cdpFile)}">${esc(e.cdpFile)}</a>` : ''}</div>`,
-    shot: () => e.sessionId
+    shot: () => isPublishedV2Session(e.sessionId)
       ? `Run ${e.run}'s browser on ${esc(e.site)} <button class="btn" data-act="browser-audit" data-session="${esc(e.sessionId)}">Verified screenshot${e.shotSeq ? ` #${esc(String(e.shotSeq))}` : ''}</button>`
       : `Run ${e.run}'s browser on ${esc(e.site)}${shotsHtml([e])}`,
     browsers: () => `Run ${e.run}'s browsers did not all close<div class="d">${esc(e.error)}</div>`,

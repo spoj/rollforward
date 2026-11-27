@@ -987,27 +987,47 @@ function reconcilePendingShots(openId: string, b: Opened, inst: Instance, shotSt
   writeShotSpool(openId, shotState);
 }
 
-// Per-session serialized drain lock shared by active Browsers AND crash-recovery reap().
-const drainLocks = new Map<string, Promise<void>>();
+// Coalesced per-session drain lock: at most 1 active + 1 pending non-final re-run so rapid tool calls never build
+// an unbounded serial queue of full spool re-parses, while final targetCursors drains always run to completion.
+type DrainOpts = {
+  deadlineMs?: number;
+  targetCursors?: { log: number; cdp: number; shot: number };
+  abortIf?: () => boolean;
+  onLegacyShot?: () => number;
+};
+const drainActive = new Map<string, Promise<void>>();
+const drainPending = new Map<string, Promise<void>>();
 
 export function drainSession(
   id: string,
   b: Opened,
   inst: Instance,
-  opts: {
-    deadlineMs?: number;
-    targetCursors?: { log: number; cdp: number; shot: number };
-    abortIf?: () => boolean;
-    onLegacyShot?: () => number;
-  } = {},
+  opts: DrainOpts = {},
 ): Promise<void> {
-  const prev = drainLocks.get(id) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(() => doDrainSession(id, b, inst, opts));
-  const tail = next.catch(() => {}).finally(() => {
-    if (drainLocks.get(id) === tail) drainLocks.delete(id);
-  });
-  drainLocks.set(id, tail);
-  return next;
+  const running = drainActive.get(id);
+  if (!running) {
+    const p = doDrainSession(id, b, inst, opts);
+    const settled = p.catch(() => {}).finally(() => {
+      if (drainActive.get(id) === settled) drainActive.delete(id);
+    });
+    drainActive.set(id, settled);
+    return p;
+  }
+  // Non-final drains coalesce into a single pending follow-up run!
+  if (!opts.targetCursors) {
+    const existingPending = drainPending.get(id);
+    if (existingPending) return existingPending;
+    const next = running.then(() => {
+      drainPending.delete(id);
+      return drainSession(id, b, inst, opts);
+    });
+    const tracked = next.catch(() => {});
+    drainPending.set(id, tracked);
+    return next;
+  }
+  // Final targetCursors drain waits for any active + pending drain, then runs strictly to sealed cursors.
+  const waitFor = drainPending.get(id) ?? running;
+  return waitFor.then(() => drainSession(id, b, inst, opts));
 }
 
 async function doDrainSession(
@@ -1234,14 +1254,22 @@ async function doDrainSession(
           sha256: digest,
         });
         shotState.rollingBytes += buf.length;
+        const evictedFiles: string[] = [];
         while (shotState.rolling.length > MAX_ROLLING_SHOTS || (shotState.rolling.length > 1 && shotState.rollingBytes > MAX_ROLLING_BYTES)) {
           const evicted = shotState.rolling.shift()!;
           shotState.rollingBytes = Math.max(0, shotState.rollingBytes - evicted.bytes);
-          rmSync(join(rollDir, evicted.spoolName), { force: true });
+          evictedFiles.push(join(rollDir, evicted.spoolName));
         }
         seenShotSeqs.add(item.seq);
         if (item.seq > shotCursor) shotCursor = item.seq;
-        shotsChanged = true;
+        // Persist updated index BEFORE deleting evicted files so a crash never leaves shots.json pointing at deleted JPEGs!
+        if (evictedFiles.length) {
+          writeShotSpool(openId, shotState);
+          for (const ef of evictedFiles) rmSync(ef, { force: true });
+          shotsChanged = false;
+        } else {
+          shotsChanged = true;
+        }
       }
     }
 
@@ -1330,6 +1358,8 @@ function evaluateBrowserPolicySummary(inst: Instance, runNum: number, httpEntrie
   const mode = cfg.mode === 'enforce' ? 'observe' : cfg.mode;
   const runEntry = inst.log.findLast(e => e.op === 'run' && e.run === runNum);
   const runAuth = runEntry?.authority as { epoch?: number; owner?: string; workspace?: string } | undefined;
+  const instWorkspace = runAuth?.workspace ?? (inst.seriesId ? tree().series[inst.seriesId]?.workspace : undefined);
+  const browserApprovalUses = new Map<string, number>();
 
   const summary: BrowserPolicySummary = {
     mode,
@@ -1352,13 +1382,19 @@ function evaluateBrowserPolicySummary(inst: Instance, runNum: number, httpEntrie
     if (!policy) {
       // Bound approval lookup to instance log entries at or before this browser request's timestamp (prevents retroactive signoff).
       const uptoEntry = typeof entry.t === 'string' && entry.t ? inst.log.findLast(e => e.at <= entry.t!) : inst.log.at(-1);
+      const safe = entry as unknown as SafeRequestProjection;
       const approval = findCurrentEpochApproval(inst.log, {
         uptoSeq: uptoEntry?.seq ?? 0,
         epoch: runAuth?.epoch,
         owner: runAuth?.owner,
-        workspace: runAuth?.workspace,
+        workspace: instWorkspace,
+        safe,
+        priorBrowserUses: browserApprovalUses,
       });
-      const decision = evaluateStage1(entry as unknown as SafeRequestProjection, mode, approval);
+      const decision = evaluateStage1(safe, mode, approval);
+      if (decision.action === 'allow' && decision.approvalRef) {
+        browserApprovalUses.set(decision.approvalRef, (browserApprovalUses.get(decision.approvalRef) ?? 0) + 1);
+      }
       policy = compactDecision(decision);
     }
     anyEvaluated = true;
@@ -1388,6 +1424,21 @@ async function finalizeV2Session(
   remoteAvailable = true,
 ): Promise<void> {
   const openId = b.openId ?? id;
+  // Deleted (`hole`) instance: skip spool expectations & manifest publication, reclaim remote session, and clear journal/spool cleanly.
+  if (inst.hole) {
+    if (remoteAvailable) {
+      try {
+        await browserJson('DELETE', `/sessions/${id}${b.phase === 'sealed' || b.phase === 'published' ? '?sealed=1' : ''}`, undefined, CLOSE_MS);
+      } catch (e) {
+        if ((e as { upstreamStatus?: number }).upstreamStatus !== 404) throw e;
+      }
+    }
+    const all = journal();
+    delete all[id];
+    setJournal(all);
+    rmSync(spoolDirOf(openId), { recursive: true, force: true });
+    return;
+  }
   const persisted = journal()[id];
   if (!b.sealCursors && persisted?.sealCursors) b.sealCursors = persisted.sealCursors;
   let state: unknown = null;
@@ -1493,9 +1544,7 @@ async function finalizeV2Session(
     for (const r of shotState.rolling) {
       const p = join(dir, 'shots', r.spoolName);
       if (!existsSync(p)) {
-        if (remoteAvailable) {
-          throw new HttpError(500, `missing rolling shot ${r.spoolName} in host spool for ${openId}`);
-        }
+        // Record missing rolling file as an explicit droppedShots gap instead of wedging recovery forever.
         sealGaps = { ...sealGaps, droppedShots: sealGaps.droppedShots + 1, ackGap: sealGaps.ackGap ?? 'missing_rolling_shot' };
         continue;
       }
@@ -1560,15 +1609,18 @@ async function finalizeV2Session(
       shots: allShots,
     };
 
-    mkdirSync(manifestRoot(), { recursive: true, mode: 0o700 });
-    replaceFile(manifestPathOf(openId), JSON.stringify(manifest, null, 1));
+    const instanceClosed = inst.log.some(e => e.op === 'close' || e.op === 'abandon');
+    const keepAllowed = !inst.hole;
+    if (keepAllowed && !instanceClosed) {
+      mkdirSync(manifestRoot(), { recursive: true, mode: 0o700 });
+      replaceFile(manifestPathOf(openId), JSON.stringify(manifest, null, 1));
+    }
 
     // Export to inst.dir and append audit entry. If keep throws, RETAIN journal + spool for reap()!
     testBeforeKeepHook?.(openId);
-    const keepAllowed = !inst.hole;
     if (keepAllowed) {
       writebackLoginState(inst, b, state);
-      if (!inst.log.some(e => e.op === 'close' || e.op === 'abandon')) {
+      if (!instanceClosed) {
         writeBrowserArtifact(inst.dir, b.file, httpBytes);
         if (b.cdpFile && cdpBytes) {
           writeBrowserArtifact(inst.dir, b.cdpFile, cdpBytes);
@@ -1593,7 +1645,7 @@ async function finalizeV2Session(
         const writes = httpReqs.filter(e => !e.blocked && (e.isWrite ?? !SAFE_METHODS.has(String(e.method ?? 'GET').toUpperCase()))).length;
         const blocked = httpReqs.filter(e => e.blocked).length;
         const attempts = httpReqs.length;
-        const forwarded = attempts - blocked;
+        const forwarded = httpReqs.filter(e => !e.blocked && e.dispatch !== 'not_dispatched').length;
         let errors = httpReqs.filter(e => {
           if (e.blocked) return false;
           const end = typeof e.n === 'number' ? httpEndsByRef.get(e.n) : undefined;
