@@ -121,11 +121,12 @@ export async function probeCapabilities(): Promise<BrowserCapabilities> {
     return caps;
   } catch (e) {
     const upstreamStatus = (e as { upstreamStatus?: number }).upstreamStatus;
+    // Only 404 indicates legacy v0.2.2; transient errors (timeout, 5xx, auth) must propagate rather than silently downgrading auditing.
     if (upstreamStatus === 404) {
       cachedCaps = { at: Date.now(), caps: LEGACY_CAPS };
       return LEGACY_CAPS;
     }
-    return LEGACY_CAPS;
+    throw e;
   }
 }
 
@@ -775,22 +776,24 @@ type RollingShotMeta = {
 
 type ShotSpoolState = {
   published: ShotManifestItem[];
+  pending: ShotManifestItem[];
   rolling: RollingShotMeta[];
   rollingBytes: number;
 };
 
 function readShotSpool(openId: string): ShotSpoolState {
   const p = join(spoolDirOf(openId), 'shots.json');
-  if (!existsSync(p)) return { published: [], rolling: [], rollingBytes: 0 };
+  if (!existsSync(p)) return { published: [], pending: [], rolling: [], rollingBytes: 0 };
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8'));
     return {
       published: Array.isArray(raw.published) ? raw.published : [],
+      pending: Array.isArray(raw.pending) ? raw.pending : [],
       rolling: Array.isArray(raw.rolling) ? raw.rolling : [],
       rollingBytes: typeof raw.rollingBytes === 'number' ? raw.rollingBytes : 0,
     };
   } catch {
-    return { published: [], rolling: [], rollingBytes: 0 };
+    return { published: [], pending: [], rolling: [], rollingBytes: 0 };
   }
 }
 
@@ -944,6 +947,28 @@ async function doDrainSession(
   const cdpState = repairJsonlStream(cdpPath);
   const shotState = readShotSpool(openId);
 
+  // Reconcile any direct shots interrupted mid-publication on crash: promote if file+hash exist on disk, else drop from pending so it refetches!
+  const closedAlready = inst.log.some(e => e.op === 'close' || e.op === 'abandon');
+  if (shotState.pending.length) {
+    let pendingChanged = false;
+    const stillPending: ShotManifestItem[] = [];
+    for (const pMeta of shotState.pending) {
+      const check = readVerifiedWorkspaceFile(inst.dir, pMeta.file, pMeta.sha256, MAX_AUDIT_SHOT_BYTES);
+      if (check.status === 'ok') {
+        if (!closedAlready && !inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === pMeta.seq)) {
+          inst.append('server', 'shot', { run: b.run, site: b.site, file: pMeta.file, sessionId: openId, shotSeq: pMeta.seq, ...(pMeta.trigger && { trigger: pMeta.trigger }) });
+        }
+        if (!shotState.published.some(x => x.seq === pMeta.seq)) shotState.published.push(pMeta);
+        pendingChanged = true;
+      } else {
+        // Missing/corrupt file on disk -> drop from pending so the sealed browser can re-deliver it!
+        pendingChanged = true;
+      }
+    }
+    shotState.pending = stillPending;
+    if (pendingChanged) writeShotSpool(openId, shotState);
+  }
+
   let logCursor = Math.max(b.logCursor ?? 0, httpState.maxCursor);
   let cdpCursor = Math.max(b.cdpCursor ?? 0, cdpState.maxCursor);
   const maxSpoolShot = Math.max(
@@ -962,7 +987,10 @@ async function doDrainSession(
     if (inst.hole || opts.abortIf?.()) return;
     checkDeadline();
     const page = await browserJson('GET', `/sessions/${id}/log?after=${logCursor}&limit=500`, undefined, 5_000);
-    if (!page || Array.isArray(page) || !Array.isArray(page.entries)) break;
+    if (!page || Array.isArray(page) || !Array.isArray(page.entries)) {
+      if (opts.targetCursors) throw new HttpError(502, `malformed v2 /log envelope for session ${id}`);
+      break;
+    }
     const entries = page.entries as any[];
     if (entries.length) {
       const appendedMax = appendSpoolEntries(httpPath, entries, httpState.seenCursors);
@@ -972,8 +1000,8 @@ async function doDrainSession(
     }
     b.logCursor = logCursor;
     updateJournal(id, { logCursor });
-    if (!page.hasMore && (!opts.targetCursors || logCursor >= opts.targetCursors.log)) break;
-    if (!page.hasMore && entries.length === 0) break;
+    if (!page.hasMore) break;
+    if (entries.length === 0 && (typeof page.nextCursor !== 'number' || page.nextCursor <= logCursor)) break;
   }
 
   // 2. Drain CDP log pages
@@ -985,10 +1013,18 @@ async function doDrainSession(
       try {
         page = await browserJson('GET', `/sessions/${id}/cdp-log?after=${cdpCursor}&limit=500`, undefined, 5_000);
       } catch (e) {
-        if ((e as { upstreamStatus?: number }).upstreamStatus === 404) break;
+        if ((e as { upstreamStatus?: number }).upstreamStatus === 404) {
+          if (opts.targetCursors && opts.targetCursors.cdp > cdpCursor) {
+            throw new HttpError(502, `cdp-log 404 before reaching sealed cursor ${opts.targetCursors.cdp}`);
+          }
+          break;
+        }
         throw e;
       }
-      if (!page || !Array.isArray(page.entries)) break;
+      if (!page || !Array.isArray(page.entries)) {
+        if (opts.targetCursors) throw new HttpError(502, `malformed /cdp-log envelope for session ${id}`);
+        break;
+      }
       const entries = page.entries as any[];
       if (entries.length) {
         const appendedMax = appendSpoolEntries(cdpPath, entries, cdpState.seenCursors);
@@ -998,13 +1034,12 @@ async function doDrainSession(
       }
       b.cdpCursor = cdpCursor;
       updateJournal(id, { cdpCursor });
-      if (!page.hasMore && (!opts.targetCursors || cdpCursor >= opts.targetCursors.cdp)) break;
-      if (!page.hasMore && entries.length === 0) break;
+      if (!page.hasMore) break;
+      if (entries.length === 0 && (typeof page.nextCursor !== 'number' || page.nextCursor <= cdpCursor)) break;
     }
   }
 
   // 3. Drain Shots (supports both v2 envelope & legacy plain array; zero-deletion retention!)
-  const closedAlready = inst.log.some(e => e.op === 'close' || e.op === 'abandon');
   for (;;) {
     if (inst.hole || opts.abortIf?.()) return;
     checkDeadline();
@@ -1012,18 +1047,28 @@ async function doDrainSession(
     try {
       resp = await browserJson('GET', `/sessions/${id}/shots?after=${shotCursor}&v=2`, undefined, 5_000);
     } catch (e) {
-      if ((e as { upstreamStatus?: number }).upstreamStatus === 404) break;
+      if ((e as { upstreamStatus?: number }).upstreamStatus === 404) {
+        if (opts.targetCursors && opts.targetCursors.shot > shotCursor) {
+          throw new HttpError(502, `shots 404 before reaching sealed cursor ${opts.targetCursors.shot}`);
+        }
+        break;
+      }
       throw e;
     }
     const isEnv = resp && !Array.isArray(resp) && Array.isArray(resp.items);
-    const items: any[] = Array.isArray(resp) ? resp : isEnv ? resp.items : [];
+    if (!isEnv && !Array.isArray(resp)) {
+      if (opts.targetCursors) throw new HttpError(502, `malformed /shots response for session ${id}`);
+      break;
+    }
+    const items: any[] = Array.isArray(resp) ? resp : resp.items;
     let shotsChanged = false;
 
     for (const item of items) {
       if (typeof item?.seq !== 'number' || typeof item?.jpeg !== 'string') continue;
-      if (item.seq > shotCursor) shotCursor = item.seq;
-      if (seenShotSeqs.has(item.seq)) continue;
-      seenShotSeqs.add(item.seq);
+      if (seenShotSeqs.has(item.seq)) {
+        if (item.seq > shotCursor) shotCursor = item.seq;
+        continue;
+      }
 
       const buf = Buffer.from(item.jpeg, 'base64');
       const digest = sha256Hex(buf);
@@ -1045,13 +1090,20 @@ async function doDrainSession(
           file: rel,
           sha256: digest,
         };
-        // Record host-computed SHA-256 in spool BEFORE writing to inst.dir/browser/!
-        shotState.published.push(meta);
+        // Crash-safe two-step direct publication: record pending hash -> write JPEG -> idempotent append -> promote to published -> advance cursor!
+        shotState.pending.push(meta);
         writeShotSpool(openId, shotState);
         mkdirSync(join(inst.dir, 'browser'), { recursive: true });
         replaceReadOnly(join(inst.dir, rel), buf);
-        inst.append('server', 'shot', { run: b.run, site: b.site, file: rel, sessionId: openId, seq: item.seq, ...(trigger && { trigger }) });
-        shotsChanged = true;
+        if (!inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === item.seq)) {
+          inst.append('server', 'shot', { run: b.run, site: b.site, file: rel, sessionId: openId, shotSeq: item.seq, ...(trigger && { trigger }) });
+        }
+        shotState.pending = shotState.pending.filter(p => p.seq !== item.seq);
+        shotState.published.push(meta);
+        seenShotSeqs.add(item.seq);
+        if (item.seq > shotCursor) shotCursor = item.seq;
+        writeShotSpool(openId, shotState);
+        shotsChanged = false;
       } else {
         // Overflow non-priority shots enter rolling 40-shot / 18 MiB host spool buffer (zero git deletions!).
         const rollDir = join(dir, 'shots');
@@ -1075,6 +1127,8 @@ async function doDrainSession(
           shotState.rollingBytes = Math.max(0, shotState.rollingBytes - evicted.bytes);
           rmSync(join(rollDir, evicted.spoolName), { force: true });
         }
+        seenShotSeqs.add(item.seq);
+        if (item.seq > shotCursor) shotCursor = item.seq;
         shotsChanged = true;
       }
     }
@@ -1087,10 +1141,23 @@ async function doDrainSession(
     updateJournal(id, { shotCursor });
 
     if (isEnv) {
-      if (!resp.hasMore && (!opts.targetCursors || shotCursor >= opts.targetCursors.shot)) break;
-      if (!resp.hasMore && items.length === 0) break;
+      if (!resp.hasMore) break;
+      if (items.length === 0 && (typeof resp.nextSeq !== 'number' || resp.nextSeq <= shotCursor)) break;
     } else if (items.length < 20) {
       break;
+    }
+  }
+
+  // Verify final drain reached all frozen seal cursors before allowing publication or DELETE ?sealed=1!
+  if (opts.targetCursors) {
+    const missingLog = logCursor < opts.targetCursors.log;
+    const missingCdp = Boolean(b.cdpFile) && cdpCursor < opts.targetCursors.cdp;
+    const missingShot = shotCursor < opts.targetCursors.shot;
+    if (missingLog || missingCdp || missingShot) {
+      throw new HttpError(
+        502,
+        `incomplete browser audit drain for ${id}: log ${logCursor}/${opts.targetCursors.log}, cdp ${cdpCursor}/${opts.targetCursors.cdp}, shot ${shotCursor}/${opts.targetCursors.shot}`,
+      );
     }
   }
 }
@@ -1146,12 +1213,11 @@ export function setTestBeforeKeepHook(fn?: (openId: string) => void) {
   testBeforeKeepHook = fn;
 }
 
-function evaluateBrowserPolicySummary(inst: Instance, httpEntries: Entry[]): { enriched: Entry[]; policySummary?: BrowserPolicySummary } {
+function evaluateBrowserPolicySummary(inst: Instance, runNum: number, httpEntries: Entry[]): { enriched: Entry[]; policySummary?: BrowserPolicySummary } {
   const cfg = loadExecPolicyConfig();
   const mode = cfg.mode === 'enforce' ? 'observe' : cfg.mode;
-  const runEntry = inst.log.findLast(e => e.op === 'run' && e.run === httpEntries[0]?.run);
+  const runEntry = inst.log.findLast(e => e.op === 'run' && e.run === runNum);
   const runAuth = runEntry?.authority as { epoch?: number; owner?: string; workspace?: string } | undefined;
-  const approval = findCurrentEpochApproval(inst.log, { epoch: runAuth?.epoch, owner: runAuth?.owner, workspace: runAuth?.workspace });
 
   const summary: BrowserPolicySummary = {
     mode,
@@ -1172,6 +1238,14 @@ function evaluateBrowserPolicySummary(inst: Instance, httpEntries: Entry[]): { e
 
     let policy = entry.policy;
     if (!policy) {
+      // Bound approval lookup to instance log entries at or before this browser request's timestamp (prevents retroactive signoff).
+      const uptoEntry = typeof entry.t === 'string' && entry.t ? inst.log.findLast(e => e.at <= entry.t!) : inst.log.at(-1);
+      const approval = findCurrentEpochApproval(inst.log, {
+        uptoSeq: uptoEntry?.seq ?? 0,
+        epoch: runAuth?.epoch,
+        owner: runAuth?.owner,
+        workspace: runAuth?.workspace,
+      });
       const decision = evaluateStage1(entry as unknown as SafeRequestProjection, mode, approval);
       policy = compactDecision(decision);
     }
@@ -1208,6 +1282,9 @@ async function finalizeV2Session(
   let sealedAt = b.sealedAt ?? new Date().toISOString();
 
   // Phase 1: Seal remote session (idempotent) unless already published or remote already gone.
+  if (b.phase !== 'published' && !remoteAvailable) {
+    sealGaps = { ...sealGaps, remoteGone: true };
+  }
   if (b.phase !== 'published' && remoteAvailable) {
     try {
       const snap = await browserJson('POST', `/sessions/${id}/seal`, {}, CLOSE_MS);
@@ -1255,7 +1332,7 @@ async function finalizeV2Session(
     const shotState = readShotSpool(openId);
 
     // Evaluate Stage-1 execpolicy over drained browser writes for unified API+browser policy telemetry.
-    const { enriched: httpEntries, policySummary } = evaluateBrowserPolicySummary(inst, httpRaw);
+    const { enriched: httpEntries, policySummary } = evaluateBrowserPolicySummary(inst, b.run, httpRaw);
     const httpBytes = Buffer.from(httpEntries.map(e => JSON.stringify(e) + '\n').join(''), 'utf8');
     const cdpBytes = cdpRaw.length ? Buffer.from(cdpRaw.map(e => JSON.stringify(e) + '\n').join(''), 'utf8') : undefined;
 
@@ -1334,7 +1411,9 @@ async function finalizeV2Session(
         }
         for (const { meta, buf } of rollingToFlush) {
           replaceReadOnly(join(inst.dir, meta.file), buf);
-          inst.append('server', 'shot', { run: b.run, site: b.site, file: meta.file, sessionId: openId, seq: meta.seq, ...(meta.trigger && { trigger: meta.trigger }) });
+          if (!inst.log.some(e => e.op === 'shot' && e.sessionId === openId && e.shotSeq === meta.seq)) {
+            inst.append('server', 'shot', { run: b.run, site: b.site, file: meta.file, sessionId: openId, shotSeq: meta.seq, ...(meta.trigger && { trigger: meta.trigger }) });
+          }
         }
 
         const httpReqs = httpEntries.filter(e => e.rec !== '_summary' && e.rec !== 'http_end');
@@ -1350,24 +1429,26 @@ async function finalizeV2Session(
         for (const h of httpReqs.filter(e => e.blocked === 'host not on the list').flatMap(e => URL.parse(e.url)?.hostname || [])) {
           hosts[h] = (hosts[h] ?? 0) + 1;
         }
-        inst.append('server', 'browser', {
-          run: b.run,
-          site: b.site,
-          sessionId: openId,
-          ...(b.email && { login: b.email }),
-          ...(b.siteId && { siteId: b.siteId }),
-          requests: httpReqs.length,
-          writes,
-          blocked,
-          ...(errors > 0 && { errors }),
-          ...(collapsedGetsCount > 0 && { collapsedGets: collapsedGetsCount }),
-          ...(cdpCount > 0 && { cdp: cdpCount }),
-          ...(allShots.length > 0 && { shots: allShots.length }),
-          file: b.file,
-          ...(b.cdpFile && cdpBytes && { cdpFile: b.cdpFile }),
-          ...(policySummary && { policy: policySummary }),
-          ...(Object.keys(hosts).length && { hosts }),
-        });
+        if (!inst.log.some(e => e.op === 'browser' && !e.action && e.sessionId === openId)) {
+          inst.append('server', 'browser', {
+            run: b.run,
+            site: b.site,
+            sessionId: openId,
+            ...(b.email && { login: b.email }),
+            ...(b.siteId && { siteId: b.siteId }),
+            requests: httpReqs.length,
+            writes,
+            blocked,
+            ...(errors > 0 && { errors }),
+            ...(collapsedGetsCount > 0 && { collapsedGets: collapsedGetsCount }),
+            ...(cdpCount > 0 && { cdp: cdpCount }),
+            ...(allShots.length > 0 && { shots: allShots.length }),
+            file: b.file,
+            ...(b.cdpFile && cdpBytes && { cdpFile: b.cdpFile }),
+            ...(policySummary && { policy: policySummary }),
+            ...(Object.keys(hosts).length && { hosts }),
+          });
+        }
         if (Object.keys(hosts).length && source?.()) {
           checkRefused(inst, b.run, b.email, b.site, httpReqs, source).catch(e => console.error(`checking the hosts ${b.site} was refused:`, e));
         }
@@ -1427,12 +1508,18 @@ export function listBrowserAudits(instId: string): BrowserAuditManifest[] {
   return out.sort((a, b) => a.run - b.run || a.site.localeCompare(b.site) || a.openIndex - b.openIndex);
 }
 
-function readVerifiedWorkspaceFile(instDir: string, rel: string, expectedSha256: string): { buf?: Buffer; status: 'ok' | 'missing' | 'tampered' } {
+const MAX_AUDIT_LOG_BYTES = 12 * 1024 * 1024;
+const MAX_AUDIT_SHOT_BYTES = 10 * 1024 * 1024;
+
+function readVerifiedWorkspaceFile(instDir: string, rel: string, expectedSha256: string, maxBytes: number): { buf?: Buffer; status: 'ok' | 'missing' | 'tampered' } {
   const fd = openFile(instDir, rel);
   if (fd === undefined) return { status: 'missing' };
   try {
+    // Bound size BEFORE allocation so a replaced workspace file can never exhaust server memory.
+    const st = fstatSync(fd);
+    if (st.size > maxBytes) return { status: 'tampered' };
     const buf = readFileSync(fd);
-    if (sha256Hex(buf) !== expectedSha256) return { buf, status: 'tampered' };
+    if (sha256Hex(buf) !== expectedSha256) return { status: 'tampered' };
     return { buf, status: 'ok' };
   } finally {
     closeSync(fd);
@@ -1463,25 +1550,25 @@ export function readBrowserAudit(inst: Instance, sessionId: string) {
   let httpEntries: any[] = [];
   if (manifest.file && manifest.artifacts[manifest.file]) {
     checked++;
-    const res = readVerifiedWorkspaceFile(inst.dir, manifest.file, manifest.artifacts[manifest.file]);
+    const res = readVerifiedWorkspaceFile(inst.dir, manifest.file, manifest.artifacts[manifest.file], MAX_AUDIT_LOG_BYTES);
     if (res.status === 'missing') missing.push(manifest.file);
     else if (res.status === 'tampered') tampered.push(manifest.file);
-    httpEntries = parseNdjson(res.buf);
+    else httpEntries = parseNdjson(res.buf);
   }
 
   let cdpEntries: any[] = [];
   if (manifest.cdpFile && manifest.artifacts[manifest.cdpFile]) {
     checked++;
-    const res = readVerifiedWorkspaceFile(inst.dir, manifest.cdpFile, manifest.artifacts[manifest.cdpFile]);
+    const res = readVerifiedWorkspaceFile(inst.dir, manifest.cdpFile, manifest.artifacts[manifest.cdpFile], MAX_AUDIT_LOG_BYTES);
     if (res.status === 'missing') missing.push(manifest.cdpFile);
     else if (res.status === 'tampered') tampered.push(manifest.cdpFile);
-    cdpEntries = parseNdjson(res.buf);
+    else cdpEntries = parseNdjson(res.buf);
   }
 
   const shots = manifest.shots.map(s => {
     checked++;
     const expected = manifest.artifacts[s.file] ?? s.sha256;
-    const res = readVerifiedWorkspaceFile(inst.dir, s.file, expected);
+    const res = readVerifiedWorkspaceFile(inst.dir, s.file, expected, MAX_AUDIT_SHOT_BYTES);
     if (res.status === 'missing') missing.push(s.file);
     else if (res.status === 'tampered') tampered.push(s.file);
     return { ...s, integrity: res.status };

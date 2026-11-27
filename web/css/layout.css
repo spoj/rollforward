@@ -458,7 +458,7 @@ iframe.mail { width: 100%; border: 0; background: var(--doc); }
 .ba-wrap { padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
 .ba-meta { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
 .ba-integ { font-size: 12.5px; font-weight: 600; }
-.ba-integ.ok { color: var(--green, #1b7f4b); }
+.ba-integ.ok { color: var(--green); }
 .ba-integ.bad { color: var(--red); }
 .ba-links { font-size: 12.5px; color: var(--ink-2); }
 .ba-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -466,15 +466,15 @@ iframe.mail { width: 100%; border: 0; background: var(--doc); }
 .ba-list { display: flex; flex-direction: column; gap: 8px; }
 .ba-card { border: 1px solid var(--rule); border-radius: var(--r1); padding: 8px 10px; font-size: 12.5px; background: var(--paper); }
 .ba-card.ba-write { border-left: 3px solid var(--person); }
-.ba-card.ba-live { border-left: 3px solid var(--control, #e67e22); background: color-mix(in srgb, var(--control, #e67e22) 8%, var(--paper)); }
+.ba-card.ba-live { border-left: 3px solid var(--control); background: var(--amber-bg); }
 .ba-hdr { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ba-t { font: 11.5px var(--mono); color: var(--ink-3); }
 .ba-url { font: 12px var(--mono); color: var(--ink-2); word-break: break-all; }
 .ba-pill { display: inline-block; padding: 1px 6px; border-radius: 999px; font-size: 11px; background: var(--rule); color: var(--ink); font-family: var(--mono); }
 .ba-pill-write { background: var(--person-bg); color: var(--person); font-weight: 600; }
 .ba-pill-cdp { background: var(--rule-2); }
-.ba-pill.ba-warn { background: color-mix(in srgb, var(--red) 15%, transparent); color: var(--red); font-weight: 600; }
-.ba-pill.ba-live-pill { background: color-mix(in srgb, var(--control, #e67e22) 20%, transparent); color: var(--control, #c05600); font-weight: 600; }
+.ba-pill.ba-warn { background: var(--red-bg); color: var(--red); font-weight: 600; }
+.ba-pill.ba-live-pill { background: var(--amber-bg); color: var(--amber); font-weight: 600; }
 .ba-acts { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 .ba-sub { margin-top: 4px; font-size: 11.5px; color: var(--ink-2); word-break: break-word; }
 .ba-shot-img img { max-width: 320px; border: 1px solid var(--rule); border-radius: var(--r1); margin: 6px 0 0; cursor: zoom-in; }

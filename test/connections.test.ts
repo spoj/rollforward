@@ -323,9 +323,10 @@ test("a run reads a ticked SharePoint library at Graph's own address, as Graph a
   assert.deepEqual(JSON.parse((await via('GET', `${G}/drives/b!d1/items/y2026/children`)).text).value.map((i: any) => i.name), ['AGING_A_1.csv', 'AGING_B_2.csv', 'AGING_A_0.csv']);
   assert.equal((await via('GET', `${G}/drives/b!d1/items/a/content`)).text, content.a);
   assert.ok(seen.length && seen.every(a => a === 'Bearer tok'), "Graph saw the runner's token, never the run's stand-in");
-  const { actions: graphActions, policy: graphPolicy, ...graphCall } = calls().at(-1)!;
+  const { actions: graphActions, completeness: graphComp, policy: graphPolicy, ...graphCall } = calls().at(-1)!;
   assert.deepEqual(graphCall, { run: 1, name: 'graph', method: 'GET', path: '/v1.0/drives/b!d1/items/a/content', status: 200, bytes: content.a.length });
   assert.equal(graphActions?.[0]?.op, 'graph:GET');
+  assert.equal(graphComp?.extract, 'complete');
   assert.deepEqual([graphPolicy?.mode, graphPolicy?.action, graphPolicy?.ruleId], ['observe', 'allow', 'allow_read']);
   assert.ok(methods.length && methods.every(m => m === 'GET'));
   assert.equal(logins.secret(ALICE, 'm365'), 'r1', 'the refresh token turned over and was sealed again');
@@ -524,8 +525,9 @@ test("links an answer gave go through for that run alone, as they are, with no c
   const item = JSON.parse((await via('GET', `${G}/drives/b!d1/items/a`)).text);
   const download = await via('GET', item['@microsoft.graph.downloadUrl'], { headers: { authorization: '' } });
   assert.deepEqual(JSON.parse(download.text), { downloaded: true, auth: null });
-  const { policy: linkPolicy, ...linkCall } = calls().at(-1)!;
+  const { completeness: linkComp, policy: linkPolicy, ...linkCall } = calls().at(-1)!;
   assert.deepEqual(linkCall, { run: 1, name: 'graph', method: 'GET', path: 'https://host/download/a', status: 200, bytes: download.text.length });
+  assert.ok(linkComp);
   assert.deepEqual([linkPolicy?.mode, linkPolicy?.action, linkPolicy?.ruleId], ['observe', 'allow', 'allow_read']);
   runs.set('other', inst);
   await assert.rejects(via('GET', item['@microsoft.graph.downloadUrl'], { token: 'other' }), /CONNECT answered 403/, "another run's, whose proxy doesn't end its host");
@@ -1089,11 +1091,12 @@ test('a deployment service gets streamed requests only under the runner\'s ticke
       assert.deepEqual([q.method, q.path, q.body, q.headers['content-type'], q.headers['x-custom'], q.headers.authorization], ['PATCH', '/base/AP/file%20name?overwrite=1&x=%2F', body, 'application/json', 'kept', 'Bearer deployment-secret']);
       assert.deepEqual(['runner', 'instance', 'run', 'series', 'workspace'].map(k => q.headers[`x-rf-${k}`]), [ALICE, 'w1', '1', own.seriesId, 'w']);
       assert.deepEqual([q.headers['x-rf-role'], q.headers['x_rf_runner']], [undefined, undefined]);
-      const { actions: svcActions, bodyShape: svcShape, policy: svcPolicy, ...svcCall } = calls().at(-1)!;
+      const { actions: svcActions, bodyShape: svcShape, completeness: svcComp, policy: svcPolicy, ...svcCall } = calls().at(-1)!;
       assert.deepEqual(svcCall, { run: 1, name: 'drop', method: 'PATCH', path: '/AP/file%20name?overwrite=1&x=%2F', status: 201, bytes: r.text.length, sent: log.length - 1, sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body) });
       assert.equal(svcActions?.[0]?.op, 'service:PATCH');
       assert.deepEqual(svcShape, { n: 'number' });
-      assert.deepEqual([svcPolicy?.mode, svcPolicy?.action], ['observe', 'allow']);
+      assert.equal(svcComp?.transport, 'not-read');
+      assert.deepEqual([svcPolicy?.mode, svcPolicy?.action], ['observe', 'escalate']);
       assert.ok(!JSON.stringify(log).includes('deployment-secret'));
     });
     await t.test('GET, HEAD and OPTIONS are reads; every other HTTP method is a write', async () => {

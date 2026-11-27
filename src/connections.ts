@@ -474,6 +474,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     hdrConflict?: true;
     actions?: SemanticAction[];
     bodyShape?: Record<string, string>;
+    completeness?: { transport: string; decode: string; extract: string; reasons?: string[] };
+    dupKeys?: true;
+    graphqlOp?: string;
     policy?: CompactPolicyDecision;
   } | undefined;
   const log = (status: number, bytes: number, more?: object) => {
@@ -487,6 +490,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         ...(auditMeta.hdrConflict && { hdrConflict: true as const }),
         ...(auditMeta.actions?.length && { actions: auditMeta.actions }),
         ...(auditMeta.bodyShape && { bodyShape: auditMeta.bodyShape }),
+        ...(auditMeta.completeness && { completeness: auditMeta.completeness }),
+        ...(auditMeta.dupKeys && { dupKeys: true as const }),
+        ...(auditMeta.graphqlOp && { graphqlOp: auditMeta.graphqlOp }),
         ...(auditMeta.policy && { policy: auditMeta.policy }),
       }),
       ...more,
@@ -533,7 +539,16 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       }
       raw = Buffer.concat(chunks);
     }
-    const json = isJson && raw?.length ? JSON.parse(raw.toString()) : undefined, r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
+    let json: any;
+    if (isJson && raw?.length) {
+      try {
+        json = JSON.parse(raw.toString());
+      } catch {
+        // Fixed diagnostic so malformed OpenRouter/Exa/API JSON never leaks prompt or body fragments into log.jsonl.
+        throw new HttpError(400, 'invalid JSON request body');
+      }
+    }
+    const r = { method, url, headers: req.headers, json, body: raw, target: req.url! };
     let out = json, auth: Record<string, string> = {}, as = '', ticks: string[] = [], redirect: string | true | undefined, targetPath = url.pathname;
     const lent = checkpoint();
     if (c) {
@@ -578,6 +593,8 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
     let prefixTee: { chunks: Buffer[]; bytes: number; truncated: boolean } | undefined;
     if (!s) {
       const descUrl = new URL(`${url.origin}${targetPath}${url.search}`);
+      const bodyExpected = Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined;
+      const effectiveRaw = body !== undefined ? body : (!bodyExpected ? Buffer.alloc(0) : undefined);
       const { descriptor, methods } = buildApiRequestDescriptor({
         connection: name,
         connectionType,
@@ -585,9 +602,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         method,
         url: descUrl,
         headers: req.headers,
-        rawBody: body,
-        bodyComplete: body !== undefined,
-        transport: body !== undefined ? (body.length <= MAX_PREFIX_BYTES ? 'complete' : 'truncated') : 'not-read',
+        rawBody: effectiveRaw,
+        bodyComplete: effectiveRaw !== undefined,
+        transport: effectiveRaw !== undefined ? (effectiveRaw.length <= MAX_PREFIX_BYTES ? 'complete' : 'truncated') : 'not-read',
       });
       isWrite = descriptor.safe.isWrite;
       const runEntry = Array.isArray(a.inst.log) ? a.inst.log.findLast(e => e.op === 'run' && e.run === a.n) : undefined;
@@ -615,6 +632,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         ...(methods.hdrConflict && { hdrConflict: true as const }),
         ...(descriptor.safe.actions.length && { actions: descriptor.safe.actions }),
         ...(descriptor.safe.bodyShape && { bodyShape: descriptor.safe.bodyShape }),
+        completeness: descriptor.safe.completeness,
+        ...(descriptor.safe.dupKeys && { dupKeys: true as const }),
+        ...(descriptor.safe.graphqlOp && { graphqlOp: descriptor.safe.graphqlOp }),
         policy: compact,
       };
       if (decision.mode === 'enforce' && decision.action !== 'allow') {

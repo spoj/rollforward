@@ -145,6 +145,13 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   assert.equal(orCall.bodyShape, undefined);
   assert.equal(orCall.policy, undefined);
   assert.ok(!JSON.stringify(orCall).includes('SUPER PRIVATE PROMPT TEXT'));
+
+  // Malformed OpenRouter JSON must NOT leak prompt text into log.jsonl via SyntaxError.message!
+  const badOr = await sendViaProxy(run, 'openrouter.ai', 'POST', '/api/v1/chat/completions', { 'content-type': 'application/json' }, '{"prompt":"TOP_SECRET_MALFORMED_PROMPT_999"');
+  assert.equal(badOr.status, 400);
+  const badOrCall = entries.findLast(e => e.op === 'call')!;
+  assert.equal(badOrCall.refused, 'invalid JSON request body');
+  assert.ok(!JSON.stringify(badOrCall).includes('TOP_SECRET_MALFORMED_PROMPT_999'));
 });
 
 test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade with zero upstream hits and ruleId-only 403, and unlocks sendMail after current-epoch signoff', async () => {
@@ -174,6 +181,12 @@ test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade
   const r3 = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'x-http-method-override': 'GET' }, '{"a":1}');
   assert.equal(r3.status, 403);
   assert.equal(r3.text.trim(), 'blocked by policy: method_override_downgrade');
+  assert.equal(upstreamHits, hits0);
+
+  // 3b. Body-bearing streamed service write in enforce mode fails closed (write_body_not_inspected)
+  const r3b = await sendViaProxy(run, 'erp.rf.internal', 'POST', '/AP/vouchers', { 'content-type': 'application/json' }, '{"amount":500}');
+  assert.equal(r3b.status, 403);
+  assert.equal(r3b.text.trim(), 'blocked by policy: write_body_not_inspected');
   assert.equal(upstreamHits, hits0);
 
   // 4. Current-epoch human signoff unlocks sendMail in enforce mode!

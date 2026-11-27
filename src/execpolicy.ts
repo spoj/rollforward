@@ -55,6 +55,7 @@ export type ExecPolicyConfig = {
   deadlineMs: number
   maxConcurrentShadow: number
   maxShadowQueue: number
+  configError?: string
 }
 
 export type TriageInput = {
@@ -89,17 +90,48 @@ export type EvaluateOptions = {
 }
 
 const VALID_MODES = new Set<ExecPolicyMode>(['observe', 'shadow', 'enforce'])
+const STAGE2_HOST_RULE_IDS: Record<ExecPolicyAction, string> = {
+  allow: 'stage2_allow',
+  deny: 'stage2_deny',
+  escalate: 'stage2_escalate',
+  requireApproval: 'stage2_require_approval',
+}
 
 export function loadExecPolicyConfig(): ExecPolicyConfig {
-  let fileCfg: Partial<ExecPolicyConfig> = {}
-  try {
-    if (rfDir()) fileCfg = readJson<Partial<ExecPolicyConfig>>('execpolicy.json', {})
-  } catch {
-    fileCfg = {}
+  let fileCfg: Record<string, unknown> = {}
+  let configError: string | undefined
+  const baseDir = rfDir()
+  const cfgPath = baseDir ? join(baseDir, 'execpolicy.json') : ''
+  if (cfgPath && existsSync(cfgPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(cfgPath, 'utf8'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        configError = 'execpolicy.json must be a JSON object'
+      } else {
+        fileCfg = parsed as Record<string, unknown>
+      }
+    } catch {
+      configError = 'execpolicy.json could not be parsed'
+    }
   }
-  const envMode = process.env.RF_EXECPOLICY_MODE?.trim().toLowerCase()
-  const rawMode = envMode || (typeof fileCfg.mode === 'string' ? fileCfg.mode.trim().toLowerCase() : 'observe')
-  const mode: ExecPolicyMode = VALID_MODES.has(rawMode as ExecPolicyMode) ? (rawMode as ExecPolicyMode) : 'observe'
+
+  const envRaw = process.env.RF_EXECPOLICY_MODE
+  const envMode = envRaw !== undefined ? envRaw.trim().toLowerCase() : undefined
+  const fileMode = fileCfg.mode !== undefined ? (typeof fileCfg.mode === 'string' ? fileCfg.mode.trim().toLowerCase() : '__invalid__') : undefined
+  const rawMode = envMode !== undefined && envMode !== '' ? envMode : (fileMode !== undefined ? fileMode : 'observe')
+
+  let mode: ExecPolicyMode = 'observe'
+  if (configError) {
+    // Fail closed on corrupt/unreadable configured policy file!
+    mode = 'enforce'
+  } else if (!VALID_MODES.has(rawMode as ExecPolicyMode)) {
+    // Fail closed on unrecognized configured mode!
+    mode = 'enforce'
+    configError = `invalid execpolicy mode: ${rawMode}`
+  } else {
+    mode = rawMode as ExecPolicyMode
+  }
+
   const deadlineMs = typeof fileCfg.deadlineMs === 'number' && Number.isFinite(fileCfg.deadlineMs) && fileCfg.deadlineMs > 0
     ? Math.floor(fileCfg.deadlineMs)
     : 20_000
@@ -109,7 +141,7 @@ export function loadExecPolicyConfig(): ExecPolicyConfig {
   const maxShadowQueue = typeof fileCfg.maxShadowQueue === 'number' && fileCfg.maxShadowQueue > 0
     ? Math.floor(fileCfg.maxShadowQueue)
     : 64
-  return { mode, deadlineMs, maxConcurrentShadow, maxShadowQueue }
+  return { mode, deadlineMs, maxConcurrentShadow, maxShadowQueue, ...(configError && { configError }) }
 }
 
 // Inspects an instance's log.jsonl up to `uptoSeq` (default full log) to determine whether the current authority
@@ -333,6 +365,9 @@ export function evaluateStage1(
     if (safe.dupKeys) {
       return make('escalate', 'write_duplicate_json_keys', 'Write payload contained duplicate JSON keys')
     }
+    if (safe.completeness.transport === 'not-read' && safe.declaredBytes !== 0) {
+      return make('escalate', 'write_body_not_inspected', 'Body-bearing write was not inspected before dispatch')
+    }
     if (safe.completeness.transport === 'truncated' || (safe.completeness.decode !== 'complete' && safe.completeness.decode !== 'none')) {
       return make('escalate', 'write_incomplete_body', 'Write body was truncated or failed decoding')
     }
@@ -407,10 +442,26 @@ export class ExecPolicyEngine {
 
   async evaluate(descriptor: RequestDescriptor, opts: EvaluateOptions = {}): Promise<ExecPolicyDecision> {
     const cfg = loadExecPolicyConfig()
-    const mode = opts.mode ?? cfg.mode
     const decisionId = crypto.randomUUID()
     const start = performance.now()
     const family = primaryFamily(descriptor.safe)
+
+    // Fail closed if policy configuration is invalid/corrupt (unless caller explicitly overrides mode for offline replay/tests).
+    if (cfg.configError && opts.mode === undefined) {
+      return {
+        decisionId,
+        mode: 'enforce',
+        stage: 1,
+        action: 'deny',
+        ruleId: 'policy_config_error',
+        policyVersion: POLICY_VERSION,
+        surface: descriptor.safe.surface,
+        family,
+        ms: +(performance.now() - start).toFixed(3),
+      }
+    }
+
+    const mode = opts.mode ?? cfg.mode
 
     let approval: ApprovalContext
     let stage1: ExecPolicyDecision
@@ -465,13 +516,13 @@ export class ExecPolicyEngine {
           try {
             const verdict = await hook(triageInput, { decisionId, signal: ac.signal, deadlineMs })
             // Stage 2 cannot override a Stage-1 deny or requireApproval (already guarded above, double-checked here)
-            const finalAction: ExecPolicyAction = verdict.action
+            const finalAction: ExecPolicyAction = ['allow', 'deny', 'escalate', 'requireApproval'].includes(verdict?.action) ? verdict.action : 'deny'
             const shadowDecision: ExecPolicyDecision = {
               decisionId,
               mode: 'shadow',
               stage: 2,
               action: finalAction,
-              ruleId: verdict.ruleId || 'stage2_triage',
+              ruleId: STAGE2_HOST_RULE_IDS[finalAction],
               policyVersion: POLICY_VERSION,
               surface: safeCopy.surface,
               family,
@@ -541,7 +592,7 @@ export class ExecPolicyEngine {
         mode: 'enforce',
         stage: 2,
         action: verdict.action,
-        ruleId: verdict.ruleId || 'stage2_triage',
+        ruleId: STAGE2_HOST_RULE_IDS[verdict.action],
         policyVersion: POLICY_VERSION,
         surface: safeCopy.surface,
         family,
@@ -652,6 +703,11 @@ function reconstructSafeFromApiCall(e: Entry, seq: number): { safe?: SafeRequest
 
   const san = sanitizeUrl(pathStr.startsWith('http') ? pathStr : `https://${name}${pathStr.startsWith('/') ? '' : '/'}${pathStr}`, { projection: 'semantic' })
   const isWrite = !SAFE_METHODS.has(method) || !SAFE_METHODS.has(effectiveMethod)
+  const storedComp = e.completeness as SafeRequestProjection['completeness'] | undefined
+  if (isWrite && !storedComp) {
+    return { insufficientReason: 'api_call_missing_completeness' }
+  }
+  const comp: SafeRequestProjection['completeness'] = storedComp ?? { transport: 'not-read', decode: 'none', extract: 'complete' }
   return {
     safe: {
       descV: DESC_V,
@@ -671,13 +727,15 @@ function reconstructSafeFromApiCall(e: Entry, seq: number): { safe?: SafeRequest
       methodSource: 'wire',
       isWrite,
       prefixBytes: 0,
-      bodyComplete: true,
-      decodeComplete: true,
-      completeness: { transport: 'complete', decode: 'complete', extract: 'complete' },
+      bodyComplete: comp.transport === 'complete',
+      decodeComplete: comp.decode === 'complete' || comp.decode === 'none',
+      completeness: comp,
       actions,
       ...(e.bodyShape && typeof e.bodyShape === 'object' ? { bodyShape: e.bodyShape as Record<string, string> } : {}),
       ...(e.hdr && typeof e.hdr === 'object' ? { hdr: e.hdr as Record<string, string> } : {}),
       ...(e.hdrConflict ? { hdrConflict: true as const } : {}),
+      ...(e.dupKeys ? { dupKeys: true as const } : {}),
+      ...(typeof e.graphqlOp === 'string' ? { graphqlOp: e.graphqlOp as SafeRequestProjection['graphqlOp'] } : {}),
     },
   }
 }

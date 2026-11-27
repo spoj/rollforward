@@ -324,6 +324,7 @@ test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on thro
   const shadowDec = await shadowDone.promise;
   assert.equal(shadowDec.stage, 2);
   assert.equal(shadowDec.action, 'allow');
+  assert.equal(shadowDec.ruleId, 'stage2_allow', 'Stage-2 ruleId mapped strictly to host-owned closed set');
   assert.equal('raw' in receivedInput, false, 'TriageHook receives ONLY safe projection, never raw');
 
   // 2. Enforce mode: hook throw -> fail-closed deny with ruleId policy_error
@@ -331,6 +332,25 @@ test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on thro
   const errDec = await throwingEngine.evaluate(unguarded, { mode: 'enforce' });
   assert.equal(errDec.action, 'deny');
   assert.equal(errDec.ruleId, 'policy_error');
+
+  // 2b. Enforce mode: Stage-2 hook returning custom ruleId text is clamped to host-owned stage2_deny (no reasoning oracle)
+  const oracleEngine = new ExecPolicyEngine(() => ({ action: 'deny', ruleId: 'secret prompt leak explanation', reason: 'internal details' }));
+  const clamped = await oracleEngine.evaluate(unguarded, { mode: 'enforce' });
+  assert.equal(clamped.action, 'deny');
+  assert.equal(clamped.ruleId, 'stage2_deny');
+
+  // 2c. Invalid RF_EXECPOLICY_MODE fails closed with policy_config_error instead of downgrading to observe!
+  const prevMode = process.env.RF_EXECPOLICY_MODE;
+  process.env.RF_EXECPOLICY_MODE = 'enforc-typo';
+  try {
+    const cfgFail = await shadowEngine.evaluate(unguarded);
+    assert.equal(cfgFail.mode, 'enforce');
+    assert.equal(cfgFail.action, 'deny');
+    assert.equal(cfgFail.ruleId, 'policy_config_error');
+  } finally {
+    if (prevMode === undefined) delete process.env.RF_EXECPOLICY_MODE;
+    else process.env.RF_EXECPOLICY_MODE = prevMode;
+  }
 
   // 3. Enforce mode: hook timeout -> fail-closed deny with ruleId policy_error
   const slowEngine = new ExecPolicyEngine(async (_input, ctx) => {
@@ -370,7 +390,7 @@ test('replayExecPolicy deterministically replays saved log.jsonl + browser/*.jso
     const pol1 = compactDecision(evaluateStage1(mailDesc.safe, 'observe', { approved: false, recentApprovedProposals: [] }));
     const logLines = [
       { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
-      { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', status: 202, bytes: 0, actions: mailDesc.safe.actions, policy: pol1 },
+      { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'call', run: 1, name: 'graph', method: 'POST', path: '/v1.0/me/sendMail', status: 202, bytes: 0, actions: mailDesc.safe.actions, completeness: mailDesc.safe.completeness, policy: pol1 },
       { seq: 3, at: '2026-11-27T01:02:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Approve E1 post', run: 1 },
       { seq: 4, at: '2026-11-27T01:03:00Z', by: 'alice@demo.test', op: 'signoff', on: 3, text: 'Approved' },
       // Legacy API write without actions -> insufficient_evidence

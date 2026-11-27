@@ -148,10 +148,16 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   assert.match(listText, /e1_ais_write/);
   assert.match(listText, /high severity/);
 
-  // Filter chips: Writes | Shots | CDP | All
+  // Filter chips: Writes | Blocked / Errors | Key | Shots | CDP | All
   await page.locator('[data-act="ba-filter"][data-filter="writes"]').click();
   assert.equal(await page.locator('#ba-list .ba-card').count(), 1);
   assert.equal(await page.locator('#ba-list .ba-card').first().getAttribute('data-write'), '1');
+
+  await page.locator('[data-act="ba-filter"][data-filter="blocked"]').click();
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 0);
+
+  await page.locator('[data-act="ba-filter"][data-filter="key"]').click();
+  assert.equal(await page.locator('#ba-list .ba-card').count(), 3, 'Key shows write, high-sev CDP, and shot (omits benign GET)');
 
   await page.locator('[data-act="ba-filter"][data-filter="shots"]').click();
   assert.equal(await page.locator('#ba-list .ba-card').count(), 1);

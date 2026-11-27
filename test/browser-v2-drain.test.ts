@@ -297,13 +297,21 @@ test('v0.3.0 capabilities probe, auditV2 session open, seal -> paginated drain -
   assert.equal(audit.cdp.length, 3); // 2 entries + _tap.summary
   assert.equal(audit.shots.length, 2);
 
-  // Tamper with workspace copy -> integrity check MUST detect mismatch!
+  // Verify shot events use shotSeq (NEVER overwriting instance log seq) and instance reloads cleanly via openStore!
+  const shotEvents = inst.log.filter(e => e.op === 'shot');
+  assert.equal(shotEvents.length, 2);
+  assert.deepEqual(shotEvents.map(e => e.shotSeq), [1, 2]);
+  assert.deepEqual(inst.log.map(e => e.seq), inst.log.map((_, idx) => idx + 1), 'instance event log seq remains strictly monotonic 1..N');
+  openStore(tmp);
+
+  // Tamper with workspace copy -> integrity check MUST detect mismatch and NOT parse tampered bytes!
   const logFile = join(inst.dir, manifests[0].file);
   chmodSync(logFile, 0o644);
   writeFileSync(logFile, '{"tampered":true}\n');
   const tampered = readBrowserAudit(inst, id);
   assert.equal(tampered.integrity.ok, false);
   assert.deepEqual(tampered.integrity.tampered, [manifests[0].file]);
+  assert.deepEqual(tampered.http, [], 'tampered log bytes are not parsed or served');
 });
 
 test('crash-safe keep() failure retains journal + spool and reap() resumes idempotently to completion', async () => {

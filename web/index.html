@@ -1026,8 +1026,16 @@ function browserAuditItems(ba) {
 
 function browserAuditRowsHtml(ba) {
   const filter = ba.filter ?? 'all', q = (ba.q ?? '').trim().toLowerCase();
+  const isBlockedOrErr = e => Boolean(e.blocked || e.error || (typeof e.status === 'number' && e.status >= 400));
   const items = browserAuditItems(ba).filter(it => {
-    if (filter === 'writes' && !(it.kind === 'http' && (it.isWrite || it.data.blocked || it.data.error))) return false;
+    if (filter === 'key') {
+      const keep = it.kind === 'shot'
+        || (it.kind === 'http' && (it.isWrite || isBlockedOrErr(it.data) || it.data.live || it.data.liveAtEnd))
+        || (it.kind === 'cdp' && (it.data.severity === 'high' || it.data.live));
+      if (!keep) return false;
+    }
+    if (filter === 'writes' && !(it.kind === 'http' && it.isWrite)) return false;
+    if (filter === 'blocked' && !(it.kind === 'http' && isBlockedOrErr(it.data))) return false;
     if (filter === 'shots' && it.kind !== 'shot') return false;
     if (filter === 'cdp' && it.kind !== 'cdp') return false;
     if (q) {
@@ -1072,9 +1080,10 @@ function browserAuditHtml(ba) {
   const m = ba.manifest ?? {}, integ = ba.integrity ?? { ok: true, checked: 0, tampered: [], missing: [] };
   const filter = ba.filter ?? 'all';
   const tapSum = (ba.cdp ?? []).findLast(c => c?.rec === '_tap.summary');
-  const filters = [['all', 'All'], ['writes', 'Writes'], ['shots', 'Shots'], ['cdp', 'CDP']];
+  const filters = [['all', 'All'], ['key', 'Key'], ['writes', 'Writes'], ['blocked', 'Blocked / Errors'], ['shots', 'Shots'], ['cdp', 'CDP']];
+  const mismatchMsg = [...(integ.tampered ?? []).map(f => `tampered ${f}`), ...(integ.missing ?? []).map(f => `missing ${f}`)].join(', ');
   return `<div class="ba-wrap"><div class="ba-meta">`
-    + `<div class="ba-integ ${integ.ok ? 'ok' : 'bad'}">${integ.ok ? `Host manifest verified (${integ.checked} files)` : `Integrity mismatch: ${[...integ.tampered.map(f => `tampered ${f}`), ...integ.missing.map(f => `missing ${f}`)].join(', ')}`}</div>`
+    + `<div class="ba-integ ${integ.ok ? 'ok' : 'bad'}">${integ.ok ? esc(`Host manifest verified (${integ.checked} files)`) : esc(`Integrity mismatch: ${mismatchMsg}`)}</div>`
     + `<div class="ba-links">${m.file ? `<a href="${fileUrl(m.file)}">Download HTTP log</a>` : ''}${m.cdpFile ? ` · <a href="${fileUrl(m.cdpFile)}">Download CDP log</a>` : ''}${m.policySummary ? ` · Policy: ${esc(String(m.policySummary.totalWrites))} writes (${esc(String(m.policySummary.flagged?.length ?? 0))} flagged)` : ''}</div>`
     + `<div class="ba-bar"><span class="seg">${filters.map(([k, lbl]) => `<button class="${filter === k ? 'sel' : ''}" data-act="ba-filter" data-filter="${k}">${lbl}</button>`).join('')}</span><input type="text" id="ba-q" placeholder="Filter URL, action, method…" value="${esc(ba.q ?? '')}"></div>`
     + `</div><div class="ba-list" id="ba-list">${browserAuditRowsHtml(ba)}</div>`
