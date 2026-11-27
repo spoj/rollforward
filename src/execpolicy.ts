@@ -13,6 +13,7 @@ import {
   computeTargetDigest,
   decodePathSegmentsStrict,
   effectiveAuthority,
+  isUploadSessionEndpointPath,
   isValidEmailDomain,
   parseSemanticMethods,
   validateSharePointDeleteIds,
@@ -546,6 +547,9 @@ export function validateAndNormalizeApprovalScope(
     }
   } else if (action === 'http_delete') {
     if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
+    if (site && connection) {
+      throw new HttpError(400, 'http_delete scope cannot specify both site and connection')
+    }
     if (site) {
       if (!explicitHost) {
         throw new HttpError(400, 'browser http_delete scope requires host')
@@ -1115,13 +1119,13 @@ export function evaluateStage1(
     return make('escalate', 'method_override_escalation', `Safe wire verb ${safe.method} escalated to ${safe.effectiveMethod}`)
   }
 
-  // 5b. Fallback for granted SharePoint / Outlook upload-session PUT chunks (any connection name, prefix inspected)
+  // 5b. Fallback for granted SharePoint / Outlook upload-session PUT chunks (anchored endpoint only, prefix inspected)
   if (
     safe.surface === 'api' &&
     safe.method === 'PUT' &&
     safe.effectiveMethod === 'PUT' &&
     /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(safe.authority) &&
-    (/\/_api\/v2\.\d+\/.*\/uploadsession(?:$|[/?])/i.test(safe.path) || /\/attachmentsessions\//i.test(safe.path) || /\/uploadsession(?:$|[/?])/i.test(safe.path)) &&
+    isUploadSessionEndpointPath(safe.path) &&
     !writeDupKeys &&
     safe.completeness.transport !== 'not-read' &&
     safe.completeness.decode !== 'error'

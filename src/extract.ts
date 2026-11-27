@@ -895,6 +895,17 @@ export function validateSharePointDeleteIds(
   return { ok: true, ids, bodySelector: JSON.stringify({ op: 'deletebyids', ids }) }
 }
 
+export function isUploadSessionEndpointPath(rawPathname: string): boolean {
+  const { decodedPath, invalidEncoding } = decodePathSegmentsStrict(rawPathname)
+  if (invalidEncoding) return false
+  const p = decodedPath.toLowerCase()
+  return (
+    /\/_api\/v2\.\d+\/.+\/uploadsession\/?$/i.test(p) ||
+    /\/attachmentsessions\/[^/]+\/?$/i.test(p) ||
+    /^\/(?:[^/]+\/)*uploadsession\/?$/i.test(p)
+  )
+}
+
 export function computeTargetDigest(
   input: {
     surface: 'browser' | 'api'
@@ -1034,7 +1045,7 @@ const SQL_DDL_VERBS = new Set(['DROP', 'CREATE', 'ALTER', 'TRUNCATE', 'REPLACE',
 const SQL_DESTRUCTIVE_VERBS = new Set(['DROP', 'TRUNCATE', 'DELETE'])
 
 export function classifySqlStatement(sql: string): SqlClassification {
-  type Tok = { kind: 'word' | 'lparen' | 'rparen' | 'comma' | 'semi'; text: string }
+  type Tok = { kind: 'word' | 'lparen' | 'rparen' | 'comma' | 'semi' | 'other'; text: string }
   const tokens: Tok[] = []
   let i = 0
   const len = sql.length
@@ -1100,6 +1111,7 @@ export function classifySqlStatement(sql: string): SqlClassification {
         i++
       }
       if (!closed) ambiguous = true
+      tokens.push({ kind: 'other', text: '' })
       continue
     }
     if (ch === "'") {
@@ -1112,6 +1124,7 @@ export function classifySqlStatement(sql: string): SqlClassification {
         i++
       }
       if (!closed) ambiguous = true
+      tokens.push({ kind: 'other', text: '' })
       continue
     }
     // Spark SqlBaseLexer BACKQUOTED_IDENTIFIER: '`' ( ~'`' | '``' )* '`'
@@ -1158,6 +1171,11 @@ export function classifySqlStatement(sql: string): SqlClassification {
       }
       tokens.push({ kind: 'word', text: sql.slice(start, i).toUpperCase() })
       continue
+    }
+    // Preserve non-comment, non-whitespace characters (numbers/operators/punctuation) so standalone literal segments
+    // like `INSERT INTO t VALUES (1); 123` never vanish and always classify as UNKNOWN!
+    if (!/\s/.test(ch)) {
+      tokens.push({ kind: 'other', text: '' })
     }
     i++
   }
@@ -1834,17 +1852,17 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         ))
       )
     const isUploadSessionHost = /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(input.url.hostname)
-    const isUploadSessionPath =
-      /\/_api\/v2\.\d+\/.*\/uploadsession(?:$|[/?])/i.test(lowerPath) ||
-      /\/attachmentsessions\//i.test(lowerPath) ||
-      /\/uploadsession(?:$|[/?])/i.test(lowerPath)
+    const spDestructiveOp = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
+    const isSpBatchPath = /(?:^|\/)(?:_api|_vti_bin)(?:\/[^/]*)?\/\$batch\/?$/i.test(decodedLowerPath)
+    const isSpDeleteOrAmbiguous = isSharePointRoute && (spDestructiveOp || isSpBatchPath || decodedPathInfo.invalidEncoding)
     const isGrantedUploadChunk =
+      !isSpDeleteOrAmbiguous &&
       input.surface === 'api' &&
       input.connectionType === 'link' &&
       input.method === 'PUT' &&
       input.effectiveMethod === 'PUT' &&
       isUploadSessionHost &&
-      (input.linkProvenance?.linkKind === 'upload_session' || isUploadSessionPath)
+      (input.linkProvenance?.linkKind === 'upload_session' || isUploadSessionEndpointPath(input.url.pathname))
 
     if (isGrantedUploadChunk) {
       actions.push({
@@ -1866,14 +1884,15 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
-      if (isDeleteByIds) {
-        // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values BEFORE any sub-op branching!
+      // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values on DeleteByIds
+      // AND on ambiguously/double-encoded SharePoint routes BEFORE any sub-op branching!
+      const suppressSpBody = isDeleteByIds || decodedPathInfo.invalidEncoding
+      if (suppressSpBody) {
         omitSampleBody = true
         bodyShape = undefined
       }
       // Anchor $batch strictly to the SharePoint REST endpoint suffix (NOT arbitrary site prefixes like /sites/$batch/_api/...)!
-      const isSpBatch = /(?:^|\/)(?:_api|_vti_bin)(?:\/[^/]*)?\/\$batch\/?$/i.test(decodedLowerPath)
-      if (isSpBatch) {
+      if (isSpBatchPath) {
         actions.push({
           family: 'sharepoint',
           op: 'sharepoint:batch',
@@ -1888,7 +1907,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         })
         extractStatus = 'opaque'
       } else {
-        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
+        const destructiveAction = spDestructiveOp
         let bodySelector: string | undefined
         let selectedIdCount: number | undefined
         let bodySelectionIncomplete = false
@@ -1912,7 +1931,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             }
           }
         }
-        // Keep runtime selector strings local to targetDigest computation — NEVER copy raw IDs or body metadata on DeleteByIds!
+        // Keep runtime selector strings local to targetDigest computation — NEVER copy raw IDs or body metadata on DeleteByIds or ambiguous routes!
         const details: Record<string, unknown> = {
           hasIfMatch,
           hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
@@ -1923,7 +1942,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector, 'sharepoint') }),
         }
         if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
-        if (!isDeleteByIds) {
+        if (!suppressSpBody) {
           const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
           const metaIdent = validateStructuralIdent(rawMetaType, /^[#A-Za-z][A-Za-z0-9_.-]{0,63}$/, input.vault)
           vaultRedactions += metaIdent.vaultRedactions
@@ -2271,6 +2290,10 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 
       if (obj) {
         const rootUsable = inspectE1Unit(obj)
+        // On single-unit endpoints (formservice, dataservice), ALWAYS enforce rootUsable even if formRequests[] is present!
+        if (input.isWrite && (endpoint === 'formservice' || endpoint === 'dataservice') && !rootUsable) {
+          malformedE1Action = true
+        }
         if ('formRequests' in obj && obj.formRequests !== undefined) {
           if (Array.isArray(obj.formRequests) && obj.formRequests.length > 0) {
             for (const item of obj.formRequests) {
@@ -2282,8 +2305,6 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
             malformedE1Action = true
           }
         } else if (endpoint === 'batchformservice' && input.isWrite) {
-          malformedE1Action = true
-        } else if (input.isWrite && (endpoint === 'formservice' || endpoint === 'dataservice') && !rootUsable) {
           malformedE1Action = true
         }
       } else if (

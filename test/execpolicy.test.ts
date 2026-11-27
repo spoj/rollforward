@@ -1556,6 +1556,95 @@ test('R8 Astra convergence: Graph-only /v1.0/ exemption, anchored SharePoint $ba
   }
 });
 
+test('R9 Astra convergence: ambiguous SharePoint body/shape/metadata suppression, destructive SharePoint ahead of upload-session & anchored upload-session paths, unconditional E1 rootUsable on single-unit endpoints, conflicting site+connection rejection, and literal-only SQL UNKNOWN', async () => {
+  const hmacKey = Buffer.alloc(32, 0xd9);
+
+  // 1. Astra P1-1: Ambiguously/double-encoded SharePoint routes suppress bodyShape, reqBody, AND metadataType in semantic+samples while escalating sharepoint_incomplete_selector!
+  for (const [label, path] of [
+    ['single-encoded DeleteByIds', '/sites/fin/_api/web/RecycleBin/%44eleteBy%49ds'],
+    ['double-encoded DeleteByIds', '/sites/fin/_api/web/RecycleBin/%2544eleteByIds'],
+  ] as const) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+      url: new URL(`https://sp-svc.rf.internal${path}`),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ SecretAmbKey: ['amb-secret-val'], __metadata: { type: 'SecretAmbMeta' } })),
+      bodyComplete: true, projection: 'semantic+samples',
+    }).descriptor;
+    assert.equal(desc.safe.bodyShape, undefined, `must suppress bodyShape (${label})`);
+    assert.equal(desc.safe.reqBody, undefined, `must suppress reqBody (${label})`);
+    assert.equal(desc.safe.actions[0].details?.metadataType, undefined, `must suppress metadataType (${label})`);
+    assert.equal(JSON.stringify(desc.safe).includes('SecretAmbKey'), false, `zero key disclosure (${label})`);
+    assert.equal(JSON.stringify(desc.safe).includes('amb-secret-val'), false, `zero value disclosure (${label})`);
+    assert.equal(JSON.stringify(desc.safe).includes('SecretAmbMeta'), false, `zero metadata disclosure (${label})`);
+    assert.equal(evaluateStage1(desc.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'sharepoint_incomplete_selector');
+  }
+
+  // 2. Astra P1-2: Destructive SharePoint PUT with /uploadsession/ in site prefix (even on granted link!) hits sharepoint:delete + privacy suppression, NOT allow_upload_session_chunk!
+  const spoofedUploadPut = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'link', linkProvenance: { sourceType: 'graph', linkKind: 'upload_session' },
+    hmacKey, seq: 2, method: 'PUT',
+    url: new URL('https://contoso.sharepoint.com/sites/uploadsession/_api/web/RecycleBin/DeleteByIds'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ ids: ['upload-spoof-secret'] })),
+    bodyComplete: true, projection: 'semantic+samples',
+  }).descriptor;
+  assert.equal(spoofedUploadPut.safe.actions[0].family, 'sharepoint', 'destructive SharePoint op beats upload-session exception');
+  assert.equal(spoofedUploadPut.safe.actions[0].op, 'sharepoint:delete');
+  assert.equal(spoofedUploadPut.safe.bodyShape, undefined);
+  assert.equal(spoofedUploadPut.safe.reqBody, undefined);
+  assert.equal(JSON.stringify(spoofedUploadPut.safe).includes('upload-spoof-secret'), false);
+  assert.equal(evaluateStage1(spoofedUploadPut.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'sharepoint_destructive_write');
+
+  // Genuine SharePoint uploadSession endpoint still allows!
+  const realUploadPut = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'link', hmacKey, seq: 3, method: 'PUT',
+    url: new URL('https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=123'),
+    headers: { 'content-type': 'application/octet-stream' },
+    rawBody: Buffer.from([1, 2, 3, 4]),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(realUploadPut.safe.actions[0].op, 'graph:upload_session_chunk');
+  assert.equal(evaluateStage1(realUploadPut.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_upload_session_chunk');
+
+  // 3. Astra P1-3: Single-unit E1 endpoint (/jderest/v2/formservice) enforces rootUsable EVEN WHEN formRequests[] is present!
+  const singleFormWithEmptyRoot = buildApiRequestDescriptor({
+    connection: 'e1-svc', connectionType: 'service', hmacKey, seq: 4, method: 'POST',
+    url: new URL('https://e1-svc.rf.internal/jderest/v2/formservice'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ formRequest: {}, formRequests: [{ formName: 'P01012_W01012A', formServiceAction: 'R' }] })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(singleFormWithEmptyRoot.safe.actions[0].details?.malformedE1Action, true);
+  assert.equal(evaluateStage1(singleFormWithEmptyRoot.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed');
+
+  // 4. Astra P2 #1: Reject simultaneous site + connection on http_delete (400)!
+  const conns = [{ name: 'sp-svc', type: 'service' }];
+  assert.throws(
+    () => validateAndNormalizeApprovalScope({ action: 'http_delete', site: 'portal', connection: 'sp-svc', host: 'other.example.com', target: '/api/items/1' }, { workspace: 'w', hmacKey, connections: conns }),
+    (err: any) => err?.status === 400,
+    'http_delete must reject simultaneous site and connection',
+  );
+
+  // 5. Astra P2 #2: Standalone literal-only SQL segments (`INSERT INTO t VALUES (1); 123` / `...; 'x'`) classify as UNKNOWN -> terminal databricks_sql_uninspectable deny!
+  let stage2Called = false;
+  const permissiveEngine = new ExecPolicyEngine(() => { stage2Called = true; return { action: 'allow' }; });
+  for (const sql of ['INSERT INTO staging VALUES (1); 123', "INSERT INTO staging VALUES (1); 'x'"]) {
+    const desc = buildApiRequestDescriptor({
+      connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 5, method: 'POST',
+      url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ warehouse_id: 'wh1', statement: sql })),
+      bodyComplete: true,
+    }).descriptor;
+    assert.equal(desc.safe.actions[0].details?.hasUnknownStatement, true, `literal segment must flag hasUnknownStatement: ${sql}`);
+    const dec = await permissiveEngine.evaluate(desc, { mode: 'enforce' });
+    assert.equal(dec.action, 'deny');
+    assert.equal(dec.ruleId, 'databricks_sql_uninspectable');
+    assert.equal(stage2Called, false);
+  }
+});
+
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
   const unguarded = buildApiRequestDescriptor({
     connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',
