@@ -19,6 +19,7 @@ import {
   computeTargetDigest,
   extractMimeRecipientDomains,
   extractSemantic,
+  hasStrongIfMatch,
   parseSemanticMethods,
 } from '../src/extract.ts';
 import {
@@ -674,9 +675,17 @@ test('R2 security hardening: HMAC target/SQL digests, complete mail recipients, 
   ]) {
     const c = classifySqlStatement(mergeDel);
     assert.equal(c.hasDelete, true, `MERGE THEN DELETE flags hasDelete: ${mergeDel}`);
+    assert.equal(c.hasMergeDelete, true, `MERGE THEN DELETE flags hasMergeDelete: ${mergeDel}`);
     assert.equal(c.destructive, true);
     const d = makeSql({ warehouse_id: 'wh1', statement: mergeDel });
-    assert.equal(evaluateStage1(d.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'databricks_ddl_or_delete');
+    const dec = evaluateStage1(d.safe, 'enforce', { approved: true, approvalRef: 'c1', recentApprovedProposals: [] });
+    assert.equal(dec.action, 'deny', 'MERGE ... THEN DELETE is unconditionally denied even with an approval');
+    assert.equal(dec.ruleId, 'databricks_destructive_ddl');
+    assert.throws(
+      () => validateAndNormalizeApprovalScope({ action: 'databricks:sql', sql: mergeDel, warehouseId: 'wh1' }, { workspace: 'w', hmacKey }),
+      (err: any) => err?.status === 400,
+      'MERGE ... THEN DELETE cannot be proposed for approval',
+    );
   }
   for (const overwriteSql of [
     'WITH a AS (SELECT 1) INSERT OVERWRITE t SELECT * FROM a',
@@ -745,7 +754,7 @@ test('R2 security hardening: HMAC target/SQL digests, complete mail recipients, 
     scheme: 'https', authority: 'erp.example.com', path: '/jderest/v2/formservice', url: 'https://erp.example.com/jderest/v2/formservice',
     method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
     bodyComplete: true, decodeComplete: true, completeness: e1Long.completeness, actions: e1Long.actions,
-  }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
+  }, 'enforce', { approved: true, approvalRef: 'c1', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed');
 
   // If-Match: *, W/"etag", and unquoted arbitrary text are rejected as unguarded overwrites!
   for (const badEtag of ['*', ' * ', 'W/"e1"', 'w/"e1"', '""', 'unquoted-etag']) {
@@ -893,10 +902,10 @@ test('R3 convergence: verbatim approval faithfulness, exact query/port/method HM
   assert.equal(spByIds.actions[0].op, 'sharepoint:delete', 'SharePoint RecycleBin/DeleteByIds classified as destructive');
 
   // 4. E1 multi-location action inspection (empty outer formActions + nested formRequest, conflicting scalar actions, batchformservice formRequests[])
-  for (const [label, body, ep] of [
-    ['empty outer + nested formRequest DoAction', { formName: 'P0411_W0411A', formActions: [], formRequest: { formActions: [{ command: 'DoAction', controlID: '12' }] } }, '/jderest/v2/formservice'],
-    ['conflicting action R vs formServiceAction W', { formName: 'P0411_W0411A', action: 'R', formServiceAction: 'W' }, '/jderest/v2/formservice'],
-    ['batchformservice formRequests[] DoAction', { formRequests: [{ formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] }] }, '/jderest/v2/batchformservice'],
+  for (const [label, body, ep, wantRule] of [
+    ['empty outer + nested formRequest DoAction', { formName: 'P0411_W0411A', formActions: [], formRequest: { formActions: [{ command: 'DoAction', controlID: '12' }] } }, '/jderest/v2/formservice', 'e1_ais_write'],
+    ['conflicting action R vs formServiceAction W', { formName: 'P0411_W0411A', action: 'R', formServiceAction: 'W' }, '/jderest/v2/formservice', 'e1_ais_ambiguous_or_malformed'],
+    ['batchformservice formRequests[] DoAction', { formRequests: [{ formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] }] }, '/jderest/v2/batchformservice', 'e1_ais_write'],
   ] as const) {
     const e1 = extractSemantic({
       url: new URL(`https://erp.example.com${ep}`), sanitizedPath: ep,
@@ -910,7 +919,7 @@ test('R3 convergence: verbatim approval faithfulness, exact query/port/method HM
       method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
       bodyComplete: true, decodeComplete: true, completeness: e1.completeness, actions: e1.actions,
     }, 'enforce', { approved: false, recentApprovedProposals: [] });
-    assert.equal(dec.ruleId, 'e1_ais_write', `E1 multi-location must gate: ${label}`);
+    assert.equal(dec.ruleId, wantRule, `E1 multi-location must gate: ${label}`);
   }
 
   // 5. Spark FROM-first INSERT OVERWRITE -> unconditional deny databricks_destructive_ddl!
@@ -931,6 +940,163 @@ test('R3 convergence: verbatim approval faithfulness, exact query/port/method HM
   // 6. Short unterminated MIME (<8 KiB with no \r\n\r\n or \n\n) -> complete: false!
   const shortUnterminated = Buffer.from('From: alice@demo.test\r\nTo: bob@allowed.test').toString('base64');
   assert.equal(extractMimeRecipientDomains(shortUnterminated).complete, false, 'unterminated short MIME must be incomplete');
+});
+
+test('R4 final convergence: E1 host/port authority & batch per-form binding, SharePoint percent-decoded & DeleteByIds ID binding, RFC 9110 etagc If-Match, and wide SELECT params', () => {
+  const hmacKey = Buffer.alloc(32, 0x99);
+
+  // 1. Astra P1-1: E1 port without host rejected (400); host+port authority enforced strictly at match time!
+  assert.throws(
+    () => validateAndNormalizeApprovalScope({ action: 'e1_ais_write', target: 'P0411_W0411A', port: 8443 }, { workspace: 'w', hmacKey }),
+    (err: any) => err?.status === 400,
+    'port without host must be rejected',
+  );
+  const e1HostScope = validateAndNormalizeApprovalScope(
+    { action: 'e1_ais_write', target: 'P0411_W0411A', host: 'erp-a.example.com', port: 443, site: 'e1' },
+    { workspace: 'w', hmacKey },
+  );
+  assert.equal(e1HostScope.port, undefined, 'default https port 443 normalized');
+  const e1HostLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Post on ERP A', execpolicy: e1HostScope },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  const mkE1Safe = (authority: string, body: Record<string, unknown>, ep = '/jderest/v2/formservice') => {
+    const ext = extractSemantic({
+      url: new URL(`https://${authority}${ep}`), sanitizedPath: ep,
+      method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+      reqType: 'application/json', hmacKey, decodedBuf: Buffer.from(JSON.stringify(body)),
+      bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+    });
+    return {
+      descV: 1 as const, redactV: 1 as const, extractorV: 1 as const, surface: 'browser' as const, target: { site: 'e1' },
+      seq: 1, t: '', kind: 'http' as const, scheme: 'https', authority, path: ep, url: `https://${authority}${ep}`,
+      method: 'POST', effectiveMethod: 'POST', methodSource: 'wire' as const, isWrite: true, prefixBytes: 50,
+      bodyComplete: true, decodeComplete: true, completeness: ext.completeness, actions: ext.actions,
+    };
+  };
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-a.example.com', { formName: 'P0411_W0411A', formServiceAction: 'W' }) }).approved,
+    true,
+    'E1 approval matches exact hostA',
+  );
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-b.example.com', { formName: 'P0411_W0411A', formServiceAction: 'W' }) }).approved,
+    false,
+    'E1 approval for hostA MUST NOT match hostB',
+  );
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkE1Safe('erp-a.example.com:8443', { formName: 'P0411_W0411A', formServiceAction: 'W' }) }).approved,
+    false,
+    'E1 approval for port 443 MUST NOT match port 8443',
+  );
+
+  // 2. Astra P1-2: E1 batch per-form tracking — single-form approval for P0411_W0411A NEVER unlocks batch mutating P0411_W0411B!
+  const multiFormBatch = mkE1Safe('erp-a.example.com', {
+    formRequests: [
+      { formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] },
+      { formName: 'P0411_W0411B', formActions: [{ command: 'DoAction', controlID: '99' }] },
+    ],
+  }, '/jderest/v2/batchformservice');
+  assert.deepEqual(multiFormBatch.actions[0].details?.mutatingForms, ['P0411_W0411A', 'P0411_W0411B']);
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: multiFormBatch }).approved,
+    false,
+    'single-form E1 approval NEVER unlocks batch writing a second form',
+  );
+  const singleFormBatch = mkE1Safe('erp-a.example.com', {
+    formRequests: [
+      { formName: 'P0411_W0411A', formActions: [{ command: 'DoAction', controlID: '12' }] },
+      { formName: 'P0411_W0411B', formServiceAction: 'R' },
+    ],
+  }, '/jderest/v2/batchformservice');
+  assert.deepEqual(singleFormBatch.actions[0].details?.mutatingForms, ['P0411_W0411A']);
+  assert.equal(
+    findCurrentEpochApproval(e1HostLog, { owner: 'alice@demo.test', workspace: 'w', safe: singleFormBatch }).approved,
+    true,
+    'batch that only mutates approved form A (read-only on B) matches approval for A',
+  );
+  // Unattributed mutation (no formName) escalates even when an approval exists!
+  const unattrBatch = mkE1Safe('erp-a.example.com', {
+    formRequests: [
+      { formName: 'P0411_W0411A', formServiceAction: 'R' },
+      { formActions: [{ command: 'DoAction', controlID: '99' }] },
+    ],
+  }, '/jderest/v2/batchformservice');
+  assert.equal(unattrBatch.actions[0].details?.unattributedMutation, true);
+  assert.equal(evaluateStage1(unattrBatch, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'e1_ais_ambiguous_or_malformed');
+
+  // 3. Astra P1-3: SharePoint percent-decoded segment classification catches /%72ecycle()!
+  const encodedRecycle = extractSemantic({
+    url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/lists/items(1)/%72ecycle()'),
+    sanitizedPath: '/sites/fin/_api/web/lists/items(1)/%72ecycle()',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: {}, bodyComplete: true,
+    transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(encodedRecycle.actions[0].op, 'sharepoint:delete', 'percent-encoded %72ecycle() classified as sharepoint:delete');
+
+  // 4. Astra P1-4: SharePoint DeleteByIds binds body-selected `ids` into targetDigest and rejects missing/different IDs!
+  assert.throws(
+    () => validateAndNormalizeApprovalScope({ action: 'sharepoint_destructive_write', host: 'tenant.sharepoint.com', site: 'sp', target: '/sites/fin/_api/web/RecycleBin/DeleteByIds' }, { workspace: 'w', hmacKey }),
+    (err: any) => err?.status === 400,
+    'DeleteByIds scope without ids must be rejected',
+  );
+  const spIdsScope = validateAndNormalizeApprovalScope({
+    action: 'sharepoint_destructive_write', host: 'tenant.sharepoint.com', site: 'sp',
+    target: '/sites/fin/_api/web/RecycleBin/DeleteByIds', ids: ['id-2', 'id-1'], maxUses: 1,
+  }, { workspace: 'w', hmacKey });
+  assert.deepEqual(spIdsScope.ids, ['id-1', 'id-2']);
+  const spIdsLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete 2 items', execpolicy: spIdsScope },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  const mkSpDeleteByIds = (body?: string) => {
+    const ext = extractSemantic({
+      url: new URL('https://tenant.sharepoint.com/sites/fin/_api/web/RecycleBin/DeleteByIds'),
+      sanitizedPath: '/sites/fin/_api/web/RecycleBin/DeleteByIds',
+      method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+      reqType: 'application/json', hmacKey,
+      decodedBuf: body !== undefined ? Buffer.from(body) : undefined,
+      bodyComplete: true, transport: body !== undefined ? 'complete' : 'not-read',
+      isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+    });
+    return {
+      descV: 1 as const, redactV: 1 as const, extractorV: 1 as const, surface: 'browser' as const, target: { site: 'sp' },
+      seq: 1, t: '', kind: 'http' as const, scheme: 'https', authority: 'tenant.sharepoint.com',
+      path: '/sites/fin/_api/web/RecycleBin/DeleteByIds', url: 'https://tenant.sharepoint.com/sites/fin/_api/web/RecycleBin/DeleteByIds',
+      method: 'POST', effectiveMethod: 'POST', methodSource: 'wire' as const, isWrite: true, prefixBytes: body?.length ?? 0,
+      bodyComplete: true, decodeComplete: true, completeness: ext.completeness, actions: ext.actions,
+    };
+  };
+  assert.equal(findCurrentEpochApproval(spIdsLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkSpDeleteByIds(JSON.stringify({ ids: ['id-1', 'id-2'] })) }).approved, true, 'matching DeleteByIds ids allowed');
+  assert.equal(findCurrentEpochApproval(spIdsLog, { owner: 'alice@demo.test', workspace: 'w', safe: mkSpDeleteByIds(JSON.stringify({ ids: ['id-1', 'id-999'] })) }).approved, false, 'different DeleteByIds ids rejected');
+  const incompleteIds = mkSpDeleteByIds(JSON.stringify({ ids: [] }));
+  assert.equal(incompleteIds.actions[0].details?.bodySelectionIncomplete, true);
+  assert.equal(evaluateStage1(incompleteIds, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'sharepoint_incomplete_selector');
+
+  // 5. Astra P1-6: Proper RFC 9110 etagc parser for If-Match!
+  assert.equal(hasStrongIfMatch({ 'if-match': '"a,b"' }), true, 'comma inside quoted opaque ETag is valid');
+  assert.equal(hasStrongIfMatch({ 'if-match': '"v1", "v2"' }), true, 'valid entity-tag list');
+  assert.equal(hasStrongIfMatch({ 'if-match': '"bad tag"' }), false, 'space inside ETag rejected');
+  assert.equal(hasStrongIfMatch({ 'if-match': '"bad\ttag"' }), false, 'tab inside ETag rejected');
+  assert.equal(hasStrongIfMatch({ 'if-match': 'W/"1"' }), false, 'weak ETag rejected');
+  assert.equal(hasStrongIfMatch({ 'if-match': '*' }), false, 'wildcard * rejected');
+  assert.equal(hasStrongIfMatch({ 'if-match': '"v1",' }), false, 'trailing comma rejected');
+
+  // 6. Opus P2-1: Read-only Databricks SELECT with 150 parameters stays allow_databricks_sql_read (never hits 512-node canonical cap!)
+  const wideSelect = buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({
+      warehouse_id: 'wh1',
+      statement: 'SELECT * FROM prod.gl WHERE id IN (:p0)',
+      parameters: Array.from({ length: 150 }, (_, i) => ({ name: `p${i}`, value: String(i), type: 'INT' })),
+    })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(evaluateStage1(wideSelect.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_databricks_sql_read');
 });
 
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {

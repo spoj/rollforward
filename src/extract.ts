@@ -815,12 +815,33 @@ export function canonicalizeTargetPath(rawPathname: string, foldGraphVersion = f
   return p
 }
 
-function effectiveAuthority(host: string, port?: string | number, scheme = 'https'): string {
+export function effectiveAuthority(host: string, port?: string | number, scheme = 'https'): string {
   const h = host.trim().toLowerCase()
   const p = port !== undefined && port !== null ? String(port).trim() : ''
   if (!p) return h
   if ((scheme === 'https' && p === '443') || (scheme === 'http' && p === '80')) return h
   return `${h}:${p}`
+}
+
+export function decodePathSegmentsStrict(rawPathname: string): { segments: string[]; decodedPath: string; invalidEncoding: boolean } {
+  const parts = rawPathname.split('/')
+  const segments: string[] = []
+  let invalidEncoding = false
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i]
+    if (!seg) continue
+    try {
+      const dec = decodeURIComponent(seg)
+      if (/[/\\\x00-\x1f\x7f]/.test(dec) || dec === '.' || dec === '..') {
+        invalidEncoding = true
+      }
+      segments.push(dec)
+    } catch {
+      invalidEncoding = true
+      segments.push(seg)
+    }
+  }
+  return { segments, decodedPath: '/' + segments.join('/'), invalidEncoding }
 }
 
 export function computeTargetDigest(
@@ -833,6 +854,7 @@ export function computeTargetDigest(
     rawPathname: string
     rawSearch?: string
     resourceId?: string
+    bodySelector?: string
   },
   hmacKey?: Buffer,
 ): string {
@@ -840,14 +862,16 @@ export function computeTargetDigest(
   const connType = (input.connectionType ?? '').toLowerCase()
   const foldGraph = connType === 'graph' || input.host.trim().toLowerCase() === 'graph.microsoft.com'
   const auth = effectiveAuthority(input.host, input.port, input.scheme ?? 'https')
-  const payload = JSON.stringify([
+  const tuple: string[] = [
     input.surface,
     connType,
     auth,
     canonicalizeTargetPath(input.rawPathname, foldGraph),
     input.rawSearch ?? '',
     input.resourceId ?? '',
-  ])
+  ]
+  if (input.bodySelector) tuple.push(input.bodySelector)
+  const payload = JSON.stringify(tuple)
   return crypto.createHmac('sha256', k).update(`target:${payload}`).digest('hex')
 }
 
@@ -888,16 +912,43 @@ export function computeSqlContextDigest(
   return crypto.createHmac('sha256', k).update(`sql:${payload}`).digest('hex')
 }
 
-// Strict RFC 9110 strong entity-tag check: every comma-separated member must be a non-empty quoted strong ETag ("..."),
-// rejecting '*', weak W/"...", empty "", and unquoted arbitrary text.
+// Strict RFC 9110 §8.8.3.2 / §13.1.1 linear strong entity-tag list scanner:
+// handles commas inside quoted opaque tags ("a,b"), validates every character inside quotes against RFC 9110 etagc
+// (%x21 / %x23-7E / %x80-FF, rejecting spaces, tabs, CTLs), and rejects '*', weak W/"...", empty "", and trailing commas.
+function isRfc9110Etagc(c: number): boolean {
+  return c === 0x21 || (c >= 0x23 && c <= 0x7e) || (c >= 0x80 && c <= 0xff)
+}
+
 export function hasStrongIfMatch(rawHeaders: Record<string, string | string[] | undefined>): boolean {
   const raw = rawHeaders['if-match']
   const val = Array.isArray(raw) ? raw.join(',') : typeof raw === 'string' ? raw : ''
-  const trimmed = val.trim()
-  if (!trimmed || trimmed === '*') return false
-  const parts = trimmed.split(',').map(p => p.trim()).filter(Boolean)
-  if (!parts.length) return false
-  return parts.every(p => p.length > 2 && /^"[^"\r\n]+"$/.test(p))
+  const len = val.length
+  let i = 0
+  const skipOws = () => { while (i < len && (val.charCodeAt(i) === 0x20 || val.charCodeAt(i) === 0x09)) i++ }
+
+  skipOws()
+  if (i >= len) return false
+  let count = 0
+  for (;;) {
+    skipOws()
+    if (i >= len || val.charCodeAt(i) !== 0x22) return false // must start with '"' (rejects *, W/, unquoted)
+    i++ // consume opening '"'
+    const tagStart = i
+    while (i < len && val.charCodeAt(i) !== 0x22) {
+      if (!isRfc9110Etagc(val.charCodeAt(i))) return false
+      i++
+    }
+    if (i >= len || i === tagStart) return false // unclosed quote or empty ""
+    i++ // consume closing '"'
+    count++
+    skipOws()
+    if (i >= len) break
+    if (val.charCodeAt(i) !== 0x2c) return false // must be ',' between list members
+    i++ // consume ','
+    skipOws()
+    if (i >= len) return false // reject trailing comma
+  }
+  return count > 0
 }
 
 export const E1_MUTATING_FORM_COMMANDS = new Set([
@@ -921,6 +972,7 @@ export type SqlClassification = {
   destructive: boolean
   hasDropOrTruncate: boolean
   hasDelete: boolean
+  hasMergeDelete?: boolean
   ambiguous?: boolean
 }
 
@@ -1189,26 +1241,27 @@ export function classifySqlStatement(sql: string): SqlClassification {
   // and NEVER classify as 'read'.
   if (ambiguous) {
     if (!hasDropOrTruncate && /\b(?:DROP|TRUNCATE)\b|\bINSERT\s+OVERWRITE\b|\bREPLACE\s+WHERE\b/i.test(sql)) hasDropOrTruncate = true
+    if (!hasMergeDelete && /\bMERGE\b[\s\S]*\bTHEN\s+DELETE\b/i.test(sql)) hasMergeDelete = true
     if (!hasDelete && /\bDELETE\b/i.test(sql)) hasDelete = true
   }
-  const destructive = hasDropOrTruncate || hasDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
+  const destructive = hasDropOrTruncate || hasDelete || hasMergeDelete || statements.some(v => SQL_DESTRUCTIVE_VERBS.has(v))
 
   if (!statements.length) {
-    return { sqlClass: 'unknown', statements: [], destructive, hasDropOrTruncate, hasDelete, ...(ambiguous && { ambiguous: true }) }
+    return { sqlClass: 'unknown', statements: [], destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }), ...(ambiguous && { ambiguous: true }) }
   }
   if (ambiguous) {
-    return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ambiguous: true }
+    return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }), ambiguous: true }
   }
   if (statements.some(v => SQL_DDL_VERBS.has(v))) {
-    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
+    return { sqlClass: 'ddl', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
   }
   if (statements.some(v => SQL_WRITE_VERBS.has(v))) {
-    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
+    return { sqlClass: 'write', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
   }
   if (statements.every(v => SQL_READ_VERBS.has(v))) {
     return { sqlClass: 'read', statements: statements.slice(0, 16), destructive: false, hasDropOrTruncate: false, hasDelete: false }
   }
-  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete }
+  return { sqlClass: 'unknown', statements: statements.slice(0, 16), destructive, hasDropOrTruncate, hasDelete, ...(hasMergeDelete && { hasMergeDelete: true }) }
 }
 
 // ---- Graph API semantic helpers (domains & counts only, NEVER raw addresses/subject/body PII) ----
@@ -1683,7 +1736,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 
     // ---- API-native extractors (surface === 'api') ----
     const surface: 'browser' | 'api' = input.surface ?? 'browser'
-    const makeTargetDigest = (resourceId?: string) =>
+    const decodedPathInfo = decodePathSegmentsStrict(input.url.pathname)
+    const decodedLowerPath = decodedPathInfo.decodedPath.toLowerCase()
+    const makeTargetDigest = (resourceId?: string, bodySelector?: string) =>
       computeTargetDigest({
         surface,
         connectionType: input.connectionType,
@@ -1693,6 +1748,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         rawPathname: input.url.pathname,
         rawSearch: input.url.search,
         ...(resourceId && { resourceId }),
+        ...(bodySelector && { bodySelector }),
       }, input.hmacKey)
     const isGraph = input.connectionType === 'graph' || (input.surface === 'api' && input.url.hostname.toLowerCase() === 'graph.microsoft.com')
     const isDatabricks = input.connectionType === 'databricks' || (input.surface === 'api' && input.url.hostname.toLowerCase().endsWith('.azuredatabricks.net'))
@@ -1860,6 +1916,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           destructive: cls.destructive,
           ...(cls.hasDropOrTruncate && { hasDropOrTruncate: true }),
           ...(cls.hasDelete && { hasDelete: true }),
+          ...(cls.hasMergeDelete && { hasMergeDelete: true }),
           ...(cls.ambiguous && { ambiguous: true }),
         }
         const wh = validateStructuralIdent(obj?.warehouse_id, DBX_IDENT_RE, input.vault, true)
@@ -1874,10 +1931,11 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         if (Array.isArray(obj?.parameters) && obj.parameters.length > 0) {
           details.parameterCount = obj.parameters.length
         }
-        if (stmtRaw) {
+        // Only compute sqlContextDigest for non-read SQL (read-only SELECTs with >=128 params don't need approval digesting!)
+        if (stmtRaw && cls.sqlClass !== 'read') {
           details.sqlContextDigest = computeSqlContextDigest({
             sql: stmtRaw,
-            parameters: obj?.parameters,
+            ...(obj && 'parameters' in obj ? { parameters: obj.parameters } : {}),
             warehouseId: typeof obj?.warehouse_id === 'string' ? obj.warehouse_id : undefined,
             catalog: typeof obj?.catalog === 'string' ? obj.catalog : undefined,
             schema: typeof obj?.schema === 'string' ? obj.schema : undefined,
@@ -1931,35 +1989,116 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
 
     // ---- Browser & general HTTP extractors ----
     else if (
-      lowerPath.includes('/jderest/') ||
+      decodedLowerPath.includes('/jderest/') ||
       (!!obj && (
         (typeof obj.formName === 'string' && (Array.isArray(obj.formActions) || typeof obj.formServiceAction === 'string' || 'actionRequest' in obj || 'formRequest' in obj)) ||
         Array.isArray(obj.formRequests)
       ))
     ) {
-      const m = /\/jderest\/(?:v\d+\/)?([^/;?]+)/i.exec(input.url.pathname)
+      const m = /\/jderest\/(?:v\d+\/)?([^/;?]+)/i.exec(decodedPathInfo.decodedPath)
       const rawEndpoint = m ? m[1].toLowerCase() : 'ais'
       const endpoint = E1_ENDPOINTS.has(rawEndpoint) ? rawEndpoint : 'ais'
 
       const details: Record<string, unknown> = {}
-      const candidateContainers: Record<string, unknown>[] = []
       let malformedE1Action = false
-      if (obj) {
-        candidateContainers.push(obj)
+      let conflictingActions = false
+      let unattributedMutation = false
+      let hasMutatingFormAction = false
+      const mutatingForms = new Set<string>()
+      const allFormNames: string[] = []
+      const scalarActionValues: string[] = []
+      const allRawActions: unknown[] = []
+      let sawFormActionsField = false
+
+      // Process each E1 request unit (top-level + each batch formRequests[] entry) independently so per-form
+      // mutation associations are preserved and a single-form approval can NEVER cover another form in the batch!
+      const inspectE1Unit = (unit: Record<string, unknown>) => {
+        const containers: Record<string, unknown>[] = [unit]
         for (const subKey of ['actionRequest', 'formRequest'] as const) {
-          if (subKey in obj && obj[subKey] !== undefined && obj[subKey] !== null) {
-            if (typeof obj[subKey] === 'object' && !Array.isArray(obj[subKey])) {
-              candidateContainers.push(obj[subKey] as Record<string, unknown>)
+          if (subKey in unit && unit[subKey] !== undefined && unit[subKey] !== null) {
+            if (typeof unit[subKey] === 'object' && !Array.isArray(unit[subKey])) {
+              containers.push(unit[subKey] as Record<string, unknown>)
             } else {
               malformedE1Action = true
             }
           }
         }
+        const unitFormNames: string[] = []
+        for (const c of containers) {
+          for (const fk of ['formName', 'targetName'] as const) {
+            if (fk in c && c[fk] !== undefined && c[fk] !== null) {
+              if (typeof c[fk] === 'string' && (c[fk] as string).trim()) {
+                const ident = validateStructuralIdent(c[fk], STRUCT_IDENT_RE, input.vault)
+                vaultRedactions += ident.vaultRedactions
+                if (ident.value) unitFormNames.push(ident.value)
+                else malformedE1Action = true
+              } else {
+                malformedE1Action = true
+              }
+            }
+          }
+        }
+        const uniqueUnitForms = [...new Set(unitFormNames)]
+        if (uniqueUnitForms.length > 1) malformedE1Action = true
+        const unitForm = uniqueUnitForms.length === 1 ? uniqueUnitForms[0] : undefined
+        if (unitForm) allFormNames.push(unitForm)
+
+        const unitScalars: string[] = []
+        for (const c of containers) {
+          for (const k of ['action', 'formServiceAction'] as const) {
+            if (k in c && c[k] !== undefined && c[k] !== null) {
+              if (typeof c[k] === 'string' && (c[k] as string).trim()) {
+                const v = (c[k] as string).trim()
+                unitScalars.push(v)
+                scalarActionValues.push(v)
+              } else {
+                malformedE1Action = true
+              }
+            }
+          }
+        }
+        const normUnitScalars = [...new Set(unitScalars.map(s => s.toUpperCase()))]
+        if (normUnitScalars.length > 1) conflictingActions = true
+        let unitMutates = normUnitScalars.some(s => s === 'W' || s === 'C' || s === 'U' || s === 'D')
+
+        for (const c of containers) {
+          if ('formActions' in c && c.formActions !== undefined && c.formActions !== null) {
+            sawFormActionsField = true
+            if (Array.isArray(c.formActions)) {
+              for (const a of c.formActions) {
+                allRawActions.push(a)
+                if (!a || typeof a !== 'object' || Array.isArray(a)) {
+                  malformedE1Action = true
+                  continue
+                }
+                const cmd = (a as Record<string, unknown>).command
+                if (typeof cmd !== 'string' || !cmd.trim()) {
+                  malformedE1Action = true
+                  continue
+                }
+                if (E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())) {
+                  unitMutates = true
+                  hasMutatingFormAction = true
+                }
+              }
+            } else {
+              malformedE1Action = true
+            }
+          }
+        }
+        if (unitMutates) {
+          if (unitForm) mutatingForms.add(unitForm)
+          else unattributedMutation = true
+        }
+      }
+
+      if (obj) {
+        inspectE1Unit(obj)
         if ('formRequests' in obj && obj.formRequests !== undefined && obj.formRequests !== null) {
           if (Array.isArray(obj.formRequests)) {
             for (const item of obj.formRequests) {
               if (item && typeof item === 'object' && !Array.isArray(item)) {
-                candidateContainers.push(item as Record<string, unknown>)
+                inspectE1Unit(item as Record<string, unknown>)
               } else {
                 malformedE1Action = true
               }
@@ -1970,34 +2109,16 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         }
       }
 
-      let rawFormName: string | undefined
-      for (const c of candidateContainers) {
-        if (typeof c.formName === 'string') { rawFormName = c.formName; break }
-        if (typeof c.targetName === 'string' && !rawFormName) rawFormName = c.targetName
-      }
-      const formIdent = validateStructuralIdent(rawFormName, STRUCT_IDENT_RE, input.vault)
-      vaultRedactions += formIdent.vaultRedactions
-      if (formIdent.value) details.formName = formIdent.value
+      const uniqueAllForms = [...new Set(allFormNames)]
+      const primaryForm = uniqueAllForms[0]
+      if (primaryForm) details.formName = primaryForm
+      if (mutatingForms.size > 0) details.mutatingForms = [...mutatingForms].sort()
+      if (unattributedMutation) details.unattributedMutation = true
 
       const verIdent = validateStructuralIdent(obj?.version, STRUCT_IDENT_RE, input.vault)
       vaultRedactions += verIdent.vaultRedactions
       if (verIdent.value) details.version = verIdent.value
 
-      // Inspect EVERY supported E1 scalar action location (action AND formServiceAction across outer, formRequest, actionRequest, formRequests[]).
-      const scalarActionValues: string[] = []
-      for (const c of candidateContainers) {
-        for (const k of ['action', 'formServiceAction'] as const) {
-          if (k in c && c[k] !== undefined && c[k] !== null) {
-            if (typeof c[k] === 'string' && c[k].trim()) {
-              scalarActionValues.push(c[k].trim())
-            } else {
-              malformedE1Action = true
-            }
-          }
-        }
-      }
-      const normalizedScalars = [...new Set(scalarActionValues.map(s => s.toUpperCase()))]
-      const conflictingActions = normalizedScalars.length > 1
       const mutatingScalar = scalarActionValues.find(s => ['W', 'C', 'U', 'D'].includes(s.toUpperCase()))
       const primaryScalar = mutatingScalar ?? scalarActionValues[0]
       const actIdent = validateStructuralIdent(primaryScalar, /^[A-Za-z][A-Za-z0-9_-]{0,23}$/, input.vault)
@@ -2013,36 +2134,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       vaultRedactions += dsTypeIdent.vaultRedactions
       if (dsTypeIdent.value) details.dataServiceType = dsTypeIdent.value
 
-      // Collect ALL formActions arrays across EVERY container so an empty outer array NEVER masks nested actions!
-      const allRawActions: unknown[] = []
-      let sawFormActionsField = false
-      for (const c of candidateContainers) {
-        if ('formActions' in c && c.formActions !== undefined && c.formActions !== null) {
-          sawFormActionsField = true
-          if (Array.isArray(c.formActions)) {
-            for (const a of c.formActions) allRawActions.push(a)
-          } else {
-            malformedE1Action = true
-          }
-        }
-      }
       if (sawFormActionsField) {
-        // Evaluate mutation and malformed-entry flags across the FULL combined formActions list BEFORE slicing to 32!
-        let hasMutatingFormAction = false
-        for (const a of allRawActions) {
-          if (!a || typeof a !== 'object' || Array.isArray(a)) {
-            malformedE1Action = true
-            continue
-          }
-          const cmd = (a as Record<string, unknown>).command
-          if (typeof cmd !== 'string' || !cmd.trim()) {
-            malformedE1Action = true
-            continue
-          }
-          if (E1_MUTATING_FORM_COMMANDS.has(cmd.toLowerCase())) {
-            hasMutatingFormAction = true
-          }
-        }
         if (hasMutatingFormAction) details.hasMutatingFormAction = true
         const summarized = allRawActions.slice(0, 32).map(a => {
           if (!a || typeof a !== 'object') return { command: 'unknown' }
@@ -2061,10 +2153,10 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       }
       if (malformedE1Action) details.malformedE1Action = true
 
-      if (input.isWrite) details.targetDigest = makeTargetDigest(formIdent.value)
+      if (input.isWrite) details.targetDigest = makeTargetDigest(primaryForm)
 
       const op = actIdent.value ? `${endpoint}:${actIdent.value}` : `${endpoint}:${input.effectiveMethod}`
-      const resource = formIdent.value ?? input.sanitizedPath
+      const resource = primaryForm ?? input.sanitizedPath
       actions.push({
         family: 'e1-ais',
         op,
@@ -2073,12 +2165,12 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         coverage: defaultCov,
       })
       extractStatus = fullyIntact ? 'complete' : 'partial'
-    } else if (lowerPath.includes('/_api/') || lowerPath.includes('/_vti_bin/')) {
+    } else if (decodedLowerPath.includes('/_api/') || decodedLowerPath.includes('/_vti_bin/')) {
       const sanLower = input.sanitizedPath.toLowerCase()
       const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
       const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
-      if (lowerPath.includes('/$batch')) {
+      if (decodedLowerPath.includes('/$batch')) {
         actions.push({
           family: 'sharepoint',
           op: 'sharepoint:batch',
@@ -2086,18 +2178,55 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           details: {
             hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
             hasIfMatch,
+            ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
             ...(input.isWrite && { targetDigest: makeTargetDigest() }),
           },
           coverage: 'opaque-batch',
         })
         extractStatus = 'opaque'
       } else {
-        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(lowerPath)
+        const destructiveAction = /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(decodedLowerPath)
+        const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedLowerPath)
+        let bodySelector: string | undefined
+        let selectedIds: string[] | undefined
+        let bodySelectionIncomplete = false
+        if (isDeleteByIds && input.isWrite) {
+          if (!fullyIntact || !obj) {
+            bodySelectionIncomplete = true
+          } else {
+            const idMatches = keyedCI(obj, 'ids')
+            if (idMatches.length !== 1 || !Array.isArray(idMatches[0]) || idMatches[0].length === 0 || idMatches[0].length > 1000) {
+              bodySelectionIncomplete = true
+            } else {
+              const idSet = new Set<string>()
+              let ok = true
+              for (const item of idMatches[0]) {
+                if (typeof item === 'string' && item.trim() && item.trim().length <= 128 && !/[\r\n\0]/.test(item)) {
+                  idSet.add(item.trim())
+                } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
+                  idSet.add(String(item))
+                } else {
+                  ok = false
+                  break
+                }
+              }
+              if (!ok || idSet.size === 0 || idSet.size > 64) {
+                bodySelectionIncomplete = true
+              } else {
+                selectedIds = [...idSet].sort()
+                bodySelector = JSON.stringify({ op: 'deletebyids', ids: selectedIds })
+              }
+            }
+          }
+        }
         const details: Record<string, unknown> = {
           hasIfMatch,
           hasRequestDigest: Boolean(input.rawHeaders['x-requestdigest']),
           ...(destructiveAction && { destructiveAction: true }),
-          ...(input.isWrite && { targetDigest: makeTargetDigest() }),
+          ...(decodedPathInfo.invalidEncoding && { ambiguousPathEncoding: true }),
+          ...(bodySelectionIncomplete && { bodySelectionIncomplete: true }),
+          ...(selectedIds && { selectedIds, selectedIdCount: selectedIds.length }),
+          ...(input.isWrite && !bodySelectionIncomplete && { targetDigest: makeTargetDigest(undefined, bodySelector) }),
         }
         if (input.hdr?.['x-http-method']) details.override = input.hdr['x-http-method']
         const rawMetaType = (obj?.__metadata as any)?.type ?? obj?.['@odata.type']
@@ -2110,9 +2239,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
           op: destructiveAction ? 'sharepoint:delete' : `sharepoint:${input.effectiveMethod}`,
           resource: spResource,
           details,
-          coverage: defaultCov,
+          coverage: decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'unknown' : defaultCov,
         })
-        extractStatus = fullyIntact ? 'complete' : 'partial'
+        extractStatus = decodedPathInfo.invalidEncoding || bodySelectionIncomplete ? 'opaque' : fullyIntact ? 'complete' : 'partial'
       }
     } else if (
       lowerPath.includes('/graphql') ||

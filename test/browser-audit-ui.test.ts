@@ -130,6 +130,20 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
                 maxUses: 1,
               },
             },
+            {
+              seq: 7, at: '2026-11-27T10:00:09Z', by: 'agent', op: 'comment', thread: 'c7', item: null, ref: null,
+              ask: 'proposal', run: 1, text: 'Approve SharePoint bulk delete?',
+              execpolicy: {
+                action: 'sharepoint_destructive_write',
+                target: '/sites/fin/_api/web/RecycleBin/DeleteByIds',
+                ids: ['id-1', 'id-2'],
+                targetDigest: 'c'.repeat(64),
+                host: 'tenant.sharepoint.com',
+                site: 'sp',
+                workspace: 'w1',
+                maxUses: 1,
+              },
+            },
           ],
           standing: {},
           starts: true,
@@ -239,6 +253,7 @@ test('Browser Audit Timeline modal merges shots, HTTP writes, and CDP commands c
   assert.match(allScopesText, /\/v1\.0\/drives\/d1\/items\/01BYE5RZ6QN3K4L8M9N2P5Q7/, 'verbatim unredacted target rendered on card');
   assert.match(allScopesText, /DELETE FROM staging WHERE id = :id/, 'verbatim SQL rendered on card');
   assert.match(allScopesText, /"value":"42"/, 'verbatim SQL parameters rendered on card');
+  assert.match(allScopesText, /IDs:\s*id-1, id-2/, 'verbatim DeleteByIds IDs rendered on card');
   assert.match(allScopesText, /Max uses:\s*1/);
 
   await page.close();

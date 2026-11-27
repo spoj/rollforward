@@ -11,6 +11,8 @@ import {
   classifySqlStatement,
   computeSqlContextDigest,
   computeTargetDigest,
+  decodePathSegmentsStrict,
+  effectiveAuthority,
   isValidEmailDomain,
   parseSemanticMethods,
   type RequestDescriptor,
@@ -58,6 +60,7 @@ export type ApprovalScope = {
   target?: string
   targetDigest?: string
   domains?: string[]
+  ids?: string[]
   sql?: string
   parameters?: unknown
   sqlContextDigest?: string
@@ -188,6 +191,7 @@ const ALLOWED_SCOPE_KEYS = new Set([
   'action',
   'target',
   'domains',
+  'ids',
   'sql',
   'parameters',
   'warehouseId',
@@ -211,18 +215,22 @@ const CANONICAL_SCOPE_ACTIONS = new Set([
   'http_delete',
 ])
 
+function isE1AmbiguousOrMalformed(act: SemanticAction): boolean {
+  if (act.family !== 'e1-ais') return false
+  return (
+    act.details?.conflictingActions === true ||
+    act.details?.malformedE1Action === true ||
+    act.details?.formActionsTruncated === true ||
+    act.details?.unattributedMutation === true
+  )
+}
+
 function isE1WriteAction(act: SemanticAction): boolean {
   if (act.family !== 'e1-ais') return false
   const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
   if (a === 'W' || a === 'C' || a === 'U' || a === 'D' || /:[WCUD]$/i.test(act.op)) return true
-  if (
-    act.details?.hasMutatingFormAction === true ||
-    act.details?.conflictingActions === true ||
-    act.details?.malformedE1Action === true ||
-    act.details?.formActionsTruncated === true
-  ) {
-    return true
-  }
+  if (act.details?.hasMutatingFormAction === true || isE1AmbiguousOrMalformed(act)) return true
+  if (Array.isArray(act.details?.mutatingForms) && (act.details!.mutatingForms as unknown[]).length > 0) return true
   const formActions = Array.isArray(act.details?.formActions) ? (act.details!.formActions as Array<{ command?: unknown }>) : []
   return formActions.some(fa => typeof fa?.command === 'string' && E1_MUTATING_FORM_COMMANDS.has(fa.command.toLowerCase()))
 }
@@ -394,8 +402,8 @@ export function validateAndNormalizeApprovalScope(
       throw new HttpError(400, 'execpolicy SQL scope must not contain raw secrets or credentials')
     }
     const cls = classifySqlStatement(sqlTrimmed)
-    if (cls.hasDropOrTruncate) {
-      throw new HttpError(400, 'DROP, TRUNCATE, INSERT OVERWRITE, and REPLACE WHERE are unconditionally denied and cannot be approved')
+    if (cls.hasDropOrTruncate || cls.hasMergeDelete) {
+      throw new HttpError(400, 'DROP, TRUNCATE, INSERT OVERWRITE, REPLACE WHERE, and MERGE ... THEN DELETE are unconditionally denied and cannot be approved')
     }
     let canonicalParams: unknown
     if (obj.parameters !== undefined) {
@@ -445,11 +453,15 @@ export function validateAndNormalizeApprovalScope(
       }
       host = obj.host.trim().toLowerCase()
     }
+    if (port !== undefined && !host) {
+      throw new HttpError(400, 'execpolicy port requires host')
+    }
+    const normPort = port === 443 ? undefined : port
     return {
       action,
       target,
       ...(host && { host }),
-      ...(port !== undefined && { port }),
+      ...(normPort !== undefined && { port: normPort }),
       ...(site && { site }),
       workspace,
       maxUses,
@@ -467,19 +479,27 @@ export function validateAndNormalizeApprovalScope(
   const qIdx = rawTarget.indexOf('?')
   const rawPathname = qIdx >= 0 ? rawTarget.slice(0, qIdx) : rawTarget
   const rawSearch = qIdx >= 0 ? rawTarget.slice(qIdx) : ''
+  const decodedTargetPath = decodePathSegmentsStrict(rawPathname)
+  if (decodedTargetPath.invalidEncoding) {
+    throw new HttpError(400, `${action} target contains invalid or ambiguous percent-encoding`)
+  }
+  const decodedTargetLower = decodedTargetPath.decodedPath.toLowerCase()
 
   let surface: 'api' | 'browser' = 'api'
   let connType: string | undefined
   let host = ''
+  let ids: string[] | undefined
+  let bodySelector: string | undefined
   if (action === 'graph:file_delete' || action === 'graph:excel_write') {
-    if (action === 'graph:excel_write' && !rawPathname.toLowerCase().includes('/workbook/')) {
+    if (action === 'graph:excel_write' && !decodedTargetLower.includes('/workbook/')) {
       throw new HttpError(400, 'graph:excel_write target must be an exact /workbook/... path')
     }
+    if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
     surface = 'api'
     connType = 'graph'
     host = 'graph.microsoft.com'
   } else if (action === 'sharepoint_destructive_write') {
-    if (!rawPathname.toLowerCase().includes('/_api/') && !rawPathname.toLowerCase().includes('/_vti_bin/')) {
+    if (!decodedTargetLower.includes('/_api/') && !decodedTargetLower.includes('/_vti_bin/')) {
       throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
     }
     if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
@@ -487,7 +507,33 @@ export function validateAndNormalizeApprovalScope(
     }
     host = obj.host.trim().toLowerCase()
     surface = site ? 'browser' : 'api'
+    const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedTargetLower)
+    if (isDeleteByIds) {
+      if (!Array.isArray(obj.ids) || obj.ids.length === 0 || obj.ids.length > 64) {
+        throw new HttpError(400, 'SharePoint DeleteByIds scope requires 1..64 explicit concrete ids')
+      }
+      const idSet = new Set<string>()
+      for (const item of obj.ids) {
+        let sId: string
+        if (typeof item === 'string' && item.trim() && item.trim().length <= 128 && !item.includes('*') && !/[\r\n\0]/.test(item)) {
+          sId = item.trim()
+        } else if (typeof item === 'number' && Number.isSafeInteger(item)) {
+          sId = String(item)
+        } else {
+          throw new HttpError(400, 'SharePoint DeleteByIds ids must be concrete non-empty strings or integers (no wildcards)')
+        }
+        if (containsRawSecret(sId)) {
+          throw new HttpError(400, 'execpolicy ids must not contain raw secrets or credentials')
+        }
+        idSet.add(sId)
+      }
+      ids = [...idSet].sort()
+      bodySelector = JSON.stringify({ op: 'deletebyids', ids })
+    } else if (obj.ids !== undefined) {
+      throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
+    }
   } else if (action === 'http_delete') {
+    if (obj.ids !== undefined) throw new HttpError(400, 'ids is only valid for bulk body-selected SharePoint deletes')
     if (site) {
       if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
         throw new HttpError(400, 'browser http_delete scope requires host')
@@ -512,34 +558,59 @@ export function validateAndNormalizeApprovalScope(
     }
   }
 
+  if (port !== undefined && !host) {
+    throw new HttpError(400, 'execpolicy port requires host')
+  }
+  const normPort = port === 443 ? undefined : port
   const foldGraph = connType === 'graph' || host === 'graph.microsoft.com'
   const canonicalTarget = canonicalizeTargetPath(rawPathname, foldGraph) + rawSearch
   const targetDigest = computeTargetDigest({
     surface,
     connectionType: connType,
     host,
-    ...(port !== undefined && { port }),
+    ...(normPort !== undefined && { port: normPort }),
     rawPathname,
     rawSearch,
+    ...(bodySelector && { bodySelector }),
   }, ctx.hmacKey)
 
   return {
     action,
     target: canonicalTarget,
+    ...(ids && { ids }),
     targetDigest,
     ...(connection && { connection }),
     ...(host && { host }),
-    ...(port !== undefined && { port }),
+    ...(normPort !== undefined && { port: normPort }),
     ...(site && { site }),
     workspace,
     maxUses,
   }
 }
 
+function normalizeSafeAuthority(safe: SafeRequestProjection): string {
+  const raw = (safe.authority ?? '').trim().toLowerCase()
+  if (!raw) return ''
+  const scheme = (safe.scheme ?? 'https').toLowerCase()
+  const colon = raw.lastIndexOf(':')
+  if (colon > 0 && !raw.includes(']')) {
+    return effectiveAuthority(raw.slice(0, colon), raw.slice(colon + 1), scheme)
+  }
+  return effectiveAuthority(raw, undefined, scheme)
+}
+
 function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope): boolean {
   if (!scope || typeof scope !== 'object' || typeof scope.action !== 'string' || !scope.action.trim()) return false
   if (scope.connection !== undefined && safe.target.connection !== scope.connection) return false
   if (scope.site !== undefined && safe.target.site !== scope.site) return false
+  // Enforce every supplied host/port authority constraint across ALL scope actions (incl. E1)!
+  if (scope.port !== undefined && !scope.host) return false
+  if (scope.host !== undefined) {
+    const scheme = (safe.scheme ?? 'https').toLowerCase()
+    const expectedAuth = effectiveAuthority(scope.host, scope.port, scheme)
+    const reqAuth = normalizeSafeAuthority(safe)
+    if (!reqAuth || reqAuth !== expectedAuth) return false
+  }
 
   const actClass = normalizeScopeAction(scope.action)
   const isDelete = safe.method === 'DELETE' || safe.effectiveMethod === 'DELETE'
@@ -587,13 +658,22 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   if (actClass === 'e1_ais_write') {
     if (isDelete) return false
     const e1Act = safe.actions.find(a => isE1WriteAction(a))
-    if (!e1Act) return false
+    if (!e1Act || isE1AmbiguousOrMalformed(e1Act)) return false
     const hasTarget = typeof scope.target === 'string' && scope.target.trim().length > 0
     const hasDigest = scope.targetDigest !== undefined
     if (!hasTarget && !hasDigest) return false
-    // Enforce EVERY supplied E1 constraint (never short-circuit on targetDigest while ignoring target form name!).
+    // Enforce EVERY supplied E1 constraint AND require every mutating form in a batch to match scope.target!
     if (hasTarget) {
-      if (!E1_FORM_NAME_RE.test(scope.target!.trim()) || e1Act.resource !== scope.target!.trim()) return false
+      const wantForm = scope.target!.trim()
+      if (!E1_FORM_NAME_RE.test(wantForm)) return false
+      const mutForms = Array.isArray(e1Act.details?.mutatingForms)
+        ? (e1Act.details!.mutatingForms as unknown[]).filter((f): f is string => typeof f === 'string' && f.length > 0)
+        : undefined
+      if (mutForms && mutForms.length > 0) {
+        if (!mutForms.every(f => f === wantForm)) return false
+      } else if (e1Act.resource !== wantForm) {
+        return false
+      }
     }
     if (hasDigest) {
       if (!safeHexEqual(e1Act.details?.targetDigest, scope.targetDigest)) return false
@@ -604,7 +684,13 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   if (actClass === 'sharepoint_destructive_write') {
     const spAct = safe.actions.find(a => isSharePointDestructive(safe, a))
     if (!spAct) return false
-    return safeHexEqual(spAct.details?.targetDigest, scope.targetDigest)
+    if (spAct.details?.bodySelectionIncomplete === true || spAct.details?.ambiguousPathEncoding === true) return false
+    if (!safeHexEqual(spAct.details?.targetDigest, scope.targetDigest)) return false
+    if (Array.isArray(scope.ids)) {
+      const reqIds = Array.isArray(spAct.details?.selectedIds) ? (spAct.details!.selectedIds as string[]) : undefined
+      if (!reqIds || reqIds.length !== scope.ids.length || !reqIds.every((v, idx) => v === scope.ids![idx])) return false
+    }
+    return true
   }
 
   if (actClass === 'http_delete') {
@@ -846,12 +932,16 @@ export function evaluateStage1(
       ? make('escalate', bodyIntegrityFailure.ruleId, bodyIntegrityFailure.reason)
       : make('allow', ruleId, 'Approved by current-epoch human signoff', approvalRef)
 
-  // 3a. Unconditional action-level denies first (DROP/TRUNCATE always deny regardless of transport or approval)
+  // 3a. Unconditional action-level denies first (DROP/TRUNCATE/INSERT OVERWRITE/REPLACE WHERE/MERGE...THEN DELETE always deny!)
   for (const act of safe.actions) {
     if (act.family === 'databricks' && act.op.startsWith('databricks:sql_')) {
       const stmts = Array.isArray(act.details?.statements) ? (act.details!.statements as string[]) : []
-      if (act.details?.hasDropOrTruncate === true || stmts.some(s => s === 'DROP' || s === 'TRUNCATE')) {
-        return make('deny', 'databricks_destructive_ddl', `Destructive SQL DDL (${stmts.join(',') || 'DROP/TRUNCATE'}) denied`)
+      if (
+        act.details?.hasDropOrTruncate === true ||
+        act.details?.hasMergeDelete === true ||
+        stmts.some(s => s === 'DROP' || s === 'TRUNCATE')
+      ) {
+        return make('deny', 'databricks_destructive_ddl', `Destructive SQL (${stmts.join(',') || 'DROP/TRUNCATE/MERGE DELETE'}) denied`)
       }
     }
   }
@@ -932,7 +1022,10 @@ export function evaluateStage1(
       }
     }
 
-    // E1 AIS write (formServiceAction/action === 'W' OR mutating formActions commands)
+    // E1 AIS write: escalate malformed/conflicting/truncated/unattributed payloads (never eligible for ordinary approval!)
+    if (act.family === 'e1-ais' && isE1AmbiguousOrMalformed(act)) {
+      return make('escalate', 'e1_ais_ambiguous_or_malformed', 'E1 AIS payload has ambiguous, conflicting, truncated, or malformed actions')
+    }
     if (isE1WriteAction(act)) {
       if (!approval.approved) {
         return make('requireApproval', 'e1_ais_write', 'JD Edwards E1 AIS write action requires human approval')
@@ -942,10 +1035,13 @@ export function evaluateStage1(
       }
     }
 
-    // SharePoint DELETE / MERGE / recycle() / opaque batch / unguarded PUT (check BOTH wire method and effectiveMethod!)
+    // SharePoint DELETE / MERGE / recycle() / opaque batch / incomplete selector / unguarded PUT
     if (act.family === 'sharepoint') {
       if (act.coverage === 'opaque-batch') {
         return make('escalate', 'sharepoint_opaque_batch', 'Opaque SharePoint $batch write requires review')
+      }
+      if (act.details?.bodySelectionIncomplete === true || act.details?.ambiguousPathEncoding === true) {
+        return make('escalate', 'sharepoint_incomplete_selector', 'SharePoint write has incomplete body selector or ambiguous path encoding')
       }
       if (isSharePointDestructive(safe, act)) {
         return approval.approved

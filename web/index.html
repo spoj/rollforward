@@ -835,6 +835,7 @@ function execPolicyScopeHtml(s) {
     ['Action', s.action],
     ...(Array.isArray(s.domains) && s.domains.length ? [['Domains', s.domains.join(', ')]] : []),
     ...(s.target ? [['Target', s.target]] : []),
+    ...(Array.isArray(s.ids) && s.ids.length ? [['IDs', s.ids.join(', ')]] : []),
     ...(s.sql ? [['SQL', s.sql]] : []),
     ...(s.parameters !== undefined ? [['Parameters', JSON.stringify(s.parameters)]] : []),
     ...(s.warehouseId ? [['Warehouse', s.warehouseId]] : []),
