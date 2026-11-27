@@ -13,18 +13,23 @@ type Pause = { seen: PromiseWithResolvers<void>; release: PromiseWithResolvers<v
 const pauses = new Map<string, Pause>(), pendingPauses = new Set<Pause>(), sessions = new Map<string, string>(), models: any[] = [], hostPuts: { path: string; hosts: string[] }[] = [];
 const email = 'alice@company.test', url = 'https://vendor.review.test/';
 const profile = { what: 'A vendor accounting portal', category: 'vendor', risk: 'low', flags: [] };
-let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0;
+let serial = 0, extraHosts: string[] = [], modelProfile = profile, search = false, exaCalls = 0, activeHostPuts = 0, maxHostPuts = 0;
 const service = createServer(async (req, res) => {
   const u = new URL(req.url!, 'http://service');
   const raw = req.method === 'POST' || req.method === 'PUT' ? Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString() : '';
   const body = raw ? JSON.parse(raw) : undefined;
-  if (req.method === 'PUT' && u.pathname.endsWith('/hosts')) hostPuts.push({ path: u.pathname, hosts: body.hosts });
+  const isHostPut = req.method === 'PUT' && u.pathname.endsWith('/hosts');
+  if (isHostPut) maxHostPuts = Math.max(maxHostPuts, ++activeHostPuts);
   if (u.pathname === '/api/v1/chat/completions') models.push(body);
   const pending = pauses.get(`${req.method} ${u.pathname}`);
   if (pending) {
     pauses.delete(`${req.method} ${u.pathname}`);
     pending.seen.resolve();
     await pending.release.promise;
+  }
+  if (isHostPut) {
+    hostPuts.push({ path: u.pathname, hosts: body.hosts });
+    activeHostPuts--;
   }
   res.setHeader('content-type', 'application/json');
   if (u.pathname === '/blocked') return void res.end(JSON.stringify(Object.fromEntries(u.searchParams.getAll('host').map(h => [h, false]))));
@@ -529,22 +534,29 @@ test('concurrent route change or website replacement rejects pending internal, a
   assert.equal((r1.status === 'rejected' ? r1.reason : (r2 as PromiseRejectedResult).reason).status, 409);
   assert.equal(websitesOf(email).dup.url, 'https://first.review.test/');
 
-  // Serialized sign-in host updates + corrupt websites.json resilience on global revocation
+  // Serialized sign-in host updates (reading current hosts at execution time) + corrupt websites.json resilience on global revocation
   await addSite(email, 'intralive', 'https://10.9.8.17/');
   setLetIn(['10.9.8.17'], admin.email, true);
   const liveId = await startSignIn(email, 'intralive', '');
   hostPuts.length = 0;
+  activeHostPuts = 0;
+  maxHostPuts = 0;
   const firstPut = pause(t, `PUT /sessions/${liveId}/hosts`);
   const allowing = allowHost(admin, 'intralive', '10.9.8.18', email);
   await firstPut.seen.promise;
-  // While Allow's PUT is in flight, corrupt another user's websites.json and globally revoke 10.9.8.18
+  // While Allow's PUT is in flight, corrupt another user's websites.json, revoke 10.9.8.18 (enqueuing syncSignInHosts),
+  // AND then also revoke 10.9.8.17 before releasing firstPut so the queued update must read fresh hosts at execution time.
   const corruptDir = personDir('corrupt@company.test');
   mkdirSync(corruptDir, { recursive: true });
   writeFileSync(join(corruptDir, 'websites.json'), '{not-json');
   setLetIn(['10.9.8.18'], admin.email, false);
   const revoking = assert.rejects(revokeInternalHosts(['10.9.8.18']), SyntaxError);
+  await Promise.resolve();
+  setLetIn(['10.9.8.17'], admin.email, false);
   firstPut.release.resolve();
   await Promise.all([allowing, revoking]);
-  assert.deepEqual(hostPuts.filter(p => p.path === `/sessions/${liveId}/hosts`).at(-1)?.hosts, ['10.9.8.17'], 'serialized sign-in update ends with 10.9.8.18 revoked even with a corrupt sibling websites.json');
+  const puts = hostPuts.filter(p => p.path === `/sessions/${liveId}/hosts`);
+  assert.equal(maxHostPuts, 1, 'per-session sign-in host updates never run concurrently');
+  assert.deepEqual(puts.map(p => p.hosts), [['10.9.8.17', '10.9.8.18'], []], 'queued update reads current internalHosts at execution time and finishes last');
   await endSignIn(email, liveId, false);
 });

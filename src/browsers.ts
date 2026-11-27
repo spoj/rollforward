@@ -158,23 +158,24 @@ function website(email: string, name: string): Website {
 type SignIn = { email: string; site: string; name: string; token?: string; since: number; expires: number; website: Website; websiteGeneration?: number; generation: number; loginSince?: string };
 const signIns = new Map<string, SignIn>(), signInGenerations = new Map<string, number>(), signInHostUpdates = new Map<string, Promise<void>>();
 
-function syncSignInHosts(id: string, email: string, site: string, opts: { reload?: boolean; closeOnError?: boolean } = {}) {
+function syncSignInHosts(id: string, opts: { reload?: boolean; closeOnError?: boolean } = {}) {
   const run = async () => {
-    if (!signIns.has(id)) return;
-    let cur: Website | undefined;
-    try { cur = websitesOf(email)[site]; } catch (e) {
-      if (opts.closeOnError) await endSignIn(email, id, false);
+    const s = signIns.get(id);
+    if (!s) return;
+    let cur: Website;
+    try { cur = currentSignIn(s); } catch (e) {
+      if (e instanceof HttpError && e.status === 409) {
+        await endSignIn(s.email, id, false);
+        return;
+      }
+      if (opts.closeOnError) await endSignIn(s.email, id, false);
       throw e;
-    }
-    if (!cur) {
-      if (opts.closeOnError) await endSignIn(email, id, false);
-      return;
     }
     try {
       await browserJson('PUT', `/sessions/${id}/hosts`, { hosts: internalHosts(cur) });
       if (opts.reload && signIns.has(id)) await browserJson('POST', `/sessions/${id}/reload`);
     } catch (e) {
-      if (opts.closeOnError) await endSignIn(email, id, false);
+      if (opts.closeOnError) await endSignIn(s.email, id, false);
       else throw e;
     }
   };
@@ -291,7 +292,8 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
   const hostRev = (h: string) => Object.hasOwn(latest.hostRevs ?? {}, h) ? latest.hostRevs![h] : 0;
   const effective = let_ ? hosts.filter(h => !throughVpn(latest, h) && hostRev(h) === beforeHostRevs[h] && (internalRevocations.get(h) ?? 0) === beforeRevokes[h] && (reached(latest).includes(h) || latest.checks?.[h]?.verdict === 'internal')) : hosts;
   setLetIn(effective, by.email, let_);
-  act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ });
+  let auditErr: unknown;
+  try { act(by.email, { op: 'internal', person, site: name, hosts: effective, let: let_ }); } catch (e) { auditErr = e; }
   if (!let_) await revokeInternalHosts(effective);
   else {
     const passed = effective.filter(h => latest.checks?.[h]?.verdict === 'internal');
@@ -304,20 +306,20 @@ export async function setSite(by: Me, name: string, change: Record<string, unkno
       changes.emit('change', 'tree');
     }
   }
+  if (auditErr) throw auditErr;
 }
 
 export async function revokeInternalHosts(hosts: string[]) {
   if (!hosts.length) return;
   for (const h of hosts) internalRevocations.set(h, (internalRevocations.get(h) ?? 0) + 1);
-  const dir = join(rfDir(), 'people'), byFolder = new Map([...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(e => [personDir(e), e]));
-  const folders = new Set([...byFolder.keys(), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
-  const live = new Map<string, [string, string]>();
+  const dir = join(rfDir(), 'people');
+  const folders = new Set([...[...Object.keys(users()), ...[...signIns.values()].map(s => s.email)].map(personDir), ...(existsSync(dir) ? readdirSync(dir).map(f => join(dir, f)) : [])]);
   let firstError: unknown;
   for (const folder of folders) {
     const file = join(folder, 'websites.json');
     if (!existsSync(file)) continue;
     try {
-      const all: Record<string, Website> = Object.assign(Object.create(null), JSON.parse(readFileSync(file, 'utf8'))), email = byFolder.get(folder);
+      const all: Record<string, Website> = Object.assign(Object.create(null), JSON.parse(readFileSync(file, 'utf8')));
       let changed = false;
       for (const [site, w] of Object.entries(all)) {
         const hit = hosts.filter(h => !throughVpn(w, h) && (reached(w).includes(h) || w.checks?.[h]?.verdict === 'pass'));
@@ -332,16 +334,13 @@ export async function revokeInternalHosts(hosts: string[]) {
           hostRevs: bumpHostRevs(w.hostRevs, bumped),
         };
         changed = true;
-        const id = hit.length && email && [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-        if (id) live.set(id, [email, site]);
       }
       if (changed) replaceFile(file, JSON.stringify(all, null, 1));
     } catch (e) {
       firstError ??= e;
     }
   }
-  for (const [id, s] of signIns) live.set(id, [s.email, s.site]);
-  const revoked = await Promise.allSettled([...live].map(([id, [email, site]]) => syncSignInHosts(id, email, site, { closeOnError: true })));
+  const revoked = await Promise.allSettled([...signIns.keys()].map(id => syncSignInHosts(id, { closeOnError: true })));
   for (const result of revoked) if (result.status === 'rejected') firstError ??= result.reason;
   if (firstError) throw firstError;
 }
@@ -412,7 +411,7 @@ export async function allowHost(by: Me, site: string, host: string, email = by.e
   changes.emit('change', 'tree');
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
   if (!id) return;
-  await syncSignInHosts(id, email, site, { reload: true });
+  await syncSignInHosts(id, { reload: true });
 }
 
 // Admins may keep a high-risk or internal host blocked so it stays refused and leaves Waiting on you.
@@ -443,7 +442,7 @@ export async function removeHost(email: string, site: string, host: string) {
   if (!w.hosts.includes(host)) throw new HttpError(404, `${site} doesn't reach ${host}: beyond its address it reaches ${w.hosts.join(', ') || 'no host'}`);
   changeWebsite(email, site, { hosts: w.hosts.filter(h => h !== host), checks: { ...w.checks, [host]: { verdict: 'refused', why: 'Its person removed it.' } }, hostRevs: bumpHostRevs(w.hostRevs, [host]) });
   const id = [...signIns].find(([, s]) => s.email === email && s.site === site)?.[0];
-  if (id) await syncSignInHosts(id, email, site, { closeOnError: true });
+  if (id) await syncSignInHosts(id, { closeOnError: true });
 }
 
 // The hosts a person's website doesn't reach, of those asked for.

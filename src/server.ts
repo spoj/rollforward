@@ -2104,8 +2104,10 @@ const server = createServer({ requestTimeout: 60 * 60_000 }, async (req, res) =>
         const host = decodeURIComponent(url.pathname.split('/')[2]).toLowerCase();
         if (!letIn()[host]) throw new HttpError(404, `${host} isn't one admins let websites reach: they are ${Object.keys(letIn()).join(', ') || 'none'}`);
         setLetIn([host], me.email, false);
-        act(me.email, { op: 'internal', hosts: [host], let: false });
+        let auditErr: unknown;
+        try { act(me.email, { op: 'internal', hosts: [host], let: false }); } catch (e) { auditErr = e; }
         try { await revokeInternalHosts([host]); } finally { await closeUnlent(); }
+        if (auditErr) throw auditErr;
       } else if (req.method !== 'GET') throw new HttpError(405, 'GET lists them, DELETE /internal/HOST takes one out');
       send(res, 200, letIn());
     } else if (url.pathname === '/brand' && req.method === 'PUT') {
