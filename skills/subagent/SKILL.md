@@ -48,6 +48,7 @@ Keep the default 10-minute (`600s`) timeout even when a task may take 30–60 mi
 
 ## Boundaries
 
-- **Main agent owns the user-facing surface and external actions:** Subagents are drafting-only and do not hold the parent's user-approval context. Have the subagent write drafts/findings/artifacts to `working/` and return a concise status; the main agent performs any approved external actions, user-facing replies, or sign-offs.
+- **Main agent owns the user-facing surface:** Subagents report findings and artifacts back to the main agent and must not post user-facing comments, questions, or proposals directly (`rf comment`, `--propose`, `--ask`).
+- **Read-only external work and skills are allowed; writes need an explicitly handed-off approved scope:** Subagents load installed RollForward skills from `$RF_SKILLS` (excluding `subagent` itself, while keeping `--no-skills` to block untrusted workspace skill discovery) and may run read-only API, Graph, and browser work. Only perform external writes when the parent explicitly delegates an already-approved scope.
 - **Anchored to the instance workspace:** `run_subagent.sh` always anchors execution and transcript storage to the instance workspace (`/work`) and requires the RF policy prompt.
 - **Transcripts:** All child transcripts live under `session/subagents/<run-scope>/` so you (and reviewers) can inspect them without cluttering the main trace.

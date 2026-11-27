@@ -166,7 +166,10 @@ test('run_subagent.sh enforces RF policy flags and scopes --resume to current ru
     assert.match(passedArgs, /--no-skills/);
     assert.match(passedArgs, /--no-mcp/);
     assert.match(passedArgs, /--system-prompt/);
-    assert.match(passedArgs, /drafting-only subagent/);
+    assert.match(passedArgs, /You are a subagent invoked by the main agent/);
+    assert.match(passedArgs, /do not post user-facing comments, questions, or proposals directly/);
+    assert.match(passedArgs, /Read-only API, Graph, and browser work is fine; only perform external writes if the parent explicitly hands you an already-approved scope/);
+    assert.doesNotMatch(passedArgs, /drafting-only/);
 
     // Missing RF policy prompt fails closed (P1-H)
     assert.throws(
@@ -190,6 +193,61 @@ test('run_subagent.sh enforces RF policy flags and scopes --resume to current ru
       }),
       /outside this run's authority scope/,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('run_subagent.sh forwards RF_SKILLS except subagent while keeping --no-skills against workspace skills', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rf-subagent-skills-'));
+  try {
+    const fakeBin = join(root, 'bin');
+    const skillsDir = join(root, 'rf-skills');
+    const workDir = join(root, 'work');
+    mkdirSync(fakeBin, { recursive: true });
+    for (const s of ['e1-finance', 'm365-index', 'subagent']) {
+      mkdirSync(join(skillsDir, s), { recursive: true });
+      writeFileSync(join(skillsDir, s, 'SKILL.md'), `---\nname: ${s}\ndescription: test\n---\n`);
+    }
+    mkdirSync(join(skillsDir, 'not-a-skill'), { recursive: true });
+    // Untrusted workspace skills that must NOT be forwarded or discovered
+    mkdirSync(join(workDir, '.pi', 'skills', 'evil'), { recursive: true });
+    writeFileSync(join(workDir, '.pi', 'skills', 'evil', 'SKILL.md'), '---\nname: evil\ndescription: bad\n---\n');
+    mkdirSync(join(workDir, 'skills', 'rogue'), { recursive: true });
+    writeFileSync(join(workDir, 'skills', 'rogue', 'SKILL.md'), '---\nname: rogue\ndescription: bad\n---\n');
+
+    const argsFile = join(root, 'pi-args.txt');
+    const fakePi = join(fakeBin, 'pi');
+    writeFileSync(fakePi, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsFile}"\n`);
+    chmodSync(fakePi, 0o755);
+    const fakePrompt = join(root, 'prompt.md');
+    writeFileSync(fakePrompt, '# RF Policy\n');
+
+    const script = join(process.cwd(), 'skills', 'subagent', 'run_subagent.sh');
+    const env = {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      RF_INSTANCE: 'inst-skills',
+      RF_TOKEN: 'run-token-skills',
+      RF_SYSTEM_PROMPT: fakePrompt,
+      RF_WORK_DIR: workDir,
+      RF_SKILLS: `${skillsDir}/`,
+    };
+    const out = execFileSync('bash', [script, '--prompt', 'check skills'], { cwd: tmpdir(), env, encoding: 'utf8' });
+    assert.match(out, /status: completed/);
+
+    const argv = execFileSync('cat', [argsFile], { encoding: 'utf8' }).trimEnd().split('\n');
+    assert.ok(argv.includes('--no-skills'), 'must keep --no-skills to block ambient workspace/home skill discovery');
+    const forwardedSkills: string[] = [];
+    for (let i = 0; i < argv.length - 1; i++) {
+      if (argv[i] === '--skill') forwardedSkills.push(argv[i + 1]!);
+    }
+    assert.deepEqual(forwardedSkills.sort(), [
+      join(skillsDir, 'e1-finance'),
+      join(skillsDir, 'm365-index'),
+    ]);
+    assert.equal(argv.some(a => a.includes('evil') || a.includes('rogue')), false, 'must never pass workspace skills');
+    assert.equal(forwardedSkills.some(s => s.endsWith('/subagent')), false, 'must exclude recursive subagent skill');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
