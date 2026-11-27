@@ -694,12 +694,73 @@ export function classifyGraphqlQuery(
 }
 
 export function extractSoapBodyRoot(xml: string): string | undefined {
-  const clean = xml.replace(/<!--[\s\S]*?-->/g, '').replace(/<\?[\s\S]*?\?>/g, '')
-  const bodyMatch = /<(?:[A-Za-z_][\w.-]*:)?Body(?:\s[^>]*)?>([\s\S]*)/i.exec(clean)
-  if (!bodyMatch) return undefined
-  const inside = bodyMatch[1]
-  const childMatch = /<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)(?=[\s/>])/.exec(inside)
-  return childMatch?.[1]
+  const len = xml.length
+  let i = 0
+  let inBody = false
+  const isNameChar = (c: number) =>
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95 || c === 45 || c === 46 || c === 58
+
+  while (i < len) {
+    const pos = xml.indexOf('<', i)
+    if (pos < 0 || pos + 1 >= len) return undefined
+    if (xml.startsWith('<!--', pos)) {
+      const end = xml.indexOf('-->', pos + 4)
+      if (end < 0) return undefined
+      i = end + 3
+      continue
+    }
+    if (xml.startsWith('<?', pos)) {
+      const end = xml.indexOf('?>', pos + 2)
+      if (end < 0) return undefined
+      i = end + 2
+      continue
+    }
+    if (xml.startsWith('<![CDATA[', pos)) {
+      const end = xml.indexOf(']]>', pos + 9)
+      if (end < 0) return undefined
+      i = end + 3
+      continue
+    }
+    if (xml.startsWith('<!', pos)) {
+      const end = xml.indexOf('>', pos + 2)
+      if (end < 0) return undefined
+      i = end + 1
+      continue
+    }
+    const nextCh = xml.charCodeAt(pos + 1)
+    if (nextCh === 47) { // '</'
+      const end = xml.indexOf('>', pos + 2)
+      if (end < 0) return undefined
+      if (inBody) {
+        const closeName = xml.slice(pos + 2, end).trim()
+        const colon = closeName.indexOf(':')
+        const local = (colon >= 0 ? closeName.slice(colon + 1) : closeName).toLowerCase()
+        if (local === 'body') return undefined
+      }
+      i = end + 1
+      continue
+    }
+    let nameEnd = pos + 1
+    while (nameEnd < len && isNameChar(xml.charCodeAt(nameEnd))) nameEnd++
+    if (nameEnd === pos + 1) {
+      i = pos + 1
+      continue
+    }
+    const qname = xml.slice(pos + 1, nameEnd)
+    const gt = xml.indexOf('>', nameEnd)
+    if (gt < 0) return undefined
+    const selfClosing = xml.charCodeAt(gt - 1) === 47
+    if (inBody) {
+      return qname
+    }
+    const colon = qname.indexOf(':')
+    const local = (colon >= 0 ? qname.slice(colon + 1) : qname).toLowerCase()
+    if (local === 'body' && !selfClosing) {
+      inBody = true
+    }
+    i = gt + 1
+  }
+  return undefined
 }
 
 // ---- SQL classifier for Databricks statements (comment & string literal safe, zero PII emitted) ----
