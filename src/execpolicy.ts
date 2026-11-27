@@ -3,8 +3,13 @@ import { closeSync, existsSync, fstatSync, readdirSync, readFileSync, readSync }
 import { basename, join } from 'node:path'
 import {
   DESC_V,
+  E1_MUTATING_FORM_COMMANDS,
   EXTRACTOR_V,
   SAFE_METHODS,
+  classifySqlStatement,
+  computeSqlContextDigest,
+  computeTargetDigest,
+  isValidEmailDomain,
   parseSemanticMethods,
   type RequestDescriptor,
   type SafeRequestProjection,
@@ -12,7 +17,7 @@ import {
 } from './extract.ts'
 import { REDACT_V, sanitizeUrl } from './redact.ts'
 import { isPerson, messageAuthority } from './messages.ts'
-import { openFile, type Entry } from './store.ts'
+import { HttpError, openFile, type Entry } from './store.ts'
 import { readJson, rfDir } from './system.ts'
 
 export const POLICY_VERSION = 'v1'
@@ -32,6 +37,7 @@ export type ExecPolicyDecision = {
   reason?: string
   ms: number
   approvalRef?: string
+  reservationKey?: string
 }
 
 export type CompactPolicyDecision = {
@@ -48,9 +54,13 @@ export type CompactPolicyDecision = {
 export type ApprovalScope = {
   action: string
   target?: string
+  targetDisplay?: string
+  targetDigest?: string
   domains?: string[]
-  sqlHash?: string
+  sqlContextDigest?: string
   warehouseId?: string
+  catalog?: string
+  schema?: string
   connection?: string
   site?: string
   workspace?: string
@@ -60,6 +70,7 @@ export type ApprovalScope = {
 export type ApprovalContext = {
   approved: boolean
   approvalRef?: string
+  reservationKey?: string
   recentApprovedProposals: Array<{ seq: number; text: string; by: string; at: string }>
 }
 
@@ -96,6 +107,7 @@ export type EvaluateOptions = {
   owner?: string
   approvers?: readonly string[]
   workspace?: string
+  instKey?: string
   priorBrowserUses?: ReadonlyMap<string, number>
   intent?: { run: number; series?: string; taskSummary?: string }
   signal?: AbortSignal
@@ -159,23 +171,46 @@ export function loadExecPolicyConfig(): ExecPolicyConfig {
   return { mode, deadlineMs, maxConcurrentShadow, maxShadowQueue, ...(configError && { configError }) }
 }
 
-const E1_MUTATING_FORM_COMMANDS = new Set([
-  'doaction',
-  'setcontrolvalue',
-  'setcheckboxvalue',
-  'setradiobutton',
-  'setcombovalue',
-  'setgridcellvalue',
-  'insertgridrow',
-  'deletegridrow',
-  'updategridrow',
-  'clickgridcell',
+const HEX_64_RE = /^[a-f0-9]{64}$/i
+const E1_FORM_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,47}$/
+const HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i
+const DBX_IDENT_RE = /^[A-Za-z0-9_.-]{1,64}$/
+const MAX_APPROVAL_USES = 20
+
+const ALLOWED_SCOPE_KEYS = new Set([
+  'action',
+  'target',
+  'targetDisplay',
+  'targetDigest',
+  'domains',
+  'sql',
+  'parameters',
+  'warehouseId',
+  'catalog',
+  'schema',
+  'sqlContextDigest',
+  'connection',
+  'site',
+  'host',
+  'workspace',
+  'maxUses',
+])
+
+const CANONICAL_SCOPE_ACTIONS = new Set([
+  'graph:sendMail',
+  'graph:file_delete',
+  'graph:excel_write',
+  'databricks:sql',
+  'e1_ais_write',
+  'sharepoint_destructive_write',
+  'http_delete',
 ])
 
 function isE1WriteAction(act: SemanticAction): boolean {
   if (act.family !== 'e1-ais') return false
   const a = typeof act.details?.action === 'string' ? act.details.action.toUpperCase() : ''
-  if (a === 'W' || act.op.endsWith(':W')) return true
+  if (a === 'W' || a === 'C' || a === 'U' || a === 'D' || /:[WCUD]$/i.test(act.op)) return true
+  if (act.details?.hasMutatingFormAction === true || act.details?.formActionsTruncated === true) return true
   const formActions = Array.isArray(act.details?.formActions) ? (act.details!.formActions as Array<{ command?: unknown }>) : []
   return formActions.some(fa => typeof fa?.command === 'string' && E1_MUTATING_FORM_COMMANDS.has(fa.command.toLowerCase()))
 }
@@ -204,6 +239,268 @@ function normalizeScopeAction(raw: string): string {
   return s
 }
 
+function isValidExactPathTarget(raw: string): boolean {
+  const s = raw.trim()
+  if (!s.startsWith('/') || s.length > 2048) return false
+  if (s.includes('*') || s.includes('\0') || s.includes('[REDACTED') || s.includes('..') || /[\r\n\t]/.test(s)) return false
+  const segs = s.split('/').filter(Boolean)
+  // Reject broad prefixes like '/', '/v1.0', '/beta', '/v1.0/me', '/_api'
+  if (segs.length < 2) return false
+  const lower0 = segs[0].toLowerCase()
+  if ((lower0 === 'v1.0' || lower0 === 'beta') && segs.length < 3) return false
+  if ((lower0 === 'v1.0' || lower0 === 'beta') && segs[1].toLowerCase() === 'me' && segs.length < 4) return false
+  return true
+}
+
+function safeHexEqual(a: unknown, b: unknown): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (!HEX_64_RE.test(a) || !HEX_64_RE.test(b)) return false
+  return crypto.timingSafeEqual(Buffer.from(a.toLowerCase(), 'hex'), Buffer.from(b.toLowerCase(), 'hex'))
+}
+
+// Strict server-side validator & canonicalizer for proposal `execpolicy` scopes (used by POST /api/messages & /comment).
+export function validateAndNormalizeApprovalScope(
+  raw: unknown,
+  ctx: {
+    workspace: string
+    connections?: ReadonlyArray<{ name: string; type: string; url?: string }>
+    hmacKey?: Buffer
+  },
+): ApprovalScope {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new HttpError(400, 'execpolicy scope must be a JSON object')
+  }
+  const obj = raw as Record<string, unknown>
+  for (const k of Object.keys(obj)) {
+    if (!ALLOWED_SCOPE_KEYS.has(k)) {
+      throw new HttpError(400, `unknown execpolicy scope field: ${k}`)
+    }
+  }
+  if (typeof obj.action !== 'string' || !obj.action.trim()) {
+    throw new HttpError(400, 'execpolicy scope requires a canonical action')
+  }
+  const action = normalizeScopeAction(obj.action)
+  if (!CANONICAL_SCOPE_ACTIONS.has(action)) {
+    throw new HttpError(400, `unsupported execpolicy action: ${obj.action}`)
+  }
+
+  let maxUses = 1
+  if (obj.maxUses !== undefined) {
+    if (typeof obj.maxUses !== 'number' || !Number.isInteger(obj.maxUses) || obj.maxUses < 1 || obj.maxUses > MAX_APPROVAL_USES) {
+      throw new HttpError(400, `execpolicy maxUses must be an integer between 1 and ${MAX_APPROVAL_USES}`)
+    }
+    maxUses = obj.maxUses
+  }
+
+  const workspace = ctx.workspace.trim()
+  if (!workspace) throw new HttpError(400, 'cannot attach execpolicy scope without an instance workspace')
+  if (obj.workspace !== undefined) {
+    if (typeof obj.workspace !== 'string' || obj.workspace.trim() !== workspace) {
+      throw new HttpError(400, 'execpolicy workspace must match the instance workspace')
+    }
+  }
+
+  let connection: string | undefined
+  if (obj.connection !== undefined) {
+    if (typeof obj.connection !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(obj.connection)) {
+      throw new HttpError(400, 'execpolicy connection must be a valid connection name')
+    }
+    connection = obj.connection
+  }
+
+  let site: string | undefined
+  if (obj.site !== undefined) {
+    if (typeof obj.site !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(obj.site)) {
+      throw new HttpError(400, 'execpolicy site must be a valid site name')
+    }
+    site = obj.site
+  }
+
+  if (action === 'graph:sendMail') {
+    if (!Array.isArray(obj.domains) || obj.domains.length === 0 || obj.domains.length > 16) {
+      throw new HttpError(400, 'graph:sendMail scope requires 1..16 explicit recipient domains')
+    }
+    const domains = new Set<string>()
+    for (const d of obj.domains) {
+      if (typeof d !== 'string' || !isValidEmailDomain(d.trim().toLowerCase())) {
+        throw new HttpError(400, 'graph:sendMail domains must be explicit plain ASCII domains (no wildcards)')
+      }
+      domains.add(d.trim().toLowerCase())
+    }
+    return {
+      action,
+      domains: [...domains].sort(),
+      ...(connection && { connection }),
+      workspace,
+      maxUses,
+    }
+  }
+
+  if (action === 'databricks:sql') {
+    let warehouseId: string | undefined
+    if (obj.warehouseId !== undefined) {
+      if (typeof obj.warehouseId !== 'string' || !DBX_IDENT_RE.test(obj.warehouseId)) {
+        throw new HttpError(400, 'databricks:sql warehouseId is invalid')
+      }
+      warehouseId = obj.warehouseId
+    }
+    let catalog: string | undefined
+    if (obj.catalog !== undefined) {
+      if (typeof obj.catalog !== 'string' || !DBX_IDENT_RE.test(obj.catalog)) {
+        throw new HttpError(400, 'databricks:sql catalog is invalid')
+      }
+      catalog = obj.catalog
+    }
+    let schema: string | undefined
+    if (obj.schema !== undefined) {
+      if (typeof obj.schema !== 'string' || !DBX_IDENT_RE.test(obj.schema)) {
+        throw new HttpError(400, 'databricks:sql schema is invalid')
+      }
+      schema = obj.schema
+    }
+    let sqlContextDigest: string
+    if (typeof obj.sqlContextDigest === 'string' && obj.sqlContextDigest.trim()) {
+      if (!HEX_64_RE.test(obj.sqlContextDigest.trim())) {
+        throw new HttpError(400, 'databricks:sql sqlContextDigest must be a 64-char hex HMAC digest')
+      }
+      sqlContextDigest = obj.sqlContextDigest.trim().toLowerCase()
+    } else if (typeof obj.sql === 'string' && obj.sql.trim()) {
+      const cls = classifySqlStatement(obj.sql)
+      if (cls.hasDropOrTruncate) {
+        throw new HttpError(400, 'DROP, TRUNCATE, INSERT OVERWRITE, and REPLACE WHERE are unconditionally denied and cannot be approved')
+      }
+      sqlContextDigest = computeSqlContextDigest({
+        sql: obj.sql,
+        parameters: obj.parameters,
+        warehouseId,
+        catalog,
+        schema,
+      }, ctx.hmacKey)
+    } else {
+      throw new HttpError(400, 'databricks:sql scope requires exact sql (with parameters/catalog/schema) or sqlContextDigest')
+    }
+    return {
+      action,
+      sqlContextDigest,
+      ...(warehouseId && { warehouseId }),
+      ...(catalog && { catalog }),
+      ...(schema && { schema }),
+      ...(connection && { connection }),
+      workspace,
+      maxUses,
+    }
+  }
+
+  if (action === 'e1_ais_write') {
+    let target: string | undefined
+    if (obj.target !== undefined) {
+      if (typeof obj.target !== 'string' || !E1_FORM_NAME_RE.test(obj.target.trim())) {
+        throw new HttpError(400, 'e1_ais_write target must be a concrete E1 form name (no wildcards or paths)')
+      }
+      target = obj.target.trim()
+    }
+    let targetDigest: string | undefined
+    if (obj.targetDigest !== undefined) {
+      if (typeof obj.targetDigest !== 'string' || !HEX_64_RE.test(obj.targetDigest.trim())) {
+        throw new HttpError(400, 'e1_ais_write targetDigest must be a 64-char hex HMAC digest')
+      }
+      targetDigest = obj.targetDigest.trim().toLowerCase()
+    }
+    if (!target && !targetDigest) {
+      throw new HttpError(400, 'e1_ais_write scope requires target (E1 form name) or targetDigest')
+    }
+    return {
+      action,
+      ...(target && { target }),
+      ...(targetDigest && { targetDigest }),
+      ...(site && { site }),
+      workspace,
+      maxUses,
+    }
+  }
+
+  // Path-targeted destructive/write scopes: graph:file_delete, graph:excel_write, sharepoint_destructive_write, http_delete
+  let targetDigest: string | undefined
+  let targetDisplay: string | undefined
+  if (obj.targetDigest !== undefined) {
+    if (typeof obj.targetDigest !== 'string' || !HEX_64_RE.test(obj.targetDigest.trim())) {
+      throw new HttpError(400, `${action} targetDigest must be a 64-char hex HMAC digest`)
+    }
+    targetDigest = obj.targetDigest.trim().toLowerCase()
+  }
+  if (obj.target !== undefined) {
+    if (typeof obj.target !== 'string' || !isValidExactPathTarget(obj.target)) {
+      throw new HttpError(400, `${action} target must be an exact unredacted canonical path (no wildcards or broad prefixes)`)
+    }
+    const rawPath = obj.target.trim()
+    let surface: 'api' | 'browser' = 'api'
+    let connType: string | undefined
+    let host = ''
+    if (action === 'graph:file_delete' || action === 'graph:excel_write') {
+      if (action === 'graph:excel_write' && !rawPath.toLowerCase().includes('/workbook/')) {
+        throw new HttpError(400, 'graph:excel_write target must be an exact /workbook/... path')
+      }
+      surface = 'api'
+      connType = 'graph'
+      host = 'graph.microsoft.com'
+    } else if (action === 'sharepoint_destructive_write') {
+      if (!rawPath.toLowerCase().includes('/_api/') && !rawPath.toLowerCase().includes('/_vti_bin/')) {
+        throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
+      }
+      if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+        throw new HttpError(400, 'sharepoint_destructive_write with target requires a valid host')
+      }
+      host = obj.host.trim().toLowerCase()
+      surface = site ? 'browser' : 'api'
+    } else if (action === 'http_delete') {
+      if (site) {
+        if (typeof obj.host !== 'string' || !HOST_RE.test(obj.host.trim())) {
+          throw new HttpError(400, 'browser http_delete scope with target requires host')
+        }
+        surface = 'browser'
+        host = obj.host.trim().toLowerCase()
+      } else if (connection) {
+        surface = 'api'
+        const found = ctx.connections?.find(c => c.name === connection)
+        connType = found?.type
+        if (typeof obj.host === 'string' && HOST_RE.test(obj.host.trim())) {
+          host = obj.host.trim().toLowerCase()
+        } else if (found?.type === 'service') {
+          host = `${connection}.rf.internal`
+        } else if (found?.type === 'graph') {
+          host = 'graph.microsoft.com'
+        } else {
+          throw new HttpError(400, 'http_delete scope with target requires a valid host or known connection')
+        }
+      } else {
+        throw new HttpError(400, 'http_delete scope with target requires connection or site+host')
+      }
+    }
+    const computed = computeTargetDigest({ surface, connectionType: connType, host, rawPathname: rawPath }, ctx.hmacKey)
+    if (targetDigest && targetDigest !== computed) {
+      throw new HttpError(400, 'targetDigest does not match target')
+    }
+    targetDigest = computed
+    targetDisplay = sanitizeUrl(`https://${host}${rawPath}`, { projection: 'semantic' }).path
+  }
+  if (!targetDigest) {
+    throw new HttpError(400, `${action} scope requires an exact target path or targetDigest`)
+  }
+  if (typeof obj.targetDisplay === 'string' && obj.targetDisplay.trim() && !targetDisplay) {
+    targetDisplay = obj.targetDisplay.trim().slice(0, 256)
+  }
+
+  return {
+    action,
+    targetDigest,
+    ...(targetDisplay && { targetDisplay }),
+    ...(connection && { connection }),
+    ...(site && { site }),
+    workspace,
+    maxUses,
+  }
+}
+
 function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope): boolean {
   if (!scope || typeof scope !== 'object' || typeof scope.action !== 'string' || !scope.action.trim()) return false
   if (scope.connection !== undefined && safe.target.connection !== scope.connection) return false
@@ -214,9 +511,11 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
   if (actClass === 'graph:sendMail') {
     const mailAct = safe.actions.find(a => a.family === 'graph' && ['graph:sendMail', 'graph:send', 'graph:reply', 'graph:replyAll', 'graph:forward'].includes(a.op))
     if (!mailAct) return false
-    if (scope.target !== undefined && safe.path !== scope.target) return false
+    // Fail closed unless the extractor proved complete delivery recipient coverage!
+    if (mailAct.details?.recipientsComplete !== true) return false
+    if (scope.targetDigest !== undefined && !safeHexEqual(mailAct.details?.targetDigest, scope.targetDigest)) return false
     const allowedDomains = Array.isArray(scope.domains)
-      ? scope.domains.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).map(d => d.trim().toLowerCase())
+      ? scope.domains.filter((d): d is string => typeof d === 'string' && isValidEmailDomain(d.trim().toLowerCase())).map(d => d.trim().toLowerCase())
       : []
     if (!allowedDomains.length) return false
     const reqDomains = Array.isArray(mailAct.details?.recipientDomains)
@@ -229,45 +528,45 @@ function matchesApprovalScope(safe: SafeRequestProjection, scope: ApprovalScope)
 
   if (actClass === 'graph:file_delete') {
     const delAct = safe.actions.find(a => a.family === 'graph' && a.op === 'graph:file_delete')
-    if (!delAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
-    return delAct.resource === scope.target || safe.path === scope.target
+    if (!delAct) return false
+    return safeHexEqual(delAct.details?.targetDigest, scope.targetDigest)
   }
 
   if (actClass === 'graph:excel_write') {
     const xlAct = safe.actions.find(a => a.family === 'graph' && a.op === 'graph:excel_write')
-    if (!xlAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
-    return xlAct.resource === scope.target || safe.path === scope.target || safe.path.startsWith(`${scope.target}/`)
+    if (!xlAct) return false
+    return safeHexEqual(xlAct.details?.targetDigest, scope.targetDigest)
   }
 
   if (actClass === 'databricks:sql') {
     const sqlAct = safe.actions.find(a => a.family === 'databricks' && a.op.startsWith('databricks:sql_'))
     if (!sqlAct) return false
     if (typeof scope.warehouseId === 'string' && scope.warehouseId && sqlAct.details?.warehouseId !== scope.warehouseId) return false
-    if (typeof scope.sqlHash === 'string' && scope.sqlHash.trim()) {
-      return sqlAct.details?.sqlHash === scope.sqlHash.trim().toLowerCase()
-    }
-    if (typeof scope.warehouseId === 'string' && scope.warehouseId && typeof scope.target === 'string' && scope.target.trim()) {
-      return sqlAct.details?.sqlClass === scope.target.trim().toLowerCase()
-    }
-    return false
+    return safeHexEqual(sqlAct.details?.sqlContextDigest, scope.sqlContextDigest)
   }
 
   if (actClass === 'e1_ais_write') {
     const e1Act = safe.actions.find(a => isE1WriteAction(a))
-    if (!e1Act || typeof scope.target !== 'string' || !scope.target.trim()) return false
-    return e1Act.resource === scope.target || safe.path === scope.target
+    if (!e1Act) return false
+    if (scope.targetDigest !== undefined) {
+      return safeHexEqual(e1Act.details?.targetDigest, scope.targetDigest)
+    }
+    if (typeof scope.target === 'string' && E1_FORM_NAME_RE.test(scope.target.trim())) {
+      return e1Act.resource === scope.target.trim()
+    }
+    return false
   }
 
   if (actClass === 'sharepoint_destructive_write') {
     const spAct = safe.actions.find(a => isSharePointDestructive(safe, a))
-    if (!spAct || typeof scope.target !== 'string' || !scope.target.trim()) return false
-    return spAct.resource === scope.target || safe.path === scope.target
+    if (!spAct) return false
+    return safeHexEqual(spAct.details?.targetDigest, scope.targetDigest)
   }
 
   if (actClass === 'http_delete') {
     if (safe.method !== 'DELETE' && safe.effectiveMethod !== 'DELETE') return false
-    if (typeof scope.target !== 'string' || !scope.target.trim()) return false
-    return safe.path === scope.target
+    const actDigest = safe.actions.find(a => typeof a.details?.targetDigest === 'string')?.details?.targetDigest
+    return safeHexEqual(actDigest, scope.targetDigest)
   }
 
   return false
@@ -283,8 +582,10 @@ export function findCurrentEpochApproval(
     owner?: string
     approvers?: readonly string[]
     workspace?: string
+    instKey?: string
     safe?: SafeRequestProjection
     priorBrowserUses?: ReadonlyMap<string, number>
+    inFlightReservations?: ReadonlyMap<string, ReadonlySet<string>>
   },
 ): ApprovalContext {
   if (!log || !log.length) return { approved: false, recentApprovedProposals: [] }
@@ -324,7 +625,8 @@ export function findCurrentEpochApproval(
     return { approved: false, recentApprovedProposals: [] }
   }
 
-  // Authorized sign-off actors: series owner (or creator in minimal logs) plus any explicit approvers.
+  // Authorized sign-off actors: series owner (or creator in minimal logs) plus any explicit host-configured approvers.
+  // FAIL CLOSED when no authorized actor can be established!
   const authorizedActors = new Set<string>()
   if (effectiveOwner) authorizedActors.add(effectiveOwner.toLowerCase())
   if (opts?.approvers) {
@@ -332,15 +634,19 @@ export function findCurrentEpochApproval(
       if (typeof a === 'string' && a.trim()) authorizedActors.add(a.trim().toLowerCase())
     }
   }
+  if (authorizedActors.size === 0) {
+    return { approved: false, recentApprovedProposals: [] }
+  }
 
   const proposals: ApprovalContext['recentApprovedProposals'] = []
   let matchedApprovalRef: string | undefined
+  let matchedReservationKey: string | undefined
 
   for (const e of slice) {
     if (e.seq <= boundarySeq) continue
     if (e.op !== 'signoff' || e.approved === false || !isPerson(e)) continue
     // Authority check: signoff MUST come from an authorized owner/approver (never an arbitrary viewer!).
-    if (authorizedActors.size > 0 && !authorizedActors.has(e.by.toLowerCase())) continue
+    if (!authorizedActors.has(e.by.toLowerCase())) continue
 
     const auth = messageAuthority(slice, e, upto)
     if (auth.stale) continue
@@ -369,39 +675,54 @@ export function findCurrentEpochApproval(
       continue
     }
 
-    // Workspace binding: if workspace is known or present on the proposal, require exact match.
+    // Fail-closed workspace binding: whenever expectedWorkspace is known, proposal MUST declare an exact match!
+    const scopeWs = typeof scope.workspace === 'string' ? scope.workspace.trim() : ''
     if (expectedWorkspace !== undefined) {
-      if (typeof scope.workspace === 'string' && scope.workspace !== expectedWorkspace) continue
-      if (opts?.workspace !== undefined && scope.workspace !== undefined && scope.workspace !== opts.workspace) continue
-    } else if (typeof scope.workspace === 'string' && scope.workspace.trim()) {
-      // Proposal is workspace-scoped, but caller didn't supply a matching workspace context -> fail closed.
+      if (!scopeWs || scopeWs !== expectedWorkspace) continue
+    } else if (scopeWs) {
+      // Proposal is workspace-scoped, but caller/log didn't establish a matching workspace -> fail closed.
       continue
     }
 
     // Scope matching against the evaluated request (required when opts.safe is supplied).
     if (opts?.safe && !matchesApprovalScope(opts.safe, scope)) continue
 
-    // Single-use / bounded count consumption: count prior allowed uses of this approvalRef after signoff.
+    // Single-use / bounded count consumption: count deduplicated durable pre-flight `send`, completed `call`,
+    // in-flight synchronous reservations, and prior browser uses against `maxUses` (default 1, cap 20).
     const ref = `c${e.on}`
-    const maxUses = typeof scope.maxUses === 'number' && Number.isInteger(scope.maxUses) && scope.maxUses >= 1 && scope.maxUses <= 100
+    const maxUses = typeof scope.maxUses === 'number' && Number.isInteger(scope.maxUses) && scope.maxUses >= 1 && scope.maxUses <= MAX_APPROVAL_USES
       ? scope.maxUses
       : 1
-    let usedCount = opts?.priorBrowserUses?.get(ref) ?? 0
+    const resKey = opts?.instKey ? `${opts.instKey}\0${boundarySeq}:${activeEpoch ?? ''}\0${ref}` : undefined
+    const countedDecisions = new Set<string>()
     for (const prior of slice) {
       if (prior.seq <= e.seq) continue
-      if (prior.op === 'call') {
+      if (prior.op === 'send' && prior.approvalRef === ref) {
+        countedDecisions.add(typeof prior.decisionId === 'string' && prior.decisionId ? prior.decisionId : `send:${prior.seq}`)
+      } else if (prior.op === 'call') {
         const pol = prior.policy as CompactPolicyDecision | undefined
-        if (pol?.approvalRef === ref && pol?.action === 'allow') usedCount++
+        if (pol?.approvalRef === ref && pol?.action === 'allow') {
+          countedDecisions.add(pol.decisionId || `call:${prior.seq}`)
+        }
       }
     }
+    if (resKey && opts?.inFlightReservations) {
+      const liveSet = opts.inFlightReservations.get(resKey)
+      if (liveSet) {
+        for (const decId of liveSet) countedDecisions.add(decId)
+      }
+    }
+    const usedCount = countedDecisions.size + (opts?.priorBrowserUses?.get(ref) ?? 0)
     if (usedCount >= maxUses) continue
 
     matchedApprovalRef = ref
+    matchedReservationKey = resKey
   }
 
   return {
     approved: matchedApprovalRef !== undefined,
     ...(matchedApprovalRef && { approvalRef: matchedApprovalRef }),
+    ...(matchedReservationKey && { reservationKey: matchedReservationKey }),
     recentApprovedProposals: proposals.slice(-5),
   }
 }
@@ -537,7 +858,20 @@ export function evaluateStage1(
       }
     }
 
-    // Microsoft Graph file content write (PUT .../content): require If-Match; allow governed binary upload once prefix is read!
+    // Microsoft Graph / SharePoint / Outlook upload-session binary PUT chunk (granted link, prefix inspected)
+    if (act.family === 'graph' && act.op === 'graph:upload_session_chunk') {
+      if (
+        !hasDeleteVerb &&
+        !escalatedFromSafe &&
+        !writeDupKeys &&
+        safe.completeness.transport !== 'not-read' &&
+        safe.completeness.decode !== 'error'
+      ) {
+        return make('allow', 'allow_upload_session_chunk')
+      }
+    }
+
+    // Microsoft Graph file content write (PUT .../content): require strong non-* If-Match; allow governed binary/streamed upload once prefix is read!
     if (act.family === 'graph' && act.op === 'graph:file_write') {
       if (act.details?.hasIfMatch === false) {
         return make('escalate', 'unguarded_overwrite_no_if_match', 'File content overwrite without If-Match ETag')
@@ -548,7 +882,7 @@ export function evaluateStage1(
         !escalatedFromSafe &&
         !writeDupKeys &&
         safe.completeness.transport !== 'not-read' &&
-        (safe.completeness.decode === 'complete' || safe.completeness.decode === 'none')
+        safe.completeness.decode !== 'error'
       ) {
         return make('allow', 'allow_governed_file_write')
       }
@@ -605,16 +939,16 @@ export function evaluateStage1(
     return make('escalate', 'method_override_escalation', `Safe wire verb ${safe.method} escalated to ${safe.effectiveMethod}`)
   }
 
-  // 5b. Governed SharePoint / Outlook upload-session binary PUT chunks (granted link from Graph createUploadSession, prefix inspected)
+  // 5b. Fallback for granted SharePoint / Outlook upload-session PUT chunks (any connection name, prefix inspected)
   if (
     safe.surface === 'api' &&
     safe.method === 'PUT' &&
     safe.effectiveMethod === 'PUT' &&
-    safe.target.connection === 'graph' &&
     /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(safe.authority) &&
+    (/\/_api\/v2\.\d+\/.*\/uploadsession(?:$|[/?])/i.test(safe.path) || /\/attachmentsessions\//i.test(safe.path) || /\/uploadsession(?:$|[/?])/i.test(safe.path)) &&
     !writeDupKeys &&
     safe.completeness.transport !== 'not-read' &&
-    (safe.completeness.decode === 'complete' || safe.completeness.decode === 'none')
+    safe.completeness.decode !== 'error'
   ) {
     return make('allow', 'allow_upload_session_chunk')
   }
@@ -646,11 +980,13 @@ export function compactDecision(d: ExecPolicyDecision): CompactPolicyDecision {
   }
 }
 
-// Pluggable Stage-1 + Stage-2 ExecPolicy Engine with bounded async shadow execution and fail-closed enforce mode.
+// Pluggable Stage-1 + Stage-2 ExecPolicy Engine with bounded async shadow execution,
+// synchronous atomic approval reservation, and fail-closed enforce mode.
 export class ExecPolicyEngine {
   private triageHook?: TriageHook
   private shadowActive = 0
   private shadowQueue: Array<() => Promise<void>> = []
+  private approvalReservations = new Map<string, Set<string>>()
   shadowDropped = 0
   shadowCompleted = 0
   shadowErrors = 0
@@ -661,6 +997,14 @@ export class ExecPolicyEngine {
 
   setTriageHook(hook?: TriageHook) {
     this.triageHook = hook
+  }
+
+  releaseApprovalReservation(reservationKey: string | undefined, decisionId: string) {
+    if (!reservationKey) return
+    const set = this.approvalReservations.get(reservationKey)
+    if (!set) return
+    set.delete(decisionId)
+    if (set.size === 0) this.approvalReservations.delete(reservationKey)
   }
 
   get shadowPending(): number {
@@ -729,10 +1073,23 @@ export class ExecPolicyEngine {
         owner: opts.owner,
         approvers: opts.approvers,
         workspace: opts.workspace,
+        instKey: opts.instKey,
         safe: descriptor.safe,
         priorBrowserUses: opts.priorBrowserUses,
+        inFlightReservations: this.approvalReservations,
       })
       stage1 = evaluateStage1(descriptor.safe, mode, approval, decisionId)
+      // Synchronously reserve approval use BEFORE any async yield so concurrent parallel requests
+      // can never double-spend a single-use or bounded-use approval!
+      if (stage1.action === 'allow' && stage1.approvalRef && approval.reservationKey && opts.instKey) {
+        let set = this.approvalReservations.get(approval.reservationKey)
+        if (!set) {
+          set = new Set()
+          this.approvalReservations.set(approval.reservationKey, set)
+        }
+        set.add(decisionId)
+        stage1 = { ...stage1, reservationKey: approval.reservationKey }
+      }
     } catch {
       return {
         decisionId,

@@ -15,6 +15,8 @@ import {
 import {
   buildApiRequestDescriptor,
   classifySqlStatement,
+  computeSqlContextDigest,
+  computeTargetDigest,
   extractMimeRecipientDomains,
   extractSemantic,
   parseSemanticMethods,
@@ -25,6 +27,7 @@ import {
   evaluateStage1,
   findCurrentEpochApproval,
   replayExecPolicy,
+  validateAndNormalizeApprovalScope,
 } from '../src/execpolicy.ts';
 import type { Entry } from '../src/store.ts';
 
@@ -90,11 +93,11 @@ test('API-native semantic extractors: Microsoft Graph, Databricks SQL, and custo
   assert.deepEqual(mailDesc.safe.target, { connection: 'graph' });
   assert.equal(mailDesc.safe.actions[0].family, 'graph');
   assert.equal(mailDesc.safe.actions[0].op, 'graph:sendMail');
-  assert.deepEqual(mailDesc.safe.actions[0].details, {
-    recipientDomains: ['acme.test', 'external.org'],
-    recipientCount: 2,
-    attachmentCount: 1,
-  });
+  assert.equal(mailDesc.safe.actions[0].details?.recipientCount, 2);
+  assert.deepEqual(mailDesc.safe.actions[0].details?.recipientDomains, ['acme.test', 'external.org']);
+  assert.equal(mailDesc.safe.actions[0].details?.recipientsComplete, true);
+  assert.equal(mailDesc.safe.actions[0].details?.attachmentCount, 1);
+  assert.match(String(mailDesc.safe.actions[0].details?.targetDigest), /^[a-f0-9]{64}$/);
   const serializedSafe = JSON.stringify(mailDesc.safe);
   assert.ok(!serializedSafe.includes('cfo@acme.test'), 'no raw email address');
   assert.ok(!serializedSafe.includes('Jane Doe'), 'no body PII');
@@ -417,10 +420,10 @@ test('P1-1 O(N) MIME recipient scanner, P1-2 Spark SQL comment/raw-string lexer 
   const badRes = extractMimeRecipientDomains(evilMime);
   const dt = performance.now() - t0;
   assert.ok(dt < 50, `extractMimeRecipientDomains must run in <50ms (took ${dt.toFixed(1)}ms)`);
-  assert.deepEqual(badRes, { domains: [], count: 0 });
+  assert.deepEqual(badRes, { domains: [], count: 0, complete: false });
 
-  const goodMime = Buffer.from('From: alice@demo.test\r\nTo: "Jane" <jane@acme.test>, cfo@partner.org\r\nCc: audit@acme.test\r\n\r\nhello').toString('base64');
-  assert.deepEqual(extractMimeRecipientDomains(goodMime), { domains: ['acme.test', 'partner.org'], count: 3 });
+  const goodMime = Buffer.from('From: alice@demo.test\r\nTo: Jane <jane@acme.test>, cfo@partner.org\r\nCc: audit@acme.test\r\n\r\nhello').toString('base64');
+  assert.deepEqual(extractMimeRecipientDomains(goodMime), { domains: ['acme.test', 'partner.org'], count: 3, complete: true });
 
   // P1-2: Spark SqlBaseLexer comment/CR/nesting/raw-string attacks NEVER classify as read and DENY in enforce mode!
   const sparkAttacks = [
@@ -498,7 +501,7 @@ test('P1-1 O(N) MIME recipient scanner, P1-2 Spark SQL comment/raw-string lexer 
   }).descriptor;
   assert.equal(evaluateStage1(xlWrite.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'graph_excel_write');
 
-  // P2-8: SOAP quote-aware tag end scan resists '>' inside attribute values
+  // P2-8: SOAP quote-aware tag end scan resists '>' inside attribute values & verifies Envelope->Body depth
   const soap = extractSemantic({
     url: new URL('https://erp.example.com/soap'),
     sanitizedPath: '/soap',
@@ -511,6 +514,250 @@ test('P1-1 O(N) MIME recipient scanner, P1-2 Spark SQL comment/raw-string lexer 
   });
   assert.equal(soap.actions[0].details?.bodyRootQName, 'DeleteVendor');
   assert.equal(soap.actions[0].details?.actionMismatch, true);
+});
+
+test('R2 security hardening: HMAC target/SQL digests, complete mail recipients, Spark backticks/MERGE DELETE/INSERT OVERWRITE, mailbox permanentDelete, SharePoint & full-list E1', () => {
+  const hmacKey = Buffer.alloc(32, 0x42);
+
+  // 1. Keyed HMAC target digest prevents redacted-path collision between two realistic Graph drive item IDs!
+  const fileA = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 1, method: 'DELETE',
+    url: new URL('https://graph.microsoft.com/v1.0/me/drive/items/01BYE5RZ6QN3K4L8M9N2P5Q7'),
+    headers: {}, bodyComplete: true,
+  }).descriptor;
+  const fileB = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', hmacKey, seq: 2, method: 'DELETE',
+    url: new URL('https://graph.microsoft.com/v1.0/me/drive/items/01K7QW2M4X9B1C3D5F7H8J2Z9'),
+    headers: {}, bodyComplete: true,
+  }).descriptor;
+  assert.equal(fileA.safe.path, fileB.safe.path, 'sanitized display paths collapse to [REDACTED:seg]');
+  const digestA = fileA.safe.actions[0].details?.targetDigest as string;
+  const digestB = fileB.safe.actions[0].details?.targetDigest as string;
+  assert.match(digestA, /^[a-f0-9]{64}$/);
+  assert.notEqual(digestA, digestB, 'keyed HMAC targetDigest is distinct per real item ID');
+
+  const delLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete file A', execpolicy: { action: 'graph:file_delete', targetDigest: digestA, workspace: 'w', maxUses: 1 } },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
+  ];
+  assert.equal(findCurrentEpochApproval(delLog, { owner: 'alice@demo.test', workspace: 'w', safe: fileA.safe }).approved, true, 'file A matches its own HMAC digest');
+  assert.equal(findCurrentEpochApproval(delLog, { owner: 'alice@demo.test', workspace: 'w', safe: fileB.safe }).approved, false, 'file A approval NEVER unlocks file B');
+
+  // 2. Keyed HMAC SQL context digest binds parameters, catalog, schema, and warehouse_id (and NEVER emits unsalted sqlHash or param values!)
+  const makeSql = (body: Record<string, unknown>) => buildApiRequestDescriptor({
+    connection: 'dbx', connectionType: 'databricks', hmacKey, seq: 3, method: 'POST',
+    url: new URL('https://adb-1.azuredatabricks.net/api/2.0/sql/statements'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify(body)),
+    bodyComplete: true,
+  }).descriptor;
+  const sqlBase = makeSql({ warehouse_id: 'wh1', catalog: 'prod', schema: 'fin', statement: 'DELETE FROM gl WHERE id = :id', parameters: [{ name: 'id', value: '101', type: 'INT' }] });
+  const sqlDiffParam = makeSql({ warehouse_id: 'wh1', catalog: 'prod', schema: 'fin', statement: 'DELETE FROM gl WHERE id = :id', parameters: [{ name: 'id', value: '999', type: 'INT' }] });
+  const sqlDiffCat = makeSql({ warehouse_id: 'wh1', catalog: 'staging', schema: 'fin', statement: 'DELETE FROM gl WHERE id = :id', parameters: [{ name: 'id', value: '101', type: 'INT' }] });
+  const sqlDiffSch = makeSql({ warehouse_id: 'wh1', catalog: 'prod', schema: 'hr', statement: 'DELETE FROM gl WHERE id = :id', parameters: [{ name: 'id', value: '101', type: 'INT' }] });
+  const sqlDiffWh = makeSql({ warehouse_id: 'wh2', catalog: 'prod', schema: 'fin', statement: 'DELETE FROM gl WHERE id = :id', parameters: [{ name: 'id', value: '101', type: 'INT' }] });
+  const dBase = sqlBase.safe.actions[0].details?.sqlContextDigest as string;
+  assert.match(dBase, /^[a-f0-9]{64}$/);
+  assert.equal(sqlBase.safe.actions[0].details?.sqlHash, undefined, 'unsalted sqlHash removed');
+  assert.ok(!JSON.stringify(sqlBase.safe).includes('101'), 'parameter value never logged');
+  assert.notEqual(dBase, sqlDiffParam.safe.actions[0].details?.sqlContextDigest, 'different parameters change sqlContextDigest');
+  assert.notEqual(dBase, sqlDiffCat.safe.actions[0].details?.sqlContextDigest, 'different catalog changes sqlContextDigest');
+  assert.notEqual(dBase, sqlDiffSch.safe.actions[0].details?.sqlContextDigest, 'different schema changes sqlContextDigest');
+  assert.notEqual(dBase, sqlDiffWh.safe.actions[0].details?.sqlContextDigest, 'different warehouse changes sqlContextDigest');
+  const sqlLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete row 101', execpolicy: { action: 'databricks:sql', sqlContextDigest: dBase, warehouseId: 'wh1', workspace: 'w', maxUses: 1 } },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
+  ];
+  assert.equal(findCurrentEpochApproval(sqlLog, { owner: 'alice@demo.test', workspace: 'w', safe: sqlBase.safe }).approved, true);
+  assert.equal(findCurrentEpochApproval(sqlLog, { owner: 'alice@demo.test', workspace: 'w', safe: sqlDiffParam.safe }).approved, false);
+  assert.equal(findCurrentEpochApproval(sqlLog, { owner: 'alice@demo.test', workspace: 'w', safe: sqlDiffCat.safe }).approved, false);
+  assert.equal(findCurrentEpochApproval(sqlLog, { owner: 'alice@demo.test', workspace: 'w', safe: sqlDiffSch.safe }).approved, false);
+  assert.equal(findCurrentEpochApproval(sqlLog, { owner: 'alice@demo.test', workspace: 'w', safe: sqlDiffWh.safe }).approved, false);
+
+  // 3. Fail-closed authority (empty actors) & fail-closed missing proposal workspace
+  const noOwnerLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete A', execpolicy: { action: 'graph:file_delete', targetDigest: digestA, maxUses: 1 } },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'random-viewer@demo.test', op: 'signoff', on: 1, text: 'Ok' },
+  ];
+  assert.equal(findCurrentEpochApproval(noOwnerLog, { safe: fileA.safe }).approved, false, 'empty authorizedActors MUST fail closed');
+  const missingWsLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Delete A', execpolicy: { action: 'graph:file_delete', targetDigest: digestA, maxUses: 1 } },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  assert.equal(findCurrentEpochApproval(missingWsLog, { owner: 'alice@demo.test', workspace: 'w', safe: fileA.safe }).approved, false, 'missing proposal workspace fails closed when expectedWorkspace is known');
+
+  // 4. Server scope validator rejects wildcards, broad prefixes, unknown fields, and out-of-range maxUses
+  for (const badScope of [
+    { action: 'graph:excel_write', target: '/v1.0' },
+    { action: 'graph:file_delete', target: '/v1.0/me/drive/items/[REDACTED:seg]' },
+    { action: 'graph:sendMail', domains: ['*.evil.test'] },
+    { action: 'databricks:sql', target: 'write', warehouseId: 'wh1' },
+    { action: 'graph:sendMail', domains: ['ok.test'], maxUses: 100 },
+    { action: 'graph:sendMail', domains: ['ok.test'], workspace: 'other-ws' },
+  ]) {
+    assert.throws(() => validateAndNormalizeApprovalScope(badScope, { workspace: 'w', hmacKey }), /./, `rejects invalid scope: ${JSON.stringify(badScope)}`);
+  }
+
+  // 5. Complete fail-closed mail recipient extraction (all Opus P1-4 + Astra P1-3 repros!)
+  const mailApprovalLog: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Send mail', execpolicy: { action: 'graph:sendMail', domains: ['allowed.test'], workspace: 'w', maxUses: 1 } },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Ok' },
+  ];
+  const badMimes = [
+    `From: alice@demo.test\r\nTo: a@allowed.test\r\nX-Pad: ${'x'.repeat(9000)}\r\nBcc: spy@evil.test\r\n\r\nbody`,
+    'From: alice@demo.test\r\nTo: a@allowed.test, "spy"@evil.test\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: a@allowed.test, spy@[203.0.113.5]\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: a@allowed.test, spy@evil.test.\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: a@allowed.test, spy@evil_corp.test\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: a@allowed.test\r\nResent-To: spy@evil.test\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: a@allowed.test, Alice (spy@evil.test) <b@allowed.test>\r\n\r\nbody',
+    'From: alice@demo.test\r\nTo: Undisclosed: a@allowed.test;\r\n\r\nbody',
+    `From: alice@demo.test\r\nTo: ${Array.from({ length: 34 }, (_, i) => `u@d${i}.allowed.test`).join(', ')}\r\n\r\nbody`,
+  ];
+  for (const rawMime of badMimes) {
+    const b64 = Buffer.from(rawMime).toString('base64');
+    const r = extractMimeRecipientDomains(b64);
+    assert.equal(r.complete, false, `MIME must be marked incomplete: ${rawMime.slice(0, 80)}`);
+    const desc = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'graph', seq: 1, method: 'POST',
+      url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+      headers: { 'content-type': 'text/plain' }, rawBody: Buffer.from(b64), bodyComplete: true,
+    }).descriptor;
+    assert.equal(findCurrentEpochApproval(mailApprovalLog, { owner: 'alice@demo.test', workspace: 'w', safe: desc.safe }).approved, false, 'incomplete MIME cannot match domain approval');
+  }
+  // Lowercase JSON bccrecipients is captured and blocks evil.test!
+  const lowerBccDesc = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 1, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ message: { toRecipients: [{ emailAddress: { address: 'a@allowed.test' } }], bccrecipients: [{ emailaddress: { address: 'spy@evil.test' } }] } })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.deepEqual(lowerBccDesc.safe.actions[0].details?.recipientDomains, ['allowed.test', 'evil.test']);
+  assert.equal(findCurrentEpochApproval(mailApprovalLog, { owner: 'alice@demo.test', workspace: 'w', safe: lowerBccDesc.safe }).approved, false);
+  // reply / replyAll / draft send ALWAYS have recipientsComplete: false and cannot match domain-only approval
+  for (const path of ['/v1.0/me/messages/m1/reply', '/v1.0/me/messages/m1/replyAll', '/v1.0/me/messages/m1/send']) {
+    const d = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'graph', seq: 1, method: 'POST',
+      url: new URL(`https://graph.microsoft.com${path}`),
+      headers: { 'content-type': 'application/json' },
+      rawBody: Buffer.from(JSON.stringify({ comment: 'ok', message: { toRecipients: [{ emailAddress: { address: 'a@allowed.test' } }] } })),
+      bodyComplete: true,
+    }).descriptor;
+    assert.equal(d.safe.actions[0].details?.recipientsComplete, false, `${path} must set recipientsComplete=false`);
+    assert.equal(findCurrentEpochApproval(mailApprovalLog, { owner: 'alice@demo.test', workspace: 'w', safe: d.safe }).approved, false);
+  }
+  // >32 JSON domains -> recipientsComplete: false
+  const manyJson = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'graph', seq: 1, method: 'POST',
+    url: new URL('https://graph.microsoft.com/v1.0/me/sendMail'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ message: { toRecipients: Array.from({ length: 34 }, (_, i) => ({ emailAddress: { address: `u@d${i}.test` } })) } })),
+    bodyComplete: true,
+  }).descriptor;
+  assert.equal(manyJson.safe.actions[0].details?.recipientsComplete, false);
+
+  // 6. Spark backtick identifiers + MERGE ... THEN DELETE + INSERT OVERWRITE + REPLACE WHERE
+  const backtickAttack = 'SELECT `a\\` ; DROP TABLE x -- `';
+  const btCls = classifySqlStatement(backtickAttack);
+  assert.equal(btCls.hasDropOrTruncate, true, 'Spark backtick does NOT treat backslash as escape');
+  assert.notEqual(btCls.sqlClass, 'read');
+  assert.equal(classifySqlStatement('SELECT `col``name` FROM t').sqlClass, 'read', 'Spark doubled backtick is a valid read');
+
+  for (const mergeDel of [
+    'MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE',
+    'WITH a AS (SELECT 1 AS id) MERGE INTO t USING a ON t.id = a.id WHEN MATCHED THEN DELETE',
+  ]) {
+    const c = classifySqlStatement(mergeDel);
+    assert.equal(c.hasDelete, true, `MERGE THEN DELETE flags hasDelete: ${mergeDel}`);
+    assert.equal(c.destructive, true);
+    const d = makeSql({ warehouse_id: 'wh1', statement: mergeDel });
+    assert.equal(evaluateStage1(d.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'databricks_ddl_or_delete');
+  }
+  for (const overwriteSql of [
+    'WITH a AS (SELECT 1) INSERT OVERWRITE t SELECT * FROM a',
+    'INSERT OVERWRITE prod.gl SELECT * FROM staging.gl',
+    'INSERT INTO prod.gl REPLACE WHERE period = 1 SELECT * FROM staging.gl',
+  ]) {
+    const c = classifySqlStatement(overwriteSql);
+    assert.equal(c.hasDropOrTruncate, true, `overwrite/replace flags hasDropOrTruncate: ${overwriteSql}`);
+    const d = makeSql({ warehouse_id: 'wh1', statement: overwriteSql });
+    const dec = evaluateStage1(d.safe, 'enforce', { approved: true, approvalRef: 'c1', recentApprovedProposals: [] });
+    assert.equal(dec.action, 'deny');
+    assert.equal(dec.ruleId, 'databricks_destructive_ddl');
+  }
+
+  // 7. Mailbox permanentDelete, SharePoint destructive endpoints, full-list E1 formActions + C/U/D, and If-Match: * rejection
+  for (const path of ['/v1.0/me/messages/msg-123/permanentDelete', '/v1.0/users/alice@demo.test/mailFolders/inbox/permanentDelete']) {
+    const d = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'graph', hmacKey, seq: 1, method: 'POST',
+      url: new URL(`https://graph.microsoft.com${path}`), headers: {}, bodyComplete: true,
+    }).descriptor;
+    assert.equal(d.safe.actions[0].op, 'graph:file_delete');
+    assert.equal(evaluateStage1(d.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'graph_file_delete');
+  }
+  for (const spPath of [
+    '/sites/fin/_api/web/recyclebin/deleteall()',
+    '/sites/fin/_api/site/recyclebin/deleteallsecondstageitems()',
+    '/sites/fin/_api/web/lists/items(1)/deletewithparameters',
+    '/sites/fin/_api/web/lists/items(1)/recyclewithparameters',
+  ]) {
+    const sp = extractSemantic({
+      url: new URL(`https://tenant.sharepoint.com${spPath}`), sanitizedPath: spPath,
+      method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: {}, bodyComplete: true,
+      transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+    });
+    assert.equal(sp.actions[0].op, 'sharepoint:delete', `SharePoint destructive path classified: ${spPath}`);
+  }
+  for (const actCode of ['C', 'U', 'D']) {
+    const e1 = extractSemantic({
+      url: new URL('https://erp.example.com/jderest/v2/formservice'), sanitizedPath: '/jderest/v2/formservice',
+      method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+      reqType: 'application/json', decodedBuf: Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formServiceAction: actCode })),
+      bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+    });
+    assert.equal(evaluateStage1({
+      descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'e1' }, seq: 1, t: '', kind: 'http',
+      scheme: 'https', authority: 'erp.example.com', path: '/jderest/v2/formservice', url: 'https://erp.example.com/jderest/v2/formservice',
+      method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
+      bodyComplete: true, decodeComplete: true, completeness: e1.completeness, actions: e1.actions,
+    }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
+  }
+  // 35 formActions with mutating DoAction at index 33 (past 32-item display cap) -> MUST STILL gate!
+  const longActions = [
+    ...Array.from({ length: 33 }, (_, i) => ({ command: 'SetQBEValue', controlID: String(i) })),
+    { command: 'DoAction', controlID: '12' },
+  ];
+  const e1Long = extractSemantic({
+    url: new URL('https://erp.example.com/jderest/v2/formservice'), sanitizedPath: '/jderest/v2/formservice',
+    method: 'POST', effectiveMethod: 'POST', kind: 'http', rawHeaders: { 'content-type': 'application/json' },
+    reqType: 'application/json', decodedBuf: Buffer.from(JSON.stringify({ formName: 'P0411_W0411A', formActions: longActions })),
+    bodyComplete: true, transport: 'complete', isWrite: true, isAuth: false, isLive: false, projection: 'semantic',
+  });
+  assert.equal(e1Long.actions[0].details?.hasMutatingFormAction, true);
+  assert.equal(e1Long.actions[0].details?.formActionsTruncated, true);
+  assert.equal(evaluateStage1({
+    descV: 1, redactV: 1, extractorV: 1, surface: 'browser', target: { site: 'e1' }, seq: 1, t: '', kind: 'http',
+    scheme: 'https', authority: 'erp.example.com', path: '/jderest/v2/formservice', url: 'https://erp.example.com/jderest/v2/formservice',
+    method: 'POST', effectiveMethod: 'POST', methodSource: 'wire', isWrite: true, prefixBytes: 50,
+    bodyComplete: true, decodeComplete: true, completeness: e1Long.completeness, actions: e1Long.actions,
+  }, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'e1_ais_write');
+
+  // If-Match: * and W/"etag" are rejected as unguarded overwrites!
+  for (const badEtag of ['*', ' * ', 'W/"e1"', 'w/"e1"', '""']) {
+    const fw = buildApiRequestDescriptor({
+      connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',
+      url: new URL('https://graph.microsoft.com/v1.0/drives/d1/items/i1/content'),
+      headers: { 'content-type': 'application/octet-stream', 'if-match': badEtag },
+      rawBody: Buffer.from('abc'), bodyComplete: true,
+    }).descriptor;
+    assert.equal(fw.safe.actions[0].details?.hasIfMatch, false, `If-Match ${badEtag} must be rejected`);
+    assert.equal(evaluateStage1(fw.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'unguarded_overwrite_no_if_match');
+  }
 });
 
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {

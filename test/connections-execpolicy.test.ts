@@ -49,11 +49,14 @@ logins.saveLogin(ALICE, {
 let upstreamHits = 0;
 let writeUpstreamHits = 0;
 let lastWriteBody = '';
+let lastWriteLength = 0;
+let writeDelayMs = 0;
 const upstream = createServer(async (req, res) => {
   upstreamHits++;
   const chunks: Buffer[] = [];
   for await (const ch of req) chunks.push(ch as Buffer);
-  const rawBody = Buffer.concat(chunks).toString('utf8');
+  const rawBuf = Buffer.concat(chunks);
+  const rawBody = rawBuf.toString('utf8');
   if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/items/i1')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ id: 'i1', parentReference: { driveId: 'd1', id: 'root' } }));
@@ -63,19 +66,22 @@ const upstream = createServer(async (req, res) => {
     return void res.end(JSON.stringify({ id: 'd1', driveType: 'documentLibrary', sharePointIds: { siteUrl: 'https://contoso.sharepoint.com/sites/fin', siteId: 's1', webId: 'w1' } }));
   }
   if (req.method !== 'GET') {
+    if (writeDelayMs > 0) await new Promise(r => setTimeout(r, writeDelayMs));
     writeUpstreamHits++;
     lastWriteBody = rawBody;
+    lastWriteLength = rawBuf.length;
   }
   if (req.url?.startsWith('/api/v1/chat/completions')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ id: 'gen-1', usage: { cost: 0.001 } }));
   }
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, method: req.method, path: req.url }));
+  res.end(JSON.stringify({ ok: true, method: req.method, path: req.url, bytes: rawBuf.length }));
 });
 await new Promise<void>(ok => upstream.listen(0, '127.0.0.1', ok));
 const upstreamBase = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
 upstreams['graph.microsoft.com'] = upstreamBase;
+upstreams['contoso.sharepoint.com'] = upstreamBase;
 graphEndpoints.graph = upstreamBase;
 upstreams['adb-1.azuredatabricks.net'] = upstreamBase;
 upstreams['openrouter.ai'] = upstreamBase;
@@ -130,7 +136,11 @@ test('observe mode logs semantic actions, bodyShape, and policy on Graph/Databri
   assert.equal(mail.status, 200);
   const mailCall = entries.findLast(e => e.op === 'call')!;
   assert.equal((mailCall.actions as any[])[0].op, 'graph:sendMail');
-  assert.deepEqual((mailCall.actions as any[])[0].details, { recipientDomains: ['vendor.test'], recipientCount: 1, attachmentCount: 0 });
+  assert.deepEqual((mailCall.actions as any[])[0].details.recipientDomains, ['vendor.test']);
+  assert.equal((mailCall.actions as any[])[0].details.recipientCount, 1);
+  assert.equal((mailCall.actions as any[])[0].details.recipientsComplete, true);
+  assert.equal((mailCall.actions as any[])[0].details.attachmentCount, 0);
+  assert.match((mailCall.actions as any[])[0].details.targetDigest, /^[a-f0-9]{64}$/);
   assert.equal((mailCall.policy as any).action, 'requireApproval');
   assert.equal((mailCall.policy as any).ruleId, 'graph_send_mail');
   assert.ok(!JSON.stringify(mailCall).includes('TOP SECRET SUBJECT'));
@@ -294,4 +304,93 @@ test('enforce mode blocks unapproved sendMail / DROP / method-override downgrade
   }));
   assert.equal(r5Replay.status, 403);
   assert.equal(writeUpstreamHits, hits0 + 3, 'consumed approval cannot unlock a 2nd send');
+});
+
+test('R2 PrefixReader boundary sizes (65535B, 65536B, 65537B, 300 KiB), If-Match:*, SharePoint uploadSession chunk, and atomic 5-parallel single-use approval', async () => {
+  process.env.RF_EXECPOLICY_MODE = 'enforce';
+  const { inst, run, entries } = makeRun([`m365:mail:${ALICE}`, 'm365:item:d1/i1', 'erp:AP/']);
+
+  // 1. PUT .../content at 65535 B, 65536 B, 65537 B, and 300 KiB with concrete If-Match -> 200 with exact upstream byte count!
+  for (const size of [65_535, 65_536, 65_537, 300 * 1024]) {
+    const payload = Buffer.alloc(size, 0x61).toString('latin1');
+    const before = writeUpstreamHits;
+    const r = await sendViaProxy(
+      run,
+      'graph.microsoft.com',
+      'PUT',
+      '/v1.0/drives/d1/items/i1/content',
+      { 'content-type': 'application/octet-stream', 'if-match': '"etag-strong-1"' },
+      payload,
+    );
+    assert.equal(r.status, 200, `PUT .../content of ${size} bytes with strong If-Match must succeed`);
+    assert.equal(writeUpstreamHits, before + 1);
+    assert.equal(lastWriteLength, size, `upstream received exact ${size} bytes`);
+    const callEntry = entries.findLast(e => e.op === 'call')!;
+    assert.equal((callEntry.policy as any).ruleId, 'allow_governed_file_write');
+    if (size <= 65_536) {
+      assert.equal((callEntry.completeness as any).transport, 'complete', `${size} B reaches EOF cleanly`);
+    } else {
+      assert.equal((callEntry.completeness as any).transport, 'truncated', `${size} B is prefix-only truncated`);
+    }
+  }
+
+  // 2. PUT .../content with If-Match: * -> 403 unguarded_overwrite_no_if_match (zero upstream writes!)
+  const beforeStar = writeUpstreamHits;
+  const rStar = await sendViaProxy(
+    run,
+    'graph.microsoft.com',
+    'PUT',
+    '/v1.0/drives/d1/items/i1/content',
+    { 'content-type': 'application/octet-stream', 'if-match': '*' },
+    'x'.repeat(1024),
+  );
+  assert.equal(rStar.status, 403);
+  assert.equal(JSON.parse(rStar.text).error.ruleId, 'unguarded_overwrite_no_if_match');
+  assert.equal(writeUpstreamHits, beforeStar, 'If-Match: * blocked before upstream');
+
+  // 3. Realistic SharePoint /_api/v2.0/.../uploadSession chunk (320 KiB) under non-"graph" connection name -> 200 allow_upload_session_chunk!
+  const uploadUrl = 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=abc-123';
+  run.links.set(uploadUrl, { name: 'm365-corp', offer: 'm365:item:d1/i1', sourceType: 'graph', linkKind: 'upload_session' });
+  const chunk320k = Buffer.alloc(320 * 1024, 0x5a).toString('latin1');
+  const beforeChunk = writeUpstreamHits;
+  const rChunk = await sendViaProxy(
+    run,
+    'contoso.sharepoint.com',
+    'PUT',
+    '/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?guid=abc-123',
+    { 'content-type': 'application/octet-stream', 'content-range': `bytes 0-${chunk320k.length - 1}/${chunk320k.length}` },
+    chunk320k,
+  );
+  assert.equal(rChunk.status, 200, 'SharePoint uploadSession chunk allowed in enforce mode');
+  assert.equal(writeUpstreamHits, beforeChunk + 1);
+  assert.equal(lastWriteLength, chunk320k.length, 'exact 320 KiB chunk received upstream');
+  assert.equal((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
+
+  // 4. Atomic concurrency test: owner-signed maxUses:1 + 5 parallel sendMail (150ms delayed upstream) -> EXACTLY 1 x 200 and 4 x 403!
+  const prop = inst.append('agent', 'comment', {
+    ask: 'proposal', text: 'Send one approved email', run: 1,
+    execpolicy: { action: 'graph:sendMail', domains: ['concurrent.test'], workspace: 'w', maxUses: 1 },
+  });
+  inst.append(ALICE, 'signoff', { on: prop.seq, text: 'Approved once' });
+
+  const hitsBeforeRace = writeUpstreamHits;
+  writeDelayMs = 150;
+  try {
+    const mailBody = JSON.stringify({
+      message: { subject: 'Race test', toRecipients: [{ emailAddress: { address: 'cfo@concurrent.test' } }] },
+    });
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => sendViaProxy(run, 'graph.microsoft.com', 'POST', '/v1.0/me/sendMail', { 'content-type': 'application/json' }, mailBody)),
+    );
+    const okCount = results.filter(r => r.status === 200).length;
+    const deniedCount = results.filter(r => r.status === 403).length;
+    assert.equal(okCount, 1, `expected exactly 1 allowed out of 5 parallel sends, got ${okCount}`);
+    assert.equal(deniedCount, 4, `expected exactly 4 denied out of 5 parallel sends, got ${deniedCount}`);
+    assert.equal(writeUpstreamHits, hitsBeforeRace + 1, 'upstream received exactly 1 sendMail');
+    const sendEntry = entries.findLast(e => e.op === 'send' && e.approvalRef === `c${prop.seq}`);
+    assert.ok(sendEntry, 'pre-flight send durably persisted approvalRef');
+    assert.equal(typeof sendEntry!.decisionId, 'string', 'pre-flight send durably persisted decisionId');
+  } finally {
+    writeDelayMs = 0;
+  }
 });

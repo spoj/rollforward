@@ -9,7 +9,7 @@ import { getDomain } from 'tldts';
 import { act, changes, isPrivate, key, readJson, tree, writeJson } from './system.ts';
 import { recordCost } from './costs.ts';
 import { buildApiRequestDescriptor, MAX_PREFIX_BYTES, parseSemanticMethods, type SemanticAction } from './extract.ts';
-import { compactDecision, defaultExecPolicy, loadExecPolicyConfig, type CompactPolicyDecision } from './execpolicy.ts';
+import { compactDecision, defaultExecPolicy, loadExecPolicyConfig, POLICY_VERSION, type CompactPolicyDecision } from './execpolicy.ts';
 import { sanitizeUrl, scrubText } from './redact.ts';
 import type { EntraLogin } from './auth.ts';
 import { token } from './entra.ts';
@@ -127,7 +127,15 @@ export const reachable = (inst: Instance, run?: number) => {
 
 // What a run, as the proxy knows it, has: its instance, its number, the links its connections' answers held, each the name of
 // the connection that gave it and the offer that allowed it, and what its calls have cost.
-export type CallRun = { inst: Instance; n: number; runner: string; links: Map<string, { name: string; offer: string }>; cost: number; estimated?: boolean; stopped?: boolean };
+export type CallRun = {
+  inst: Instance;
+  n: number;
+  runner: string;
+  links: Map<string, { name: string; offer: string; sourceType?: string; linkKind?: 'upload_session' | 'download' | 'redirect' }>;
+  cost: number;
+  estimated?: boolean;
+  stopped?: boolean;
+};
 
 // Tests point a host at a stand-in.
 export const upstreams: Record<string, string> = {};
@@ -453,8 +461,9 @@ function logExpired(a: CallRun, login: string, since: string, name: string, runn
   a.inst.append('server', 'expired', { run: a.n, login, name, runner });
 }
 
-// Spec §2.5 PrefixReader: pauses a streamed write after reading <=64 KiB (or EOF / 10s timeout) so enforce-mode
-// execpolicy inspects the body BEFORE dialing upstream, then replays buffered chunks + remaining live stream on allow.
+// Spec §2.5 PrefixReader: pauses a streamed write after reading <=64 KiB (distinguishing exact 64 KiB EOF from >64 KiB
+// truncation) or 10s timeout so enforce-mode execpolicy inspects the body BEFORE dialing upstream, then replays buffered
+// chunks + remaining live stream on allow with backpressure.
 async function readStreamPrefix(
   req: IncomingMessage,
   maxBytes = MAX_PREFIX_BYTES,
@@ -462,7 +471,9 @@ async function readStreamPrefix(
   signal?: AbortSignal,
 ): Promise<{ prefix: Buffer; replayChunks: Buffer[]; eof: boolean; timedOut: boolean; aborted: boolean }> {
   return new Promise(resolve => {
-    const chunks: Buffer[] = [];
+    const prefixChunks: Buffer[] = [];
+    const overflowChunks: Buffer[] = [];
+    let prefixLen = 0;
     let total = 0;
     let done = false;
     let timer: NodeJS.Timeout | undefined;
@@ -476,14 +487,32 @@ async function readStreamPrefix(
       req.off('close', onClose);
       signal?.removeEventListener('abort', onAbort);
       if (!eof && !aborted) req.pause();
-      const combined = chunks.length === 1 ? chunks[0] : chunks.length ? Buffer.concat(chunks, total) : Buffer.alloc(0);
-      const prefix = combined.length > maxBytes ? combined.subarray(0, maxBytes) : combined;
-      resolve({ prefix, replayChunks: chunks, eof, timedOut, aborted });
+      const prefix = prefixChunks.length === 1
+        ? prefixChunks[0]
+        : prefixChunks.length
+          ? Buffer.concat(prefixChunks, prefixLen)
+          : Buffer.alloc(0);
+      const replayChunks = overflowChunks.length ? [...prefixChunks, ...overflowChunks] : prefixChunks;
+      resolve({ prefix, replayChunks, eof, timedOut, aborted });
     };
     const onData = (b: Buffer) => {
-      chunks.push(b);
+      if (!b.length) return;
       total += b.length;
-      if (total >= maxBytes) finish(false, false, false);
+      if (prefixLen < maxBytes) {
+        const need = maxBytes - prefixLen;
+        if (b.length <= need) {
+          prefixChunks.push(b);
+          prefixLen += b.length;
+        } else {
+          prefixChunks.push(b.subarray(0, need));
+          prefixLen = maxBytes;
+          overflowChunks.push(b.subarray(need));
+        }
+      } else {
+        overflowChunks.push(b);
+      }
+      // Strictly distinguish exact 64 KiB EOF (wait for 'end') from >64 KiB (> maxBytes -> pause immediately).
+      if (total > maxBytes) finish(false, false, false);
     };
     const onEnd = () => finish(true, false, false);
     const onAbort = () => finish(false, false, true);
@@ -659,10 +688,17 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
 
     // Unified RequestDescriptor + semantic extraction + execpolicy admission for non-LLM API connections (never logging OpenRouter/Exa prompt bodies).
     const connectionType = link ? 'link' as const : (c?.type as 'graph' | 'databricks' | 'service' | undefined);
+    const linkProvenance = link
+      ? {
+          sourceType: link.sourceType ?? connections().find(x => x.name === link.name)?.type,
+          linkKind: link.linkKind,
+        }
+      : undefined;
     let isWrite = !['GET', 'HEAD', 'OPTIONS'].includes(method);
     let prefixTee: { chunks: Buffer[]; bytes: number; truncated: boolean } | undefined;
     let prefixChunks: Buffer[] | undefined;
     let prefixEof = false;
+    let reservedApproval: { key: string; decisionId: string } | undefined;
     if (!s) {
       const descUrl = new URL(`${url.origin}${targetPath}${url.search}`);
       const bodyExpected = Number(req.headers['content-length'] ?? 0) > 0 || req.headers['transfer-encoding'] !== undefined;
@@ -680,13 +716,25 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         : 'not-read';
       let transportReasons: string[] | undefined;
 
-      // Spec §2.5 PrefixReader: in enforce mode, read <=64 KiB (or EOF / 10s timeout) from streamed writes BEFORE dialing upstream!
+      // Spec §2.5 PrefixReader: in enforce mode, read <=64 KiB (distinguishing exact 64 KiB EOF from >64 KiB) or 10s timeout BEFORE dialing upstream!
       if (enforceActive && body === undefined && preliminaryWrite && bodyExpected) {
         const pr = await readStreamPrefix(req, MAX_PREFIX_BYTES, 10_000, ac.signal);
         if (pr.timedOut || pr.aborted) {
           res.off('close', onResClose);
           const decId = randomUUID();
           const ruleId = pr.timedOut ? 'policy_prefix_timeout' : 'policy_error';
+          const atSeq = Array.isArray(a.inst.log) ? (a.inst.log.at(-1)?.seq ?? 0) : 0;
+          auditMeta = {
+            isWrite: true,
+            policy: {
+              decisionId: decId,
+              mode: cfg.mode,
+              action: 'deny',
+              ruleId,
+              policyVersion: POLICY_VERSION,
+              atSeq,
+            },
+          };
           log(403, 0, { refused: `blocked by policy: ${ruleId}` });
           if (res.headersSent) return void res.destroy();
           if (jsonApi) res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', connection: 'close' }).end(`${JSON.stringify({ error: { code: 'rf_policy', ruleId, decisionId: decId } })}\n`);
@@ -704,6 +752,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       const { descriptor, methods } = buildApiRequestDescriptor({
         connection: name,
         connectionType,
+        ...(linkProvenance && { linkProvenance }),
         seq: (a.inst.log?.length ?? 0) + 1,
         method,
         url: descUrl,
@@ -727,11 +776,15 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
           epoch: runAuth?.epoch,
           owner: instOwner,
           workspace: instWorkspace,
+          instKey: a.inst.dir,
           intent: { run: a.n, series: a.inst.seriesId },
           signal: ac.signal,
         });
       } finally {
         res.off('close', onResClose);
+      }
+      if (decision.reservationKey) {
+        reservedApproval = { key: decision.reservationKey, decisionId: decision.decisionId };
       }
       const compact = { ...compactDecision(decision), atSeq: admissionAtSeq };
       auditMeta = {
@@ -747,6 +800,10 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         policy: compact,
       };
       if (decision.mode === 'enforce' && decision.action !== 'allow') {
+        if (reservedApproval) {
+          defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
+          reservedApproval = undefined;
+        }
         log(403, 0, { refused: `blocked by policy: ${decision.ruleId}` });
         if (res.headersSent) return void res.destroy();
         // Enforce-mode refusal returns ruleId + decisionId only (never reasoning oracle text) and closes connection cleanly.
@@ -755,10 +812,18 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         return;
       }
       // Recheck authority after any async execpolicy wait before emitting send or opening upstream.
-      if (a.stopped) throw new HttpError(409, 'run stopped');
-      lender(a.inst, a.n);
-      if (offer) use(a.inst, a.n, offer);
-      if (link) use(a.inst, a.n, link.offer);
+      try {
+        if (a.stopped) throw new HttpError(409, 'run stopped');
+        lender(a.inst, a.n);
+        if (offer) use(a.inst, a.n, offer);
+        if (link) use(a.inst, a.n, link.offer);
+      } catch (e) {
+        if (reservedApproval) {
+          defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
+          reservedApproval = undefined;
+        }
+        throw e;
+      }
       if (body === undefined && !prefixChunks && isWrite) {
         prefixTee = { chunks: [], bytes: 0, truncated: false };
       }
@@ -769,9 +834,25 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       sent = a.inst.append('agent', 'send', {
         run: a.n, name, method, path,
         ...(auditMeta?.effectiveMethod && { effectiveMethod: auditMeta.effectiveMethod }),
+        ...(auditMeta?.policy?.approvalRef && {
+          approvalRef: auditMeta.policy.approvalRef,
+          decisionId: auditMeta.policy.decisionId,
+        }),
       }).seq;
+      // Now that the pre-flight `send` durably records the spent approvalRef+decisionId in log.jsonl,
+      // release the in-memory reservation (deduplicated by decisionId if any concurrent request overlaps).
+      if (reservedApproval) {
+        defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
+        reservedApproval = undefined;
+      }
       sending.add(req);
-    } else if (s) sending.add(req);
+    } else {
+      if (reservedApproval) {
+        defaultExecPolicy.releaseApprovalReservation(reservedApproval.key, reservedApproval.decisionId);
+        reservedApproval = undefined;
+      }
+      if (s) sending.add(req);
+    }
     const doneWork = Promise.withResolvers<void>();
     if (s || sent !== undefined) {
       let set = inFlight.get(a);
@@ -798,7 +879,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
       const answer = await forward(`${c?.type === 'service' ? c.url : upstreams[host] ?? url.origin}${targetPath}${url.search}`, req, res, {
         auth, body, digest, prefixTee, prefixChunks, prefixEof, keep: !link && c?.type !== 'service', service: !!s, retry429: s === openrouter, registerAbort,
         beforeRetry: s === openrouter ? verifyModelKey : undefined,
-        location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer }); },
+        location: to => { const l = URL.parse(to); if (l && (redirect === true || l.origin === redirect)) a.links.set(l.href, { name, offer, sourceType: c?.type, linkKind: 'redirect' }); },
       });
       // For streamed non-LLM writes (e.g. service or PUT .../content), extract bodyShape/actions from the <=64KiB tee prefix.
       if (!s && prefixTee && prefixTee.bytes > 0) {
@@ -807,6 +888,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         const { descriptor } = buildApiRequestDescriptor({
           connection: name,
           connectionType,
+          ...(linkProvenance && { linkProvenance }),
           seq: (a.inst.log?.length ?? 0) + 1,
           method,
           url: descUrl,
@@ -829,7 +911,9 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
           try {
             const links = await types[c.type].links!(answer.parsed, targetPath, as, ticks, checkpoint);
             checkpoint();
-            for (const l of links) a.links.set(new URL(l).href, { name, offer });
+            const isUploadSession = /createuploadsession(?:\(|$)/i.test(targetPath.split('/').pop() ?? '');
+            const linkKind = isUploadSession ? 'upload_session' as const : 'download' as const;
+            for (const l of links) a.links.set(new URL(l).href, { name, offer, sourceType: c.type, linkKind });
           } catch (e) { if (current()) throw e; }
         }
       }
@@ -1168,19 +1252,36 @@ function forward(target: string, req: IncomingMessage, res: ServerResponse, o: {
             }
           }
         };
-        if (o.prefixChunks?.length) {
-          for (const ch of o.prefixChunks) {
-            recordChunk(ch);
-            up.write(ch);
+        const finishStreamBody = () => {
+          if (up.destroyed || settled) return;
+          if (o.prefixEof) {
+            up.end();
+          } else {
+            if (o.digest || o.prefixTee) req.on('data', recordChunk);
+            if (o.digest) up.once('close', () => req.resume());
+            req.pipe(up);
           }
-        }
-        if (o.prefixEof) {
-          up.end();
+        };
+        if (!o.prefixEof) req.on('error', e => up.destroy(e));
+        if (o.prefixChunks?.length) {
+          // Replay buffered prefix chunks sequentially honoring up.write() backpressure ('drain') before piping live remainder.
+          let idx = 0;
+          const writeNext = () => {
+            while (idx < o.prefixChunks!.length) {
+              if (up.destroyed || settled) return;
+              const ch = o.prefixChunks![idx++];
+              recordChunk(ch);
+              const ok = up.write(ch);
+              if (!ok) {
+                up.once('drain', writeNext);
+                return;
+              }
+            }
+            finishStreamBody();
+          };
+          writeNext();
         } else {
-          if (o.digest || o.prefixTee) req.on('data', recordChunk);
-          req.on('error', e => up.destroy(e));
-          if (o.digest) up.once('close', () => req.resume());
-          req.pipe(up);
+          finishStreamBody();
         }
       }
     };
