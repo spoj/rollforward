@@ -695,8 +695,8 @@ export class Browsers {
   private expired = new Set<string>();
   private conns = new Map<Duplex, string>();
   private ended = false;
-  private endWait!: () => void;
-  private readonly onEnded = new Promise<void>(ok => { this.endWait = ok; });
+  private cutted = false;
+  private endListeners = new Set<() => void>();
   shots = 0;
   constructor(inst: Instance, run: number) {
     this.inst = inst;
@@ -759,12 +759,13 @@ export class Browsers {
         if (!waited) this.inst.append('server', 'browser', { run: this.run, site, login: email, action: 'wait', held: other.run ? `${tree().series[other.run.inst.seriesId]?.name}/${other.run.inst.label}` : other.by ?? 'keepalive' });
         other.waiters++;
         other.nudge?.();
-        let onClose: (() => void) | undefined;
+        let onClose: (() => void) | undefined, onEnd: (() => void) | undefined;
         try {
           await Promise.race([
             other.released,
-            this.onEnded,
             new Promise<void>(ok => {
+              onEnd = ok;
+              this.endListeners.add(ok);
               if (!conn) return;
               if (conn.destroyed) return ok();
               onClose = ok;
@@ -772,6 +773,7 @@ export class Browsers {
             }),
           ]);
         } finally {
+          if (onEnd) this.endListeners.delete(onEnd);
           if (conn && onClose) conn.off('close', onClose);
           other.waiters--;
         }
@@ -801,20 +803,21 @@ export class Browsers {
         const b: { id: string; email: string; since: string; writeback: boolean; file: string; generation: number; source?: () => boolean; conns: number; used?: boolean; via?: Via; internal: string[]; idle?: NodeJS.Timeout; shot?: Buffer; shotsPath?: string; shotSeq?: number; shotPoll?: NodeJS.Timeout; drainingShots?: Promise<void> } = { id, email, since: login?.since ?? '', writeback, file, generation, source, conns: 0, via, internal, shotsPath, shotSeq: 0 };
         this.opens.set(site, n);
         this.bySite.set(site, b);
-        if (shotsPath) {
+        if (shotsPath && !this.cutted) {
           b.shotPoll = setInterval(() => { void this.drainShots(site, b).catch(() => {}); }, 15_000);
           b.shotPoll.unref?.();
         }
         changes.emit('change', this.inst.id); // for its instance's page to show it
         setJournal({ ...journal(), [id]: { inst: this.inst.id, run: this.run, site, email, since: b.since, writeback, file, generation } });
         if (this.ended) {
-          await this.close(site);
+          if (!this.cutted) await this.close(site);
           return undefined;
         }
         try {
           lender(this.inst, this.run);
           if (site !== PRINT && (await this.lent(site)).had?.id !== id) return undefined;
         } catch (e) {
+          if (this.cutted) return undefined;
           await this.close(site);
           throw e;
         }
@@ -857,10 +860,16 @@ export class Browsers {
     }, 0);
   }
 
+  private wakeEnd() {
+    for (const wake of this.endListeners) wake();
+    this.endListeners.clear();
+  }
+
   // A stop cuts every connection to the run's browsers; the browsers stay open for the next start to close (reap()).
   cut() {
     this.ended = true;
-    this.endWait();
+    this.cutted = true;
+    this.wakeEnd();
     for (const b of this.bySite.values()) {
       clearTimeout(b.idle);
       b.idle = undefined;
@@ -968,7 +977,7 @@ export class Browsers {
   // The run ended: its browsers close, and a connection still waiting for its person's browser on a website gets none.
   end() {
     this.ended = true;
-    this.endWait();
+    this.wakeEnd();
     this.close();
     return Promise.all([...this.closing, ...[...this.opening.values()].map(p => p.catch(() => {}))]);
   }

@@ -7,10 +7,23 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createInstance, openStore } from '../src/store.ts';
 import { startMessageStore } from '../src/message-store.ts';
-import { initSystem, saveTree, tree, writeJson } from '../src/system.ts';
+import { initSystem, readJson, saveTree, tree, writeJson } from '../src/system.ts';
 import { authority, logins, personDir, saveLogin, secret } from '../src/logins.ts';
 
 const sleep = (ms: number) => new Promise(ok => setTimeout(ok, ms));
+async function waitWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`timed out after ${ms}ms waiting for ${label}`)), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+const TEST_OPTS = { timeout: 15_000 };
 const alice = 'alice@demo.test';
 const cookieState = (value: string) => ({
   cookies: [{ name: 'sid', value, domain: 'crm.example.com', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }],
@@ -23,21 +36,27 @@ let openGate: PromiseWithResolvers<void> | undefined;
 let closeGate: PromiseWithResolvers<void> | undefined;
 let openSeen: PromiseWithResolvers<void> | undefined;
 let closeSeen: PromiseWithResolvers<void> | undefined;
+const openSessions = new Set<string>();
 const openedStates: unknown[] = [];
 const closedIds: string[] = [];
 const pagesVisited: string[] = [];
 
 const service = createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/sessions') {
+    return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify([...openSessions].map(id => ({ id }))));
+  }
   if (req.method === 'POST' && req.url === '/sessions') {
     const body = JSON.parse(Buffer.concat(await Array.fromAsync(req as AsyncIterable<Buffer>)).toString());
     openedStates.push(body.state);
     openSeen?.resolve();
     await openGate?.promise;
     const id = `s${++seq}`;
+    openSessions.add(id);
     return void res.writeHead(201, { 'content-type': 'application/json' }).end(JSON.stringify({ id }));
   }
   if (req.method === 'DELETE' && req.url?.startsWith('/sessions/')) {
     const id = req.url.split('/')[2];
+    openSessions.delete(id);
     closedIds.push(id);
     closeSeen?.resolve();
     await closeGate?.promise;
@@ -60,7 +79,7 @@ Object.assign(process.env, {
   RF_BROWSER_IDLE_MS: String(IDLE_MS),
 });
 
-const { Browsers, keepAlive, upgradeBrowser } = await import('../src/browsers.ts');
+const { Browsers, keepAlive, reap, upgradeBrowser } = await import('../src/browsers.ts');
 
 let root = '';
 let runCounter = 0;
@@ -121,6 +140,7 @@ beforeEach(() => {
   closeGate = undefined;
   openSeen = undefined;
   closeSeen = undefined;
+  openSessions.clear();
   openedStates.length = 0;
   closedIds.length = 0;
   pagesVisited.length = 0;
@@ -136,11 +156,6 @@ function releaseGates() {
   closeSeen = undefined;
 }
 
-const cleanup = (...runs: InstanceType<typeof Browsers>[]) => {
-  activeRuns.push(...runs);
-  return () => {};
-};
-
 afterEach(async () => {
   releaseGates();
   const runs = activeRuns.splice(0);
@@ -151,10 +166,9 @@ afterEach(async () => {
 
 after(() => new Promise<void>(ok => service.close(() => ok())));
 
-test('idle writeback browser hands off immediately when another run arrives', async t => {
-  const runA = new Browsers(running('run-a'), 1);
-  const runB = new Browsers(running('run-b'), 1);
-  t.after(cleanup(runA, runB));
+test('idle writeback browser hands off immediately when another run arrives', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('run-a'), 1));
+  const runB = track(new Browsers(running('run-b'), 1));
 
   const idA = await runA.browser('crm');
   const connA = new PassThrough();
@@ -174,10 +188,9 @@ test('idle writeback browser hands off immediately when another run arrives', as
   assert.deepEqual(closedIds, [idA]);
 });
 
-test('active writeback browser is not cut when Run B arrives, but hands off immediately once Run A disconnects', async t => {
-  const runA = new Browsers(running('active-a'), 1);
-  const runB = new Browsers(running('waiting-b'), 1);
-  t.after(cleanup(runA, runB));
+test('active writeback browser is not cut when Run B arrives, but hands off immediately once Run A disconnects', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('active-a'), 1));
+  const runB = track(new Browsers(running('waiting-b'), 1));
 
   const idA = await runA.browser('crm');
   const connA = new PassThrough();
@@ -194,7 +207,7 @@ test('active writeback browser is not cut when Run B arrives, but hands off imme
 
   const t0 = Date.now();
   connA.destroy();
-  const idB = await waitingB;
+  const idB = await waitWithTimeout(waitingB, 5_000, 'Run B handoff');
   const elapsed = Date.now() - t0;
 
   assert.ok(idA && idB && idA !== idB);
@@ -203,9 +216,8 @@ test('active writeback browser is not cut when Run B arrives, but hands off imme
   assert.deepEqual(openedStates, [cookieState('seed'), cookieState('from-a')]);
 });
 
-test('zero waiters preserves the full IDLE_MS warm cache', async t => {
-  const runA = new Browsers(running('warm-a'), 1);
-  t.after(cleanup(runA));
+test('zero waiters preserves the full IDLE_MS warm cache', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('warm-a'), 1));
 
   await runA.browser('crm');
   const connA = new PassThrough();
@@ -218,7 +230,7 @@ test('zero waiters preserves the full IDLE_MS warm cache', async t => {
   assert.equal(runA.bySite.size, 1, 'browser remains warm well past immediate-handoff latency');
   assert.equal(closedIds.length, 0);
 
-  await closeSeen.promise;
+  await waitWithTimeout(closeSeen.promise, IDLE_MS + 3_000, 'idle close');
   const elapsed = Date.now() - t0;
   assert.ok(elapsed >= IDLE_MS - 150, `expected browser to wait IDLE_MS (${IDLE_MS}ms), closed in ${elapsed}ms`);
   await sleep(30);
@@ -227,10 +239,9 @@ test('zero waiters preserves the full IDLE_MS warm cache', async t => {
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), cookieState('from-a'));
 });
 
-test('waiter disconnecting while holder is active decrements waiters so holder keeps its IDLE_MS warm cache', async t => {
-  const runA = new Browsers(running('keep-warm-a'), 1);
-  const runB = new Browsers(running('cancel-b'), 1);
-  t.after(cleanup(runA, runB));
+test('waiter disconnecting while holder is active decrements waiters so holder keeps its IDLE_MS warm cache', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('keep-warm-a'), 1));
+  const runB = track(new Browsers(running('cancel-b'), 1));
 
   await runA.browser('crm');
   const connA = new PassThrough();
@@ -240,7 +251,7 @@ test('waiter disconnecting while holder is active decrements waiters so holder k
   const waitingB = runB.browser('crm', connB);
   await sleep(30);
   connB.destroy();
-  assert.equal(await waitingB, undefined, 'cancelled waiter returns undefined');
+  assert.equal(await waitWithTimeout(waitingB, 5_000, 'cancelled waiter'), undefined, 'cancelled waiter returns undefined');
 
   connA.destroy();
   await sleep(350);
@@ -248,10 +259,28 @@ test('waiter disconnecting while holder is active decrements waiters so holder k
   assert.equal(closedIds.length, 0);
 });
 
-test('ending a waiting run wakes its wait immediately, responds 409 on open upgrade socket, and lets active holder stay warm', async t => {
-  const runA = new Browsers(running('warm-after-end-a'), 1);
-  const runB = new Browsers(running('ended-waiter-b'), 1);
-  t.after(cleanup(runA, runB));
+test('repeated abandoned waits leave endListeners empty while both runs remain alive', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('listeners-a'), 1));
+  const runB = track(new Browsers(running('listeners-b'), 1));
+
+  await runA.browser('crm');
+  const connA = new PassThrough();
+  runA.connected('crm', connA);
+
+  for (let i = 0; i < 10; i++) {
+    const connB = new PassThrough();
+    const p = runB.browser('crm', connB);
+    await sleep(5);
+    connB.destroy();
+    assert.equal(await waitWithTimeout(p, 5_000, `abandoned wait ${i}`), undefined);
+  }
+  assert.equal((runB as unknown as { endListeners: Set<() => void> }).endListeners.size, 0, 'no leaked end listeners after abandoned waits');
+  assert.equal(runA.bySite.size, 1, 'holder remains connected and alive');
+});
+
+test('ending a waiting run wakes its wait immediately, responds 409 on open upgrade socket, and lets active holder stay warm', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('warm-after-end-a'), 1));
+  const runB = track(new Browsers(running('ended-waiter-b'), 1));
 
   await runA.browser('crm');
   const connA = new PassThrough();
@@ -267,23 +296,23 @@ test('ending a waiting run wakes its wait immediately, responds 409 on open upgr
   await sleep(40);
   assert.equal(upgradeDone, false, 'Run B upgrade is waiting on Run A');
 
-  // Ending Run B must wake upgradeBrowser immediately even while Run A stays connected.
   const t0 = Date.now();
   await runB.end();
-  await upgradingB;
+  await waitWithTimeout(upgradingB, 5_000, 'upgradeBrowser wake on end()');
   assert.ok(Date.now() - t0 < FAST_BOUND_MS, 'ended waiting run woke immediately');
   assert.match(Buffer.concat(chunks).toString(), /^HTTP\/1\.1 409 Conflict\r\n[^]*\r\n\r\nrun stopped\n$/);
+  assert.equal((runB as unknown as { endListeners: Set<() => void> }).endListeners.size, 0);
 
-  // Now Run A disconnects with zero remaining waiters -> must keep its IDLE_MS warm cache.
   connA.destroy();
   await sleep(350);
   assert.equal(runA.bySite.size, 1, 'Run A stayed warm because ended Run B decremented waiters');
   assert.equal(closedIds.length, 0);
 });
 
-test('cut() suppresses idle closes and waiter nudges so browser stays open for reap()', async t => {
+test('cut() suppresses idle closes and waiter nudges so browser stays open for reap()', TEST_OPTS, async () => {
   const runA = track(new Browsers(running('cut-a'), 1));
   const runB = track(new Browsers(running('cut-waiter-b'), 1));
+  const runC = track(new Browsers(running('cut-waiter-c'), 1));
 
   await runA.browser('crm');
   const connA = new PassThrough();
@@ -293,14 +322,11 @@ test('cut() suppresses idle closes and waiter nudges so browser stays open for r
   const waitingB = runB.browser('crm', connB);
   await sleep(30);
 
-  // Simulate SIGTERM cut() on active holder with a queued waiter.
   runA.cut();
   await sleep(150);
   assert.equal(closedIds.length, 0, 'cut() must not fire a zero-delay DELETE while shutting down');
   assert.equal(runA.bySite.size, 1, 'browser remains recorded for reap()');
 
-  // Even a new waiter arriving after cut() must not trigger a DELETE.
-  const runC = new Browsers(running('cut-waiter-c'), 1);
   const connC = new PassThrough();
   const waitingC = runC.browser('crm', connC);
   await sleep(100);
@@ -308,16 +334,45 @@ test('cut() suppresses idle closes and waiter nudges so browser stays open for r
 
   connB.destroy();
   connC.destroy();
-  assert.equal(await waitingB, undefined);
-  assert.equal(await waitingC, undefined);
-  await runC.end();
+  assert.equal(await waitWithTimeout(waitingB, 5_000, 'waitingB cancel'), undefined);
+  assert.equal(await waitWithTimeout(waitingC, 5_000, 'waitingC cancel'), undefined);
 });
 
-test('concurrent waiters nudging an idle holder trigger only one close and serialize cleanly', async t => {
-  const runA = new Browsers(running('multi-a'), 1);
-  const runB = new Browsers(running('multi-b'), 1);
-  const runC = new Browsers(running('multi-c'), 1);
-  t.after(cleanup(runA, runB, runC));
+test('cut() during opening journals the session without sending DELETE until reap() recovers it', TEST_OPTS, async () => {
+  openGate = Promise.withResolvers<void>();
+  openSeen = Promise.withResolvers<void>();
+
+  const runA = track(new Browsers(running('cut-opening-a'), 1));
+  const pA = runA.browser('crm');
+  await waitWithTimeout(openSeen.promise, 5_000, 'POST /sessions');
+
+  // Cut the run BEFORE POST /sessions resolves.
+  runA.cut();
+  const gate = openGate;
+  openGate = undefined;
+  gate.resolve();
+
+  assert.equal(await waitWithTimeout(pA, 5_000, 'cut opening continuation'), undefined);
+  await sleep(80);
+  assert.equal(closedIds.length, 0, 'cut() during opening must not send DELETE before reap()');
+  const journaled = Object.keys(readJson<Record<string, unknown>>('browsers.json', {}));
+  assert.equal(journaled.length, 1, 'opened session was still journaled for reap()');
+
+  // Startup reap() closes the journaled session and writes back its state.
+  backState = cookieState('reaped-after-cut');
+  const { closed } = await reap();
+  await waitWithTimeout(closed, 5_000, 'reap() close');
+  assert.deepEqual(closedIds, journaled, 'reap() closed the journaled session');
+  assert.deepEqual(Object.keys(readJson<Record<string, unknown>>('browsers.json', {})), []);
+  assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), cookieState('reaped-after-cut'));
+  // Remove already-reaped session from runA.bySite so afterEach does not send a second DELETE.
+  runA.bySite.clear();
+});
+
+test('concurrent waiters nudging an idle holder trigger only one close and serialize cleanly', TEST_OPTS, async () => {
+  const runA = track(new Browsers(running('multi-a'), 1));
+  const runB = track(new Browsers(running('multi-b'), 1));
+  const runC = track(new Browsers(running('multi-c'), 1));
 
   const idA = await runA.browser('crm');
   const connA = new PassThrough();
@@ -330,7 +385,7 @@ test('concurrent waiters nudging an idle holder trigger only one close and seria
 
   const pB = runB.browser('crm', new PassThrough());
   const pC = runC.browser('crm', new PassThrough());
-  await closeSeen.promise;
+  await waitWithTimeout(closeSeen.promise, 5_000, 'Run A DELETE');
   await sleep(30);
   assert.deepEqual(closedIds, [idA], 'only one DELETE sent for Run A despite concurrent nudges');
 
@@ -338,17 +393,17 @@ test('concurrent waiters nudging an idle holder trigger only one close and seria
   closeGate = undefined;
   gate.resolve();
 
-  const first = await Promise.race([
+  const first = await waitWithTimeout(Promise.race([
     pB.then(id => ({ winner: 'B' as const, id, run: runB, other: pC, otherRun: runC })),
     pC.then(id => ({ winner: 'C' as const, id, run: runC, other: pB, otherRun: runB })),
-  ]);
+  ]), 5_000, 'first waiter open');
   assert.ok(first.id);
   const connFirst = new PassThrough();
   first.run.connected('crm', connFirst);
   backState = cookieState('from-first');
   const t0 = Date.now();
   connFirst.destroy();
-  const secondId = await first.other;
+  const secondId = await waitWithTimeout(first.other, 5_000, 'second waiter handoff');
   const elapsed = Date.now() - t0;
 
   assert.ok(secondId && secondId !== first.id);
@@ -356,16 +411,15 @@ test('concurrent waiters nudging an idle holder trigger only one close and seria
   assert.deepEqual(openedStates, [cookieState('seed'), cookieState('from-a'), cookieState('from-first')]);
 });
 
-test('waiter arriving while holder is still opening does not cut holder before connect, then gets immediate handoff', async t => {
+test('waiter arriving while holder is still opening does not cut holder before connect, then gets immediate handoff', TEST_OPTS, async () => {
   openGate = Promise.withResolvers<void>();
   openSeen = Promise.withResolvers<void>();
 
-  const runA = new Browsers(running('opening-a'), 1);
-  const runB = new Browsers(running('opening-b'), 1);
-  t.after(cleanup(runA, runB));
+  const runA = track(new Browsers(running('opening-a'), 1));
+  const runB = track(new Browsers(running('opening-b'), 1));
 
   const pA = runA.browser('crm');
-  await openSeen.promise;
+  await waitWithTimeout(openSeen.promise, 5_000, 'Run A POST');
 
   let bOpened = false;
   const pB = runB.browser('crm').then(id => { bOpened = true; return id; });
@@ -375,7 +429,7 @@ test('waiter arriving while holder is still opening does not cut holder before c
   openGate = undefined;
   gate.resolve();
 
-  const idA = await pA;
+  const idA = await waitWithTimeout(pA, 5_000, 'Run A open');
   assert.ok(idA);
   const connA = new PassThrough();
   runA.connected('crm', connA);
@@ -385,20 +439,19 @@ test('waiter arriving while holder is still opening does not cut holder before c
 
   const t0 = Date.now();
   connA.destroy();
-  const idB = await pB;
+  const idB = await waitWithTimeout(pB, 5_000, 'Run B handoff');
   const elapsed = Date.now() - t0;
   assert.ok(idB && idB !== idA);
   assert.ok(elapsed < FAST_BOUND_MS, `immediate handoff once opening holder finishes, took ${elapsed}ms`);
 });
 
-test('opening continuation completing while a driver is attached does not evict the live driver even if original upgrade was abandoned', async t => {
+test('opening continuation completing while a driver is attached does not evict the live driver even if original upgrade was abandoned', TEST_OPTS, async () => {
   const runA = track(new Browsers(running('driver-a'), 1));
   const runB = track(new Browsers(running('driver-waiter-b'), 1));
   const lentGate = Promise.withResolvers<void>();
   const lentGateSeen = Promise.withResolvers<void>();
   extraReleases.push(() => lentGate.resolve());
 
-  // Gate the second lent() call (the post-open revalidation inside ready after bySite.set).
   const origLent = runA.lent.bind(runA);
   let lentCalls = 0;
   runA.lent = async (site: string, quiet?: boolean) => {
@@ -412,9 +465,8 @@ test('opening continuation completing while a driver is attached does not evict 
   const sockA = new PassThrough();
   const req = { headers: { host: '127.0.0.1' } } as IncomingMessage;
   const upgrading = upgradeBrowser(runA, 'crm', req, sockA, Buffer.alloc(0));
-  await lentGateSeen.promise;
+  await waitWithTimeout(lentGateSeen.promise, 5_000, 'post-open lent() gate');
 
-  // Browser is in bySite while final route validation is suspended: attach a live driver, abandon original upgrade, and queue Run B.
   const driverConn = new PassThrough();
   runA.drive('crm', alice, driverConn);
   sockA.destroy();
@@ -422,34 +474,31 @@ test('opening continuation completing while a driver is attached does not evict 
   const pB = runB.browser('crm').then(id => { bOpened = true; return id; });
   await sleep(30);
 
-  // Release final route validation: ready() calls idle() and upgradeBrowser calls abandoned(). Neither may evict the live driver.
   lentGate.resolve();
-  await upgrading;
+  await waitWithTimeout(upgrading, 5_000, 'upgradeBrowser finish');
   await sleep(150);
   assert.equal(runA.bySite.size, 1, 'live driver must not be evicted by opening continuation or abandoned upgrade');
   assert.equal(closedIds.length, 0);
   assert.equal(bOpened, false, 'Run B still waits while driver is connected');
 
-  // Once the driver disconnects, Run B gets immediate handoff.
   const t0 = Date.now();
   driverConn.destroy();
-  const idB = await pB;
+  const idB = await waitWithTimeout(pB, 5_000, 'Run B handoff after driver disconnect');
   assert.ok(idB);
   assert.ok(Date.now() - t0 < FAST_BOUND_MS, 'immediate handoff once driver disconnects');
 });
 
-test('upgradeBrowser socket destroyed during open hands off immediately to waiting run', async t => {
+test('upgradeBrowser socket destroyed during open hands off immediately to waiting run', TEST_OPTS, async () => {
   openGate = Promise.withResolvers<void>();
   openSeen = Promise.withResolvers<void>();
 
-  const runA = new Browsers(running('abandoned-a'), 1);
-  const runB = new Browsers(running('abandoned-b'), 1);
-  t.after(cleanup(runA, runB));
+  const runA = track(new Browsers(running('abandoned-a'), 1));
+  const runB = track(new Browsers(running('abandoned-b'), 1));
 
   const sockA = new PassThrough();
   const req = { headers: { host: '127.0.0.1' } } as IncomingMessage;
   const upgrading = upgradeBrowser(runA, 'crm', req, sockA, Buffer.alloc(0));
-  await openSeen.promise;
+  await waitWithTimeout(openSeen.promise, 5_000, 'POST /sessions');
 
   sockA.destroy();
   const pB = runB.browser('crm');
@@ -459,35 +508,34 @@ test('upgradeBrowser socket destroyed during open hands off immediately to waiti
   const gate = openGate;
   openGate = undefined;
   gate.resolve();
-  await upgrading;
+  await waitWithTimeout(upgrading, 5_000, 'abandoned upgrade');
 
-  const idB = await pB;
+  const idB = await waitWithTimeout(pB, 5_000, 'Run B handoff');
   const elapsed = Date.now() - t0;
   assert.ok(idB);
   assert.ok(elapsed < FAST_BOUND_MS, `abandoned open handed off in ${elapsed}ms`);
   assert.equal(runA.bySite.size, 0);
 });
 
-test('abandoned print browser upgrade closes immediately without leaking a session', async t => {
+test('abandoned print browser upgrade closes immediately without leaking a session', TEST_OPTS, async () => {
   openGate = Promise.withResolvers<void>();
   openSeen = Promise.withResolvers<void>();
   closeSeen = Promise.withResolvers<void>();
 
-  const runA = new Browsers(running('abandoned-print', []), 1);
-  t.after(cleanup(runA));
+  const runA = track(new Browsers(running('abandoned-print', []), 1));
 
   const sock = new PassThrough();
   const req = { headers: { host: '127.0.0.1' } } as IncomingMessage;
   const upgrading = upgradeBrowser(runA, 'print', req, sock, Buffer.alloc(0));
-  await openSeen.promise;
+  await waitWithTimeout(openSeen.promise, 5_000, 'print POST /sessions');
 
   sock.destroy();
   const t0 = Date.now();
   const gate = openGate;
   openGate = undefined;
   gate.resolve();
-  await upgrading;
-  await closeSeen.promise;
+  await waitWithTimeout(upgrading, 5_000, 'abandoned print upgrade');
+  await waitWithTimeout(closeSeen.promise, 5_000, 'abandoned print DELETE');
 
   assert.ok(Date.now() - t0 < FAST_BOUND_MS, 'abandoned print browser closed immediately');
   assert.equal(closedIds.length, 1);
@@ -495,11 +543,10 @@ test('abandoned print browser upgrade closes immediately without leaking a sessi
   assert.equal(runA.bySite.size, 0);
 });
 
-test('writeback: false runs open concurrently without waiting, nudging, or writing state back', async t => {
+test('writeback: false runs open concurrently without waiting, nudging, or writing state back', TEST_OPTS, async () => {
   setWebsite({ writeback: false });
-  const runA = new Browsers(running('nowb-a'), 1);
-  const runB = new Browsers(running('nowb-b'), 1);
-  t.after(cleanup(runA, runB));
+  const runA = track(new Browsers(running('nowb-a'), 1));
+  const runB = track(new Browsers(running('nowb-b'), 1));
 
   const idA = await runA.browser('crm');
   const connA = new PassThrough();
@@ -520,11 +567,10 @@ test('writeback: false runs open concurrently without waiting, nudging, or writi
   assert.deepEqual(JSON.parse(secret(alice, 'web:crm')), cookieState('seed'));
 });
 
-test('keepAlive nudges an idle run browser for immediate handoff, skips active runs, and ignores non-keepalive logins', async t => {
+test('keepAlive nudges an idle run browser for immediate handoff, skips active runs, and ignores non-keepalive logins', TEST_OPTS, async () => {
   const future = new Date(keepAliveClock + 86_400_000).toISOString();
   setWebsite({ keepalive: '/app', every: 5 });
 
-  // 1) Idle run with keepalive disabled on login: keepAlive must NOT evict the warm browser.
   setLogin('no-ka');
   const runIdleNoKa = track(new Browsers(running('ka-no'), 1));
   await runIdleNoKa.browser('crm');
@@ -538,7 +584,6 @@ test('keepAlive nudges an idle run browser for immediate handoff, skips active r
   assert.equal(pagesVisited.length, 0);
   await runIdleNoKa.close();
 
-  // 2) Active run with keepalive enabled: keepAlive skips without blocking or interrupting.
   setLogin('active-ka', future);
   const runActive = track(new Browsers(running('ka-active'), 1));
   await runActive.browser('crm');
@@ -551,7 +596,6 @@ test('keepAlive nudges an idle run browser for immediate handoff, skips active r
   assert.equal(runActive.bySite.size, 1, 'active run is not interrupted by keepAlive');
   assert.equal(pagesVisited.length, 0);
 
-  // 3) Run disconnects and sits idle: next keepAlive turn nudges it for immediate handoff and uses fresh writeback state.
   backState = cookieState('from-active-run');
   c1.destroy();
   await sleep(20);
@@ -570,18 +614,15 @@ test('keepAlive nudges an idle run browser for immediate handoff, skips active r
   assert.equal(logins(alice).find(l => l.id === 'web:crm')?.expired, undefined);
 });
 
-test('keepAlive re-checks fresh expiry after handoff wait and skips POST if authorization expired during close', async t => {
+test('keepAlive re-checks fresh expiry after handoff wait and skips POST if authorization expired during close', TEST_OPTS, async t => {
   setWebsite({ keepalive: '/app', every: 5 });
   keepAliveClock += 10 * 60_000;
   let fakeNow = keepAliveClock;
-  const origDateNow = Date.now;
   t.mock.method(Date, 'now', () => fakeNow);
 
-  // Login keepalive expires 5 seconds after sweep start.
   setLogin('expiring-soon', new Date(fakeNow + 5_000).toISOString());
 
-  const runA = new Browsers(running('ka-exp-a'), 1);
-  t.after(cleanup(runA));
+  const runA = track(new Browsers(running('ka-exp-a'), 1));
   await runA.browser('crm');
   const connA = new PassThrough();
   runA.connected('crm', connA);
@@ -593,17 +634,15 @@ test('keepAlive re-checks fresh expiry after handoff wait and skips POST if auth
   openedStates.length = 0;
 
   const keeping = keepAlive(new Date(fakeNow));
-  await closeSeen.promise;
+  await waitWithTimeout(closeSeen.promise, 5_000, 'keepAlive handoff DELETE');
 
-  // Advance clock 10 seconds (past keepalive expiry) while idle holder close is in flight.
   fakeNow += 10_000;
   const gate = closeGate;
   closeGate = undefined;
   gate.resolve();
-  await keeping;
+  await waitWithTimeout(keeping, 5_000, 'keepAlive completion');
 
   assert.equal(openedStates.length, 0, 'keepAlive must not POST /sessions after keepalive expired during handoff');
   assert.equal(pagesVisited.length, 0);
   assert.equal(runA.bySite.size, 0, 'idle holder still finished its close cleanly');
-  assert.equal(typeof origDateNow, 'function');
 });
