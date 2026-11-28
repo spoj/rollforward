@@ -272,6 +272,21 @@ function land(next, path, d, st) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
   }
+  if (pv?.settings?.kind === 'notes') {
+    const nw = tree.find(w => w.series.some(s => s.id === pv.settings.id)), ns = nw?.series.find(s => s.id === pv.settings.id);
+    if (nw && ns) {
+      const prevOwner = pv.settings.s?.owner;
+      Object.assign(pv.settings, { w: nw, s: ns });
+      if (prevOwner !== ns.owner) {
+        const lbl = $('#pv .note-request'), row = $('#pv [data-act=note-post]')?.closest('.row2');
+        if (ns.owner === me.email) lbl?.remove();
+        else if (lbl) {
+          const chk = lbl.querySelector('#note-request')?.checked;
+          lbl.innerHTML = `<input type="checkbox" id="note-request"${chk ? ' checked' : ''}> For ${ns.owner ? esc(nameOf(ns.owner)) : 'the owner'} to decide`;
+        } else if (row) row.insertAdjacentHTML('beforeend', `<label class="note-request"><input type="checkbox" id="note-request"> For ${ns.owner ? esc(nameOf(ns.owner)) : 'the owner'} to decide</label>`);
+      }
+    }
+  }
 
   if (cur?.i) Object.assign(cur.i, { unread: false, asks: cur.i.asks.filter(a => !a.from || a.who !== me.email) });
   threads = threadsOf();
@@ -1854,7 +1869,7 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'note-post') {
-    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), request = p.settings.s.owner !== me.email && !!$('#note-request')?.checked, files = [];
+    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), live = tree.flatMap(w => w.series).find(s => s.id === id) ?? p.settings.s, request = live?.owner !== me.email && !!$('#note-request')?.checked, files = [];
     if (!text) return;
     for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
     await writeMessage({ series: id, text, files, ...(request && { request: true }) });

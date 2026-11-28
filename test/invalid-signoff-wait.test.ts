@@ -44,7 +44,7 @@ test('invalid signoffs reject every semantic failure before waiting for existing
       await ready.promise;
       const cookie = (await entra.signIn(base, actor)).headers.getSetCookie().find(c => c.startsWith('rf_session=')).split(';')[0];
       const inst = createInstance('s', 'Invalid', admin), path = '/api/instances/' + inst.id;
-      const proposal = () => inst.append('agent', 'comment', { text: 'Approve the local result?', ask: 'proposal', run: 1 });
+      const proposal = (extra = {}) => inst.append('agent', 'comment', { text: 'Approve the local result?', ask: 'proposal', to: actor, run: 1, ...extra });
       const old = proposal();
       inst.append(actor, 'duplicate', { from: 'earlier' });
       const human = inst.append(actor, 'comment', { text: 'Not a proposal' });
@@ -57,6 +57,7 @@ test('invalid signoffs reject every semantic failure before waiting for existing
       inst.append(admin, 'reject', { thread: rejected.thread, on: rejected.seq });
       const accepted = proposal();
       inst.append(admin, 'close', { accepted: ['c' + accepted.seq], commit: 'earlier' });
+      const unaddressed = inst.append('agent', 'comment', { text: 'Owner-only proposal?', ask: 'proposal', run: 1 });
       const valid = proposal();
       writeFileSync(inst.dir + '/working/result.txt', 'Local result to approve');
       const hold = Promise.withResolvers();
@@ -72,6 +73,7 @@ test('invalid signoffs reject every semantic failure before waiting for existing
         [{ thread: 'c' + rejected.seq }, 409, 'c' + rejected.seq + ' was rejected already, by ' + admin],
         [{ thread: 'c' + accepted.seq }, 409, 'c' + accepted.seq + ' was accepted as done at the close, by ' + admin],
         [{ thread: 'c' + old.seq }, 409, 'c' + old.seq + ' is from before this instance was copied'],
+        [{ thread: 'c' + unaddressed.seq }, 403, 'only the series owner, ' + admin + ', can decide this proposal'],
         [{ thread: 'c' + valid.seq, approved: false }, 400, 'a sign-off approves; to say no, reject it, on the page or with rf reject'],
       ];
       for (const [body, status, message] of cases) {

@@ -761,6 +761,7 @@ test("an ask from before questions and proposals shows the files it links and th
   assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}'], 'uninvited non-owner sees no Approve/Reject');
   await page.evaluate(() => {
     data.log[1].to = me.email;
+    threads = threadsOf();
     render();
   });
   assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Approve\u2026', 'Reject\u2026'], 'named --to addressee sees Approve/Reject');
@@ -768,6 +769,7 @@ test("an ask from before questions and proposals shows the files it links and th
     delete data.log[1].to;
     data.owner = (window as any).__origOwner;
     delete (window as any).__origOwner;
+    threads = threadsOf();
     render();
   });
   await thread.locator('.pa button', { hasText: 'Approve' }).click();

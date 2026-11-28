@@ -115,8 +115,8 @@ before(async () => {
   writeFileSync(join(race, 'screen.json'), JSON.stringify({ rev: 1, status: 'open', items: [] }));
   writeFileSync(join(race, 'log.jsonl'), [
     { seq: 1, at: '2026-09-20T00:00:00Z', by: adminEmail, op: 'create', logins: [] },
-    { seq: 2, at: '2026-09-20T00:01:00Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Send wire 1?', ask: 'proposal', run: 1 },
-    { seq: 3, at: '2026-09-20T00:02:00Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Send wire 2?', ask: 'proposal', run: 1 },
+    { seq: 2, at: '2026-09-20T00:01:00Z', by: 'agent', op: 'comment', thread: 'c2', item: null, ref: null, text: 'Send wire 1?', ask: 'proposal', to: adminEmail, run: 1 },
+    { seq: 3, at: '2026-09-20T00:02:00Z', by: 'agent', op: 'comment', thread: 'c3', item: null, ref: null, text: 'Send wire 2?', ask: 'proposal', to: adminEmail, run: 1 },
     { seq: 4, at: '2026-09-20T00:03:00Z', by: 'agent', op: 'comment', thread: 'c4', item: null, ref: null, text: 'Send wire 3?', ask: 'proposal', run: 1 },
   ].map(e => JSON.stringify(e) + '\n').join(''));
   // A closed instance whose first run never logged its end, as some did before startup cut every run left going.
@@ -2541,9 +2541,21 @@ test('series rename, archive/restore, promote, and instance rename require serie
   assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: false }), c)).status, 403);
   assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: false }))).status, 200, 'workspace manager can restore');
 
-  // Task promote: Carol gets 403; Bob (owner) succeeds.
-  const { id: tid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, single: true, logins: [], autonomous: false }), b)).json();
+  // Task promote & auto-naming: Carol gets 403 on promote, GET promote gets 405, Carol's note does not rename an untitled task; Bob (owner) names & promotes.
+  const { id: tid, instance: tinst } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, single: true, logins: [], autonomous: false }), b)).json();
+  assert.equal((await call('POST', `/api/instances/${tinst}/comment`, JSON.stringify({ text: 'Carol note should not rename task', quiet: true }), c)).status, 200);
+  assert.equal((await json(`/api/instances/${tinst}`)).log.some((e: any) => e.op === 'rename'), false, 'non-steering member note does not auto-rename task');
+  assert.equal((await call('POST', `/api/instances/${tinst}/comment`, JSON.stringify({ text: 'Owner task title here', quiet: true }), b)).status, 200);
+  assert.equal((await json(`/api/instances/${tinst}`)).log.some((e: any) => e.op === 'rename'), true, 'owner first comment auto-names task');
+  const treeNow = await json('/api');
+  assert.equal(treeNow.find((w: any) => w.id === ws).series.find((s: any) => s.id === tid).name, 'Owner task title here', 'task series renamed from owner prompt');
+  assert.equal((await call('GET', `/api/series/${tid}/promote`, undefined, b)).status, 405);
+  assert.equal((await call('PUT', `/api/series/${tid}/promote`, JSON.stringify({ name: 'PutBypass' }), b)).status, 405);
   assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'HijackedTask' }), c)).status, 403);
   assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'PromotedTask' }), b)).status, 200);
+
+  // Archiving the workspace prevents restoring a child archived series while the workspace remains archived.
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: true }), b)).status, 200);
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: false }), b)).status, 409, 'cannot restore child series while parent workspace is archived');
 });

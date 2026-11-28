@@ -68,7 +68,7 @@ for (const action of ['interrupt', 'transfer', 'same-instance']) test(action ===
       const call = (method, path, body, by = owner) => fetch(base + path, { method, headers: { cookie: cookies[by] }, body: JSON.stringify(body) });
       const { kick, active, byToken } = await import('./src/waker.ts');
       const first = createInstance('s', 'First', owner), second = createInstance('s', 'Second', owner);
-      const proposal = first.append('agent', 'comment', { text: 'Approve the local result?', ask: 'proposal', run: 1 });
+      const proposal = first.append('agent', 'comment', { text: 'Approve the local result?', ask: 'proposal', to: actor, run: 1 });
       writeFileSync(first.dir + '/working/result.txt', 'Local result to approve');
       second.append(owner, 'comment', { text: 'Start Second' }); kick(second); await turned.promise;
       const old = active.get('s'), oldEpoch = old.authority.epoch;

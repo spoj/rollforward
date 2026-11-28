@@ -187,7 +187,7 @@ What there is
   files, and review the work in threads with the agent. One series owner is accountable for every instance: only that person
   closes and abandons. Their acts and answers by whom the agent's ask named start runs under current consent. Runs use the
   owner's selected credentials, across every instance. Without consent, nothing runs; selecting none permits work with no
-  credentials. Scheduled and autonomous runs need a separate opt-in. Other collaborators' comments, uploads and approvals are notes that start nothing.
+  credentials. Scheduled and autonomous runs need a separate opt-in. Other collaborators' comments and uploads are notes that start nothing.
   Transferring the whole series stops old runs and clears consent; old unread instructions become notes. Each act keeps
   its author, and every run its executor.
 - rf is quiet: a comment, upload, approval, rejection, new instance or request it starts begins no run unless --wake, and the agent
@@ -196,10 +196,10 @@ What there is
 - A comment starts a thread, on the instance or on an item, at a cell such as Base!C25 or a line of a markdown file by its
   opening words, and replies go under any comment in it, cN by its seq, a thread's id its first comment's. The agent asks
   questions, which wait on someone, the one it names or else the series owner, until a person replies under it, and proposes what it
-  will do for its series owner, such as sending mail, which waits until someone approves or rejects it, or the agent withdraws it; a
+  will do for its series owner, such as sending mail, which waits until the owner or named addressee approves or rejects it, or the agent withdraws it; a
   proposal missing information should be rejected with feedback, so the agent can revise and propose again. Generic comments
   are not proposal decisions. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
-  quiet signals kept for later. Anyone who sees the instance may approve a proposal, which commits the instance's folder to its
+  quiet signals kept for later. Only the series owner or the person a proposal names (--to) may approve or reject it, which commits the instance's folder to its
   history, .git in it, as it is then, as closing does. Whose approval counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them

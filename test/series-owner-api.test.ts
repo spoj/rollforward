@@ -208,7 +208,8 @@ test('creation establishes sole owner; omitted selection is not empty consent; t
   const task = await (await ok('POST', '/api/series', { workspace: 'ws', single: true, logins: [], autonomous: false }, alice)).json();
   assert.equal((await json(`/api/instances/${task.instance}`)).owner.by, alice);
   await ok('PUT', `/api/series/${task.id}/credentials`, { logins: [], autonomous: false }, alice);
-  await ok('POST', `/api/series/${task.id}/promote`, { name: 'Promoted' }, colleague);
+  assert.equal((await request('POST', `/api/series/${task.id}/promote`, { name: 'Promoted' }, colleague)).status, 403, 'regular member cannot promote another owner\'s task');
+  await ok('POST', `/api/series/${task.id}/promote`, { name: 'Promoted' }, admin);
   assert.equal(settings(task.id).owner, alice);
 });
 

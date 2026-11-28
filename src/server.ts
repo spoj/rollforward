@@ -1204,7 +1204,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   // as what shouldn't be kept may be in one: nothing else in it changes, and none of its instances runs.
   const within = t.workspaces[kind === 'workspaces' ? id : about ? about.workspace : kind === 'series' ? payload.workspace : ''];
   const shut = [within, about].find(x => x?.archived);
-  const restore = req.method === 'PUT' && !action && kind !== 'instances' && Object.keys(payload).join() === 'archived' && payload.archived === false;
+  const restore = req.method === 'PUT' && !action && kind !== 'instances' && Object.keys(payload).join() === 'archived' && payload.archived === false
+    && (kind === 'workspaces' ? shut === within : shut === about && !within?.archived);
   if (shut && req.method !== 'GET' && !restore && !(kind === 'instances' && action === 'delete')) {
     if (!run) mustSee(me, within);
     throw new HttpError(409, `${shut.name} is archived: nothing in it changes until it's restored`);
@@ -1461,6 +1462,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     });
     if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners or credentials, or PUT owner or credentials');
     if (action === 'promote') {
+      if (req.method !== 'POST') throw new HttpError(405, 'POST only');
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
       mustSteer(me, id, 'promote this task', t);
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
@@ -1810,9 +1812,10 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     }
     if (run) return send(res, 200, `${{ question: 'asked', proposal: 'proposed' }[ask as string] ?? 'said'} c${said.seq}${under ? `, under ${thread}` : ''}`);
     res.setHeader('X-RF-Comment-Seq', said.seq);
-    // Until a task is renamed, its first prompt's opening words name it.
+    // Until a task is renamed, its first steering comment's opening words name it.
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
-    if (s.single && words && words !== 'AGENTS.md' && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && isPerson(e)))) {
+    const canName = by === seriesSettings(seriesDir(inst.seriesId)).owner || canManage(me, t.workspaces[s.workspace]);
+    if (s.single && canName && words && words !== 'AGENTS.md' && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && !e.informs && !e.note && isPerson(e)))) {
       const from = inst.label;
       s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);

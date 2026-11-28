@@ -256,7 +256,7 @@ test('real owner clients preserve terminal history and task execution settings',
       { by: 'server', op: 'run', run: 1, runner: owner, initiator: owner, upto: 2 },
       { by: 'server', op: 'done', run: 1, seen: 2, cost: 0.25 });
     log.push({ by: colleague, op: 'comment', thread: `c${log.length + 1}`, text: 'Persisted legacy note; recipient unknown.', note: true });
-    for (let n = 0; n < 4; n++) log.push({ by: 'agent', op: 'comment', thread: `c${log.length + 1}`, text: `Proposal ${n}`, ask: 'proposal' });
+    for (let n = 0; n < 4; n++) log.push({ by: 'agent', op: 'comment', thread: `c${log.length + 1}`, text: `Proposal ${n}`, ask: 'proposal', ...(n >= 2 && { to: colleague }) });
     writeFileSync(join(dir, 'log.jsonl'), log.map((e, n) => JSON.stringify({ seq: n + 1, at, ...e }) + '\n').join(''));
   }
   migrateFixtureMessages(root);
