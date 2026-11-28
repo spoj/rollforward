@@ -2478,3 +2478,41 @@ test('/correct restricts a person’s see target to another non-deleted instance
   assert.equal((await call('POST', `/api/instances/${i1}/correct`, JSON.stringify({ kind: 'wrong', text: 'valid same-series', see: i2 }))).status, 200);
   assert.equal((await json(`/api/instances/${i2}`)).log.some((e: any) => e.op === 'corrected'), true);
 });
+
+test('DELETE /api/requests/:id allows only the series owner, workspace managers, or the requester', async () => {
+  const b = sessionOf(await login(bob))!;
+  const carol = 'carol-req@demo.test';
+  const c = sessionOf(await login(carol))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'ReqGateWs' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [adminEmail], members: [bob, carol] }))).status, 200);
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S', logins: [], autonomous: false }))).json();
+
+  const makeReq = async (label: string, cookie = b) => {
+    const res = await call('PUT', `/api/wakes/${sid}`, JSON.stringify({ at: 'now', label, text: `start ${label}` }), cookie);
+    assert.equal(res.status, 200);
+    for (let i = 0; i < 40; i++) {
+      const s = (await workspaces()).find((w: any) => w.id === ws).series.find((x: any) => x.id === sid);
+      const found = s.requests.find((r: any) => r.label === label);
+      if (found) return found.id as string;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    throw new Error(`request for ${label} did not appear`);
+  };
+
+  // Bob requests Jan: Carol (unrelated member) gets 403; Bob (requester) succeeds 200.
+  const r1 = await makeReq('Jan', b);
+  assert.equal((await call('DELETE', `/api/requests/${r1}`, undefined, c)).status, 403, 'unrelated member cannot dismiss request');
+  assert.equal((await call('DELETE', `/api/requests/${r1}`, undefined, b)).status, 200, 'requester dismisses own request');
+
+  // Bob requests Feb: admin (series owner & WS manager) succeeds 200.
+  const r2 = await makeReq('Feb', b);
+  assert.equal((await call('DELETE', `/api/requests/${r2}`)).status, 200, 'owner dismisses request');
+
+  // Transfer series to Bob; Carol requests Mar: Bob (owner) dismisses it; Bob requests Apr (as non-autonomous owner): Carol gets 403, admin (WS manager, non-owner) succeeds 200.
+  assert.equal((await call('PUT', `/api/series/${sid}/owner`, JSON.stringify({ owner: bob }))).status, 200);
+  const r3 = await makeReq('Mar', c);
+  assert.equal((await call('DELETE', `/api/requests/${r3}`, undefined, b)).status, 200, 'new series owner dismisses request');
+  const r4 = await makeReq('Apr', c);
+  assert.equal((await call('DELETE', `/api/requests/${r4}`)).status, 200, 'workspace manager dismisses request even when not series owner');
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);
+});

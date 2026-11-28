@@ -1613,6 +1613,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, { id: inst.id });
     });
     if (req.method !== 'DELETE') throw new HttpError(405, 'POST to start it, or DELETE');
+    const settings = seriesSettings(seriesDir(r.series)), ws = t.workspaces[t.series[r.series].workspace];
+    if (by !== settings.owner && !canManage(me, ws) && r.from !== by)
+      throw new HttpError(403, 'only the series owner, a workspace manager, or the requester dismisses a request');
     dropRequest(id, by, 'dismissed');
     return send(res, 200, 'ok');
   }
