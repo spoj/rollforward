@@ -2318,6 +2318,7 @@ test("task notes use one write API, arrive as nonblocking FYIs, and notify the w
 
     await owner.click('#bar [data-act=notes]');
     await owner.locator('#pv .note .pb', { hasText: advice }).waitFor();
+    assert.equal(await owner.locator('#note-request').count(), 0, 'series owner does not see a request-decision checkbox to themselves');
     assert.equal(await owner.locator('#pv .note').count(), 2, 'the Notes panel only shows series-anchored notes');
     await owner.fill('#pv .note input', 'In the <process> now.');
     await writer.fill('#newcomment', 'Draft while the other tab settles my note');
@@ -2907,10 +2908,11 @@ test('composer shows distinct hints, placeholders, and buttons for non-owner and
     render();
     (window as any).__origCompose = orig;
   });
-  assert.match((await page.textContent('.compose .sub')) ?? '', /^Owned by .+ — comments here are notes and won't start a run$/);
+  assert.match((await page.textContent('.compose .sub')) ?? '', /^Owned by .+ — what you add here won't start a run$/);
   assert.match((await page.getAttribute('#newcomment', 'placeholder')) ?? '', /^A note for /);
   assert.equal(await page.textContent('.compose [data-act=comment]'), 'Leave note');
   assert.ok(await page.$('#comment-request'));
+  assert.match((await page.textContent('.compose .note-request'))?.trim() ?? '', /^For .+ to decide$/);
   await page.evaluate(() => {
     const orig = (window as any).__origCompose;
     data.owner = orig.owner;

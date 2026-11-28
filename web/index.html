@@ -925,8 +925,8 @@ function conversationHtml() {
   h += [...entries, ...runs.map(r => [ended(r), runHtml(r, r === runs.at(-1))])].sort((a, b) => a[0] - b[0]).map(([, x]) => x).join('');
   const first = mine && !runs.length;
   if (open) h += `<div class="compose"><h3>${draft.on ? `Comment on ${name(draft.on)}${draft.ref ? ` at ${esc(draft.ref)}` : ''}` : 'Comment on the instance'}</h3>`
-    + (!data.starts ? `<div class="sub">${mine ? 'Save series credentials to start runs' : `Owned by ${esc(nameOf(data.owner.by))} — comments here are notes and won't start a run`}</div>` : '')
-    + `<textarea id="newcomment" rows="3" placeholder="${!data.starts ? (mine ? "Comment (won't start a run until you save series credentials)" : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`) : first ? 'What should the agent do? Drop files here too' : 'The agent replies in the thread'}"></textarea><input type="file" id="newfiles" multiple><div class="row2"><button class="btn primary" data-act="comment">${!mine && !data.starts ? 'Leave note' : 'Comment'}</button>${mine ? '' : '<label class="note-request"><input type="checkbox" id="comment-request"> Request a proposal</label>'}</div></div>`;
+    + (!data.starts ? `<div class="sub">${mine ? 'Save series credentials to start runs' : `Owned by ${esc(nameOf(data.owner.by))} — what you add here won't start a run`}</div>` : '')
+    + `<textarea id="newcomment" rows="3" placeholder="${!data.starts ? (mine ? "Comment (won't start a run until you save series credentials)" : `A note for ${esc(nameOf(data.owner.by))}: reply under an ask addressed to you to start a run`) : first ? 'What should the agent do? Drop files here too' : 'The agent replies in the thread'}"></textarea><input type="file" id="newfiles" multiple><div class="row2"><button class="btn primary" data-act="comment">${!mine && !data.starts ? 'Leave note' : 'Comment'}</button>${mine ? '' : `<label class="note-request"><input type="checkbox" id="comment-request"> For ${data.owner.by ? esc(nameOf(data.owner.by)) : 'the owner'} to decide</label>`}</div></div>`;
   if (data.doc.status === 'closed' && !archived()) h += '<div class="compose"><div><button class="btn" data-act="correct">Add a correction</button></div></div>';
   return h;
 }
@@ -1269,7 +1269,7 @@ function notesHtml({ id, w, s, list }) {
       + (settles && !n.request && !n.proposal ? `<div class="row2"><input type="text" placeholder="What was done, or why not"><button class="btn" data-act="note-taken" data-seq="${n.seq}">Mark done</button><button class="quiet" data-act="note-aside" data-seq="${n.seq}">Set aside</button></div>` : '') + '</div>').join('')
     + done.map(n => `<details class="note"><summary>${esc(firstLine(n.text))} \u00b7 ${how(n.settled)} by ${by(n.settled)}</summary><div class="sub"><b>${by(n)}</b> \u00b7 ${when(n.at)}${noteChip({ op: n.settled.op, request: n.request })}</div>${body(n)}`
       + `<div class="sub">${how(n.settled)} by ${by(n.settled)} \u00b7 ${when(n.settled.at)}: ${esc(n.settled.text)}${seeHtml(n.settled.see)}</div></details>`).join('')
-    + (shut ? '' : '<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button><label class="note-request"><input type="checkbox" id="note-request"> Request a proposal</label></div>');
+    + (shut ? '' : `<h3>Tell this series</h3><textarea id="notetext" rows="3" placeholder="Such as: from October, the bank file comes from the new portal"></textarea><input type="file" id="notefiles" multiple><div class="row2"><button class="btn primary" data-act="note-post">Tell</button>${s.owner === me.email ? '' : `<label class="note-request"><input type="checkbox" id="note-request"> For ${s.owner ? esc(nameOf(s.owner)) : 'the owner'} to decide</label>`}</div>`);
 }
 
 // Wakes for an instance or a series, each one-off or weekly on the days ticked at its time, editable in place, and a row to add one.
@@ -1854,7 +1854,7 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'note-post') {
-    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), request = $('#note-request').checked, files = [];
+    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), request = p.settings.s.owner !== me.email && !!$('#note-request')?.checked, files = [];
     if (!text) return;
     for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
     await writeMessage({ series: id, text, files, ...(request && { request: true }) });
