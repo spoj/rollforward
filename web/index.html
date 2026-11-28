@@ -273,8 +273,10 @@ function land(next, path, d, st) {
     renderPv();
   }
   if (pv?.settings?.kind === 'series' && cur?.s?.id === pv.settings.id && (wasWorkspace !== cur.w.archived || wasSeries !== cur.s.archived || wasManage !== cur.w.manage || wasOwner !== cur.s.owner || pv.settings.owner !== cur.s.owner)) {
-    if ($('#autonomous')) { pv.on = ticked(); pv.autonomous = $('#autonomous').checked; }
+    const prevEpoch = pv.settings.epoch, prevSched = pv.settings.scheduleRevision;
+    if ($('#autonomous') && !$('#autonomous').disabled) { pv.on = ticked(); pv.autonomous = $('#autonomous').checked; }
     Object.assign(pv.settings, cur.s);
+    if (pv.on !== undefined && prevEpoch !== undefined) { pv.settings.epoch = prevEpoch; if (prevSched !== undefined) pv.settings.scheduleRevision = prevSched; }
     renderPv();
   }
   if (pv?.settings?.kind === 'notes') {
@@ -2523,8 +2525,8 @@ document.addEventListener('change', async ev => {
   }
   if (group) group.querySelector('.tickall').checked = [...group.querySelectorAll('input.tick')].every(k => k.checked);
   if (el.matches('#mvwhat, #mvto')) return mvSay();
-  if (el.id === 'sname') { await api(seriesPath(cur), { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
-  else if (el.id === 'wname') { await api(`/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
+  if (el.id === 'sname') { await api(`/api/series/${own.settings.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
+  else if (el.id === 'wname') { await api(`/api/workspaces/${own.settings.id}`, { method: 'PUT', body: JSON.stringify({ name: el.value.trim() }) }); own.settings.name = el.value.trim(); own.title = `${own.settings.name} \u00b7 Settings`; }
   else if (el.id === 'oruse') await saveKey();
   else return;
   if (pv === own) saved();
