@@ -47,7 +47,7 @@ export type Type = {
   // A request that sends mail also reads, on asking, what goes, its recipients and its attachments' sha256s, or why that can't be read.
   // Async policy and link work checkpoints before each new outbound request, including after awaiting credentials.
   check?(c: Connection, runner: string, ticks: string[], r: Request, checkpoint: () => void): Promise<{ offer: string; json?: unknown; redirect?: string | true; pathname?: string }> | { offer: string; json?: unknown; redirect?: string | true; pathname?: string };
-  links?(answer: any, path: string, email: string, ticks: string[], checkpoint: () => void): Array<string | { url: string; kind: 'upload_session' | 'download' | 'redirect' }> | Promise<Array<string | { url: string; kind: 'upload_session' | 'download' | 'redirect' }>>;
+  links?(answer: any, path: string, email: string, ticks: string[], checkpoint: () => void, method?: string, status?: number): Array<string | { url: string; kind: 'upload_session' | 'download' | 'redirect' }> | Promise<Array<string | { url: string; kind: 'upload_session' | 'download' | 'redirect' }>>;
   // What a run's environment holds for it, given the instance's ticks.
   env?(c: Connection, ticks: string[]): Record<string, string>;
 };
@@ -912,7 +912,7 @@ export async function call(a: CallRun, host: string, req: IncomingMessage, res: 
         if (answer.invalidJson) console.error(`${name}: invalid JSON metadata on ${method} ${targetPath} (${answer.status}, ${answer.bytes} bytes)`);
         if (answer.parsed !== undefined && current()) {
           try {
-            const links = await types[c.type].links!(answer.parsed, targetPath, as, ticks, checkpoint);
+            const links = await types[c.type].links!(answer.parsed, targetPath, as, ticks, checkpoint, method, answer.status);
             checkpoint();
             for (const entry of links) {
               const rawUrl = typeof entry === 'string' ? entry : entry.url;

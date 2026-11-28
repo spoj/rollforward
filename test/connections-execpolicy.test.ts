@@ -57,12 +57,28 @@ const upstream = createServer(async (req, res) => {
   for await (const ch of req) chunks.push(ch as Buffer);
   const rawBuf = Buffer.concat(chunks);
   const rawBody = rawBuf.toString('utf8');
-  if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/root:/folder/my-createUploadSession')) {
+  if (req.method === 'GET' && req.url?.startsWith('/v1.0/me/messages/m1/extensions/com.foo.createUploadSession')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({
+      id: 'com.foo.createUploadSession',
+      uploadUrl: 'https://contoso.sharepoint.com/sites/fin/open-ext-target',
+    }));
+  }
+  if (req.method === 'POST' && req.url?.startsWith('/v1.0/drives/d1/items/i1/createUploadSession')) {
+    writeUpstreamHits++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({
+      uploadUrl: 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?issued=1',
+    }));
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/root:/folder/')) {
+    const tag = req.url.includes('report.createUploadSession') ? 'dotted'
+      : req.url.includes('my-createUploadSession') ? 'hyphen' : 'exact';
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({
       id: 'i1',
       parentReference: { driveId: 'd1', id: 'root' },
-      '@microsoft.graph.downloadUrl': 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1',
+      '@microsoft.graph.downloadUrl': `https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=${tag}`,
     }));
   }
   if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/items/i1')) {
@@ -374,33 +390,81 @@ test('R2 PrefixReader boundary sizes (65535B, 65536B, 65537B, 300 KiB), If-Match
   assert.equal(lastWriteLength, chunk320k.length, 'exact 320 KiB chunk received upstream');
   assert.equal((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
 
-  // 3b. R11 grant-issuance regression: Graph file lookup whose filename ends in `createUploadSession` returning
-  // `@microsoft.graph.downloadUrl` MUST record linkKind='download' (NEVER 'upload_session') so a subsequent
-  // PUT to that exact granted SharePoint URL is BLOCKED (not allow_upload_session_chunk)!
-  const rLookup = await sendViaProxy(
+  // 3b. R11/R12 grant-issuance regressions:
+  // (a) Open-extension GET ending in `.createUploadSession` returning `uploadUrl` MUST NOT issue any upload_session grant!
+  const rOpenExt = await sendViaProxy(
     run,
     'graph.microsoft.com',
     'GET',
-    '/v1.0/drives/d1/root:/folder/my-createUploadSession',
+    '/v1.0/me/messages/m1/extensions/com.foo.createUploadSession',
     {},
   );
-  assert.equal(rLookup.status, 200);
-  const grantedDownloadUrl = 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1';
-  assert.ok(run.links.has(grantedDownloadUrl), 'downloadUrl granted by Graph lookup');
-  const beforeSpoofPut = writeUpstreamHits;
-  const rDownloadPut = await sendViaProxy(
+  assert.equal(rOpenExt.status, 200);
+  const openExtUrl = 'https://contoso.sharepoint.com/sites/fin/open-ext-target';
+  assert.equal(run.links.has(openExtUrl), false, 'open-extension GET must NOT grant uploadUrl');
+  const beforeExtPut = writeUpstreamHits;
+  const rOpenExtPut = await sendViaProxy(
     run,
     'contoso.sharepoint.com',
     'PUT',
-    '/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1',
+    '/sites/fin/open-ext-target',
     { 'content-type': 'application/octet-stream' },
-    Buffer.alloc(100 * 1024, 0x42).toString('latin1'),
+    Buffer.alloc(1024, 0x41).toString('latin1'),
   );
-  assert.equal(rDownloadPut.status, 403, 'PUT on download-granted URL MUST be blocked in enforce mode');
-  assert.match(rDownloadPut.text.trim(), /^blocked by policy: [a-z0-9_]+ \(decisionId=[0-9a-f-]+\)$/);
-  assert.equal(rDownloadPut.text.includes('allow_upload_session_chunk'), false);
-  assert.notEqual((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
-  assert.equal(writeUpstreamHits, beforeSpoofPut, 'blocked before upstream dial');
+  assert.equal(rOpenExtPut.status, 403, 'ungranted open-extension URL PUT must return 403');
+  assert.equal(writeUpstreamHits, beforeExtPut);
+
+  // (b) Graph file lookups whose filenames are `my-createUploadSession`, exact `createUploadSession`, or `report.createUploadSession`
+  // returning `@microsoft.graph.downloadUrl` MUST record linkKind='download' (NEVER 'upload_session') so a subsequent PUT returns 403!
+  for (const [path, tag] of [
+    ['/v1.0/drives/d1/root:/folder/my-createUploadSession', 'hyphen'],
+    ['/v1.0/drives/d1/root:/folder/createUploadSession', 'exact'],
+    ['/v1.0/drives/d1/root:/folder/report.createUploadSession', 'dotted'],
+  ] as const) {
+    const rLookup = await sendViaProxy(run, 'graph.microsoft.com', 'GET', path, {});
+    assert.equal(rLookup.status, 200);
+    const grantedDownloadUrl = `https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=${tag}`;
+    assert.ok(run.links.has(grantedDownloadUrl), `downloadUrl granted by Graph lookup (${tag})`);
+    const beforeSpoofPut = writeUpstreamHits;
+    const rDownloadPut = await sendViaProxy(
+      run,
+      'contoso.sharepoint.com',
+      'PUT',
+      `/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=${tag}`,
+      { 'content-type': 'application/octet-stream' },
+      Buffer.alloc(100 * 1024, 0x42).toString('latin1'),
+    );
+    assert.equal(rDownloadPut.status, 403, `PUT on download-granted URL MUST be blocked (${tag})`);
+    assert.match(rDownloadPut.text.trim(), /^blocked by policy: [a-z0-9_]+ \(decisionId=[0-9a-f-]+\)$/);
+    assert.equal(rDownloadPut.text.includes('allow_upload_session_chunk'), false);
+    assert.notEqual((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
+    assert.equal(writeUpstreamHits, beforeSpoofPut, `blocked before upstream dial (${tag})`);
+  }
+
+  // (c) Genuine POST 200 to /v1.0/drives/d1/items/i1/createUploadSession grants linkKind='upload_session' -> subsequent PUT succeeds!
+  const rCreateSession = await sendViaProxy(
+    run,
+    'graph.microsoft.com',
+    'POST',
+    '/v1.0/drives/d1/items/i1/createUploadSession',
+    { 'content-type': 'application/json' },
+    JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }),
+  );
+  assert.equal(rCreateSession.status, 200);
+  const issuedUploadUrl = 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?issued=1';
+  assert.ok(run.links.has(issuedUploadUrl), 'genuine POST createUploadSession grants uploadUrl');
+  const beforeIssuedPut = writeUpstreamHits;
+  const rIssuedPut = await sendViaProxy(
+    run,
+    'contoso.sharepoint.com',
+    'PUT',
+    '/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?issued=1',
+    { 'content-type': 'application/octet-stream' },
+    Buffer.alloc(100 * 1024, 0x43).toString('latin1'),
+  );
+  assert.equal(rIssuedPut.status, 200, 'PUT on genuine POST createUploadSession grant succeeds');
+  assert.equal(writeUpstreamHits, beforeIssuedPut + 1);
+  assert.equal((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
 
   // 4. Atomic concurrency test: owner-signed maxUses:1 + 5 parallel sendMail (150ms delayed upstream) -> EXACTLY 1 x 200 and 4 x 403!
   const prop = inst.append('agent', 'comment', {

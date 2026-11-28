@@ -133,10 +133,34 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
 // driveItems an answer about files gives that a tick covers, at its drive's own site's host when it has one; never what a
 // file's or a message's content holds.
-async function links(j: any, path: string, email: string, ticks: string[], checkpoint: () => void): Promise<Array<{ url: string; kind: 'upload_session' | 'download' }>> {
-  const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
-  const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
-  if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u)).map(u => ({ url: u, kind: 'upload_session' as const }));
+async function links(
+  j: any,
+  path: string,
+  email: string,
+  ticks: string[],
+  checkpoint: () => void,
+  method = 'GET',
+  status = 200,
+): Promise<Array<{ url: string; kind: 'upload_session' | 'download' }>> {
+  const url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
+  const barePath = path.replace(/^\/(?:v1\.0|beta)(?=\/|$)/i, '');
+  const rawSegs = barePath.split('/').slice(1).map(s => { try { return decodeURIComponent(s); } catch { return s; } });
+  const lastRaw = (rawSegs.at(-1) ?? '').replace(/\(.*$/, '').toLowerCase();
+  const isCreateUploadAction = lastRaw === 'createuploadsession' || lastRaw === 'microsoft.graph.createuploadsession';
+  if (method.toUpperCase() === 'POST' && status >= 200 && status < 300 && isCreateUploadAction) {
+    const decodedBareNoAction = '/' + rawSegs.slice(0, -1).join('/');
+    const isAttachmentUploadRoute = /^\/(?:me|users\/[^/]+)\/(?:(?:mailfolders\/[^/]+|mailfolders\([^/]+\))\/)?(?:messages\/[^/]+|messages\([^/]+\))\/attachments$/i.test(decodedBareNoAction);
+    const isDriveUploadRoute = /^\/(?:drives\/[^/]+|shares\/[^/]+|(?:me|users\/[^/]+|sites\/[^/]+)\/(?:drive|drives\/[^/]+))\/(?:items\/[^/:]+(?::[^:]+:)?|items\([^/]+\)|driveitem|root:[^:]+:)$/i.test(decodedBareNoAction);
+    if (isAttachmentUploadRoute) {
+      return [j?.uploadUrl].filter(u => url(u) && /^https:\/\/outlook\.office(365)?\.com\//i.test(u)).map(u => ({ url: u, kind: 'upload_session' as const }));
+    }
+    if (isDriveUploadRoute) {
+      return [j?.uploadUrl].filter(u => url(u) && /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i.test(u)).map(u => ({ url: u, kind: 'upload_session' as const }));
+    }
+    return [];
+  }
+  const parts = rawSegs.map(s => s.replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
+  const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!;
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
   const memo = new Map<string, Promise<string | undefined>>();
