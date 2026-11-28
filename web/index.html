@@ -249,7 +249,7 @@ async function fetchInstance(path) {
 let checkDelete = null;
 
 function land(next, path, d, st) {
-  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived, wasOwner = cur?.s?.owner;
+  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived, wasOwner = cur?.s?.owner, wasManage = cur?.w.manage;
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
@@ -268,7 +268,7 @@ function land(next, path, d, st) {
   }
   [cur, data, shown] = [next, d, path];
   checkDelete?.();
-  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived || (pv?.settings?.kind === 'series' && (wasOwner !== cur?.s?.owner || pv.settings.owner !== cur?.s?.owner))) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
+  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived || wasManage !== cur?.w.manage || (pv?.settings?.kind === 'series' && (wasOwner !== cur?.s?.owner || pv.settings.owner !== cur?.s?.owner))) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
   }
@@ -278,12 +278,18 @@ function land(next, path, d, st) {
       const changed = pv.settings.s?.owner !== ns.owner || archived(pv.settings.w, pv.settings.s) !== archived(nw, ns) || pv.settings.w?.manage !== nw.manage;
       Object.assign(pv.settings, { w: nw, s: ns });
       if (changed) {
-        const text = $('#notetext')?.value, checked = $('#note-request')?.checked, files = $('#notefiles')?.files;
+        const text = $('#notetext')?.value ?? pv.settings.draft?.text, checked = $('#note-request')?.checked ?? pv.settings.draft?.checked, files = $('#notefiles')?.files?.length ? $('#notefiles').files : pv.settings.draft?.files;
+        const busy = pv.settings.posting || $('#pv [data-act=note-post]')?.hasAttribute('aria-busy');
         const settles = [...document.querySelectorAll('#pv .note .row2')].map(r => [r.querySelector('[data-seq]')?.dataset.seq, r.querySelector('input')?.value]).filter(([q, v]) => q && v);
+        pv.settings.draft = (text || checked || files?.length) ? { text, checked, files } : null;
         renderPv();
-        if (text && $('#notetext')) $('#notetext').value = text;
-        if (checked && $('#note-request')) $('#note-request').checked = true;
-        if (files?.length && $('#notefiles')) $('#notefiles').files = files;
+        if ($('#notetext')) {
+          if (text) $('#notetext').value = text;
+          if (checked && $('#note-request')) $('#note-request').checked = true;
+          if (files?.length && $('#notefiles')) $('#notefiles').files = files;
+          if (busy) $('#pv [data-act=note-post]')?.setAttribute('aria-busy', 'true');
+          pv.settings.draft = null;
+        }
         for (const [q, v] of settles) { const inp = $(`#pv [data-seq="${q}"]`)?.closest('.row2')?.querySelector('input'); if (inp) inp.value = v; }
       }
     }
@@ -688,11 +694,14 @@ function renderLog(force = false) {
     const comp = $('#conv > .compose');
     if (comp) {
       const mine = data.owner.by === me.email, lbl = comp.querySelector('.note-request'), row = comp.querySelector('.row2'), sub = comp.querySelector(':scope > .sub');
+      const box = comp.querySelector('#newcomment'), btn = comp.querySelector('[data-act=comment]');
       if (sub && !data.starts) sub.textContent = mine ? 'Save series credentials to start runs' : `Owned by ${nameOf(data.owner.by)} — what you add here won't start a run`;
+      if (box) box.placeholder = !data.starts ? (mine ? "Comment (won't start a run until you save series credentials)" : `A note for ${nameOf(data.owner.by)}: reply under an ask addressed to you to start a run`) : mine && !data.log.some(e => e.op === 'run') ? 'What should the agent do? Drop files here too' : 'The agent replies in the thread';
+      if (btn) btn.textContent = !mine && !data.starts ? 'Leave note' : 'Comment';
       if (mine) lbl?.remove();
       else if (lbl) {
-        const chk = lbl.querySelector('#comment-request')?.checked;
-        lbl.innerHTML = `<input type="checkbox" id="comment-request"${chk ? ' checked' : ''}> For ${data.owner.by ? esc(nameOf(data.owner.by)) : 'the owner'} to decide`;
+        const inp = lbl.querySelector('#comment-request');
+        if (inp) lbl.replaceChildren(inp, ` For ${data.owner.by ? nameOf(data.owner.by) : 'the owner'} to decide`);
       } else if (row) row.insertAdjacentHTML('beforeend', `<label class="note-request"><input type="checkbox" id="comment-request"> For ${data.owner.by ? esc(nameOf(data.owner.by)) : 'the owner'} to decide</label>`);
     }
   }
@@ -1884,12 +1893,19 @@ async function onAct(act, el) {
   }
   if (act === 'note-post') {
     const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), wanted = !!$('#note-request')?.checked, files = [];
-    if (!text) return;
-    for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    const live = tree.flatMap(w => w.series).find(s => s.id === id) ?? p.settings.s, request = wanted && live?.owner !== me.email;
-    await writeMessage({ series: id, text, files, ...(request && { request: true }) });
-    if (pv === p) await openNotes(id);
-    await refresh();
+    if (!text || p.settings.posting) return;
+    p.settings.posting = true;
+    try {
+      for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+      const live = tree.flatMap(w => w.series).find(s => s.id === id) ?? p.settings.s, request = wanted && live?.owner !== me.email;
+      await writeMessage({ series: id, text, files, ...(request && { request: true }) });
+      p.settings.draft = null;
+      if (pv === p) await openNotes(id);
+      await refresh();
+    } finally {
+      p.settings.posting = false;
+      if (pv === p) $('#pv [data-act=note-post]')?.removeAttribute('aria-busy');
+    }
   }
   if (act === 'note-taken' || act === 'note-aside') {
     const p = pv, series = p.settings.id, box = el.closest('.row2').querySelector('input'), text = box.value.trim();
@@ -1902,13 +1918,14 @@ async function onAct(act, el) {
     const at = act === 'comment' ? null : el.closest('.reply'), box = at ? at.querySelector('textarea') : $('#newcomment'), text = box.value.trim();
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
     if (!text) return;
-    const instance = cur.i.id, path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
+    const instance = cur.i.id, seriesId = cur.s.id, prevOwner = data.owner.by, path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
     const check = at ? null : own.el.querySelector('#comment-request'), wanted = !!check?.checked;
     for (const f of picked.files) files.push((await api(`${path}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
-    const request = wanted && data?.owner?.by !== me.email;
+    const live = tree.flatMap(w => w.series).find(s => s.id === seriesId), request = wanted && (live ? live.owner : prevOwner) !== me.email;
     await writeMessage({ instance, ...place, text, files, ...(request && { request: true }) });
     box.value = '';
-    if (check) check.checked = false;
+    const curCheck = at ? null : own.el.querySelector('#comment-request');
+    if (curCheck) curCheck.checked = false;
     thumbs(picked, new DataTransfer().files);
     own.replying.delete(+el.dataset.seq);
     own.on = own.ref = null;
