@@ -1055,6 +1055,13 @@ function withdrawOwner(email: string): Promise<void[]> {
   }));
 }
 
+function mustSteer(me: Me, sid: string, what: string, t = tree()) {
+  const owner = seriesSettings(seriesDir(sid)).owner;
+  const ws = t.workspaces[t.series[sid].workspace];
+  if (me.email !== owner && !canManage(me, ws))
+    throw new HttpError(403, `only the series owner${owner ? `, ${owner},` : ''} or a workspace manager can ${what}`);
+}
+
 async function interrupt(inst: Instance, a: Active | undefined, me: Me) {
   const t = tree();
   if (ownerOf(inst).by !== me.email && !canManage(me, t.workspaces[t.series[inst.seriesId].workspace]))
@@ -1455,6 +1462,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     if (['owner', 'credentials', 'owners'].includes(action)) throw new HttpError(405, 'GET owners or credentials, or PUT owner or credentials');
     if (action === 'promote') {
       // A task made a series, as it is, under a name of its own, its one instance the series' first.
+      mustSteer(me, id, 'promote this task', t);
       if (!s.single) throw new HttpError(400, `${s.name} is a series already`);
       if (instances(id)[0].hole) throw new HttpError(409, `${s.name} was deleted`);
       const name = folderName(String(payload.name ?? ''));
@@ -1510,6 +1518,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       return send(res, 200, { id: startWith(id, String(payload.label ?? ''), by, payload.quiet || seriesSettings(seriesDir(id)).owner !== by ? [] : [{ from: by }]).id });
     });
     if (req.method !== 'PUT') throw new HttpError(405, 'PUT, or POST a new instance');
+    mustSteer(me, id, 'change this series', t);
     const change = payload;
     if (['owner', 'consent', 'epoch', 'autonomous'].some(k => k in change)) throw new HttpError(400, 'use the explicit series owner and credentials endpoints');
     if (change.name !== undefined && change.name !== s.name) {
@@ -1680,6 +1689,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
   }
   if (action === 'rename') {
     // In any status, and mid-run: a run keeps the names it started with (view()).
+    mustSteer(me, inst.seriesId, 'rename this instance', t);
     const from = inst.label, s = t.series[inst.seriesId], to = folderName(url.searchParams.get('as') ?? '');
     // A task's name is its label.
     if (s.single && to !== s.name && Object.values(t.series).some(x => x.workspace === s.workspace && x.name === to)) throw new HttpError(409, `${to} exists`);

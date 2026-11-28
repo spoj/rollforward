@@ -2516,3 +2516,34 @@ test('DELETE /api/requests/:id allows only the series owner, workspace managers,
   assert.equal((await call('DELETE', `/api/requests/${r4}`)).status, 200, 'workspace manager dismisses request even when not series owner');
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);
 });
+
+test('series rename, archive/restore, promote, and instance rename require series owner or workspace manager', async () => {
+  const b = sessionOf(await login(bob))!;
+  const carol = 'carol-steer@demo.test';
+  const c = sessionOf(await login(carol))!;
+  const { id: ws } = await (await call('POST', '/api/workspaces', JSON.stringify({ name: 'SteerGateWs' }))).json();
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ owners: [adminEmail], members: [bob, carol] }))).status, 200);
+
+  // Series owned by Bob; Carol is a regular member, admin is a workspace manager (not owner).
+  const { id: sid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, name: 'S', logins: [], autonomous: false }), b)).json();
+  const { id: iid } = await (await call('POST', `/api/series/${sid}`, JSON.stringify({ label: 'Jan', quiet: true }), c)).json();
+  assert.ok(iid, 'a regular member can still open a quiet instance');
+
+  // Carol (non-owner, non-manager) gets 403 on rename, archive, and instance rename.
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ name: 'Hijacked' }), c)).status, 403);
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: true }), c)).status, 403);
+  assert.equal((await call('POST', `/api/instances/${iid}/rename?as=Hijacked`, undefined, c)).status, 403);
+
+  // Series owner (Bob) succeeds on series rename, instance rename, and archive; Carol cannot restore; WS manager (admin) restores.
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ name: 'Renamed' }), b)).status, 200);
+  assert.equal((await call('POST', `/api/instances/${iid}/rename?as=Jan-v2`, undefined, b)).status, 200);
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: true }), b)).status, 200);
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: false }), c)).status, 403);
+  assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: false }))).status, 200, 'workspace manager can restore');
+
+  // Task promote: Carol gets 403; Bob (owner) succeeds.
+  const { id: tid } = await (await call('POST', '/api/series', JSON.stringify({ workspace: ws, single: true, logins: [], autonomous: false }), b)).json();
+  assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'HijackedTask' }), c)).status, 403);
+  assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'PromotedTask' }), b)).status, 200);
+  assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);
+});

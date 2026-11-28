@@ -134,8 +134,8 @@ const instPath = () => `/api/instances/${cur.i.id}`;
 const go = id => { location.hash = '#/' + id; };
 const archived = (w = cur?.w, s = cur?.s) => !!(w?.archived || s?.archived);
 const editable = () => data?.doc.status === 'open' && !archived();
-// Whoever sees an instance watches its run; its series owner, the workspace's owners and admins alone stop it.
-const canStop = () => data?.owner.by === me.email || !!cur?.w.manage;
+// Whoever sees an instance watches its run; its series owner, the workspace's owners and admins steer it (stop, rename, archive, promote).
+const steers = () => data?.owner.by === me.email || !!cur?.w.manage;
 
 // Newest activity first, as in a chat: an instance's latest log entry, now while it runs; a series' newest instance's, and a
 // workspace's newest series'. A series' instances keep their labels' order.
@@ -422,12 +422,13 @@ function renderBar() {
   if (editing) return;
   const open = editable();
   let h = `<button class="menu" data-act="menu">☰</button>`;
-  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${cur?.s && (cur.s.notes || cur.s.single && !gone()) ? ` · <button class="quiet series-notes" data-act="notes" data-id="${esc(cur.s.id)}">${cur.s.notes ? esc(plural(cur.s.notes, 'open note')) : 'Notes'}</button>` : ''}</div><h1>${data && !gone() ? `<span class="t"${archived() ? '' : ' data-act="rename" title="Rename"'}>${esc(cur.i.label)}</span>${archived() ? '' : '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>'}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
+  const canRen = !archived() && steers();
+  h += `<div class="ttl"><div class="crumb">${esc(cur?.w.name ?? '')}${cur?.s ? ' · ' + esc(cur.s.single ? 'Ungrouped' : cur.s.name) : ''}${cur?.s && (cur.s.notes || cur.s.single && !gone()) ? ` · <button class="quiet series-notes" data-act="notes" data-id="${esc(cur.s.id)}">${cur.s.notes ? esc(plural(cur.s.notes, 'open note')) : 'Notes'}</button>` : ''}</div><h1>${data && !gone() ? `<span class="t"${canRen ? ' data-act="rename" title="Rename"' : ''}>${esc(cur.i.label)}</span>${canRen ? '<button class="ren" data-act="rename" title="Rename">' + ICON.edit + '</button>' : ''}` : esc(cur?.i?.label ?? 'No instance')}${data && !gone() ? owner() + `<span class="reacts">${reactHtml()}</span>` : ''}</h1></div>`;
   if (data) {
     const d = lastDone(), talk = data.waiting.length;
     const state = gone() ? `Deleted by ${esc(nameOf(gone().by))} · ${when(gone().at)}`
       : archived() ? 'Archived · read-only' : data.doc.status !== 'open' ? `${data.doc.status === 'closed' ? 'Closed' : 'Abandoned'} · read-only`
-      : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}${canStop() ? '<button class="quiet" data-act="interrupt">Interrupt</button>' : ''}`
+      : data.run ? `<span class="spin"></span>Agent working · run ${data.run.n}${steers() ? '<button class="quiet" data-act="interrupt">Interrupt</button>' : ''}`
       : data.queued ? '\u29D7 Queued' : d?.error ? `<span class="bad" title="${esc(d.error)}">Run ${d.run} failed · ${hhmm(d.at)}</span>`
       : d ? `Agent idle · Last run ${hhmm(d.at)}` : 'Waiting for files';
     const next = open && cur.i.wakes[0];
@@ -437,7 +438,7 @@ function renderBar() {
     const off = data.run ? 'disabled title="Available when the run ends"' : '', mine = data.owner.by === me.email;
     if (open) h += (mine ? `<button class="btn commit top" data-act="close" ${off}>Close</button>` : '')
       + ((mine || cur.w.manage) ? '<button class="btn top" data-act="series-owner">Transfer series…</button>' : '');
-    else if (cur.s.single && !archived() && !gone()) h += '<button class="btn top" data-act="start-series">Start series</button>';
+    else if (cur.s.single && !archived() && !gone() && steers()) h += '<button class="btn top" data-act="start-series">Start series</button>';
     if (cur.s.single && !gone()) h += '<button class="btn top" data-act="settings">Series settings</button>';
     // One control opens and closes the side panel, where it stays, with what waits there as its badge.
     h += `<button class="ptog ${ui.open ? 'on' : ''}" data-act="panel" title="${ui.open ? 'Close' : 'Open'} the conversation"><svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/>${ui.open ? '<rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none" opacity=".35"/>' : ''}</svg>${talk ? `<span class="badge">${talk}</span>` : ''}</button>`;
@@ -711,7 +712,7 @@ function renderPlayer() {
   put($('#player'), !site ? '' : `<div class="plh"><b>Run ${data.run.n}'s browser</b>${sites.length > 1 && !drive ? `<span class="seg">${sites.map(s => `<button class="${s === site ? 'sel' : ''}" data-act="watch" data-site="${esc(s)}">${esc(s)}</button>`).join('')}</span>` : `<span>on ${esc(site)}${drive ? ', in your control' : ''}</span>`}`
     + (drive ? '<button class="quiet" data-act="drive">Give back control</button></div>'
       : `${data.run.yours.includes(site) ? `<button class="quiet" data-act="drive" data-site="${esc(site)}" title="Pops it over the page for you to use, in your login, while the run goes on">Take control</button>` : ''}`
-        + `${canStop() ? '<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button>' : ''}<button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`)
+        + `${steers() ? '<button class="quiet" data-act="interrupt" title="Interrupts the run, which closes its browsers">Stop browser</button>' : ''}<button class="x" data-act="player" title="${folded ? 'Open' : 'Fold'}">${folded ? '\u25B4' : '\u25BE'}</button></div>`)
     + (folded && !drive ? '' : `<iframe src="/runs/${cur.i.id}/${enc(site)}/view?${drive ? 'drive' : 'watch'}" title="Run ${data.run.n}'s browser on ${esc(site)}"></iframe>`));
 }
 
@@ -1175,10 +1176,13 @@ function renderPv() {
       + agentsHtml(s, 'Every agent in this workspace reads it at the start of each run: its conventions, and changes that cut across its series, such as a renamed entity.', s.manage)
       + (s.manage && !s.archived ? moveHtml(s) : '')
       + (s.manage ? `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-workspace">${s.archived ? 'Restore workspace' : 'Archive workspace'}</button></div>` : '');
-    if (s.kind === 'series') h += (s.single ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
-      + `<h3>Who starts runs</h3>${startsHtml(s)}` + (s.single ? '' : `<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`)
-      + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost, s.estimated)} so far, ${usd(s.cost / Math.max(1, s.closed), s.estimated)} per closed instance.</div>`
-      + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : s.single ? '' : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
+    if (s.kind === 'series') {
+      const canSteerSeries = s.owner === me.email || !!cur.w.manage;
+      h += (s.single || !canSteerSeries ? '' : `<h3>Name</h3><input type="text" id="sname" value="${esc(s.name)}">`)
+        + `<h3>Who starts runs</h3>${startsHtml(s)}` + (s.single ? '' : `<h3>Wakes</h3>${wakesHtml(s.id, s.wakes, true)}`)
+        + `<h3>Cost</h3><div class="sub">This series' runs have cost ${usd(s.cost, s.estimated)} so far, ${usd(s.cost / Math.max(1, s.closed), s.estimated)} per closed instance.</div>`
+        + (cur.w.archived ? (cur.w.manage ? '<div class="row2"><button class="btn" data-act="archive-workspace">Restore workspace</button></div>' : '') : s.single || !canSteerSeries ? '' : `<div class="row2"><button class="btn${s.archived ? '' : ' danger'}" data-act="archive-series">${s.archived ? 'Restore series' : 'Archive series'}</button></div>`);
+    }
     h += '</div>';
   }
   // Drawn again as it is, as live updates redraw Waiting on you, the dialog stays scrolled where its reader left it.
@@ -1965,7 +1969,7 @@ async function onAct(act, el) {
     closePv();
     await refresh();
   }
-  if (act === 'rename') { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
+  if (act === 'rename' && steers()) { const path = instPath(); $('#bar .ren').disabled = true; editName($('#bar h1 .t'), cur.i.label, label => api(`${path}/rename?as=${enc(label)}`, { method: 'POST' })); }
   if (act === 'series-credentials') {
     const s = pv?.settings?.kind === 'series' ? pv.settings : cur.s;
     const body = { logins: ticked(), autonomous: $('#autonomous').checked, expectedEpoch: s.epoch, ...(s.scheduleRevision !== undefined && { expectedSchedules: s.scheduleRevision }) };
