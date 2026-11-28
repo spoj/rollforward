@@ -268,8 +268,13 @@ function land(next, path, d, st) {
   }
   [cur, data, shown] = [next, d, path];
   checkDelete?.();
-  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived || wasManage !== cur?.w.manage || (pv?.settings?.kind === 'series' && (wasOwner !== cur?.s?.owner || pv.settings.owner !== cur?.s?.owner))) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
-    Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
+  if (pv?.settings?.kind === 'workspace' && cur?.w?.id === pv.settings.id && (wasWorkspace !== cur.w.archived || wasManage !== cur.w.manage)) {
+    Object.assign(pv.settings, cur.w);
+    renderPv();
+  }
+  if (pv?.settings?.kind === 'series' && cur?.s?.id === pv.settings.id && (wasWorkspace !== cur.w.archived || wasSeries !== cur.s.archived || wasManage !== cur.w.manage || wasOwner !== cur.s.owner || pv.settings.owner !== cur.s.owner)) {
+    if ($('#autonomous')) { pv.on = ticked(); pv.autonomous = $('#autonomous').checked; }
+    Object.assign(pv.settings, cur.s);
     renderPv();
   }
   if (pv?.settings?.kind === 'notes') {
@@ -280,17 +285,19 @@ function land(next, path, d, st) {
       if (changed) {
         const text = $('#notetext')?.value ?? pv.settings.draft?.text, checked = $('#note-request')?.checked ?? pv.settings.draft?.checked, files = $('#notefiles')?.files?.length ? $('#notefiles').files : pv.settings.draft?.files;
         const busy = pv.settings.posting || $('#pv [data-act=note-post]')?.hasAttribute('aria-busy');
-        const settles = [...document.querySelectorAll('#pv .note .row2')].map(r => [r.querySelector('[data-seq]')?.dataset.seq, r.querySelector('input')?.value]).filter(([q, v]) => q && v);
-        pv.settings.draft = (text || checked || files?.length) ? { text, checked, files } : null;
+        const liveSettles = [...document.querySelectorAll('#pv .note .row2')].map(r => [r.querySelector('[data-seq]')?.dataset.seq, r.querySelector('input')?.value]).filter(([q, v]) => q && v);
+        const settles = liveSettles.length ? liveSettles : (pv.settings.draft?.settles ?? []);
+        pv.settings.draft = (text || checked || files?.length || settles.length) ? { text, checked, files, settles } : null;
         renderPv();
+        let restoredSettles = false;
+        for (const [q, v] of settles) { const inp = $(`#pv [data-seq="${q}"]`)?.closest('.row2')?.querySelector('input'); if (inp) { inp.value = v; restoredSettles = true; } }
         if ($('#notetext')) {
           if (text) $('#notetext').value = text;
           if (checked && $('#note-request')) $('#note-request').checked = true;
           if (files?.length && $('#notefiles')) $('#notefiles').files = files;
           if (busy) $('#pv [data-act=note-post]')?.setAttribute('aria-busy', 'true');
-          pv.settings.draft = null;
         }
-        for (const [q, v] of settles) { const inp = $(`#pv [data-seq="${q}"]`)?.closest('.row2')?.querySelector('input'); if (inp) inp.value = v; }
+        if ($('#notetext') && (!settles.length || restoredSettles)) pv.settings.draft = null;
       }
     }
   }
@@ -695,7 +702,12 @@ function renderLog(force = false) {
     if (comp) {
       const mine = data.owner.by === me.email, lbl = comp.querySelector('.note-request'), row = comp.querySelector('.row2'), sub = comp.querySelector(':scope > .sub');
       const box = comp.querySelector('#newcomment'), btn = comp.querySelector('[data-act=comment]');
-      if (sub && !data.starts) sub.textContent = mine ? 'Save series credentials to start runs' : `Owned by ${nameOf(data.owner.by)} — what you add here won't start a run`;
+      if (data.starts) sub?.remove();
+      else {
+        const msg = mine ? 'Save series credentials to start runs' : `Owned by ${nameOf(data.owner.by)} — what you add here won't start a run`;
+        if (sub) sub.textContent = msg;
+        else comp.querySelector('h3')?.insertAdjacentHTML('afterend', `<div class="sub">${esc(msg)}</div>`);
+      }
       if (box) box.placeholder = !data.starts ? (mine ? "Comment (won't start a run until you save series credentials)" : `A note for ${nameOf(data.owner.by)}: reply under an ask addressed to you to start a run`) : mine && !data.log.some(e => e.op === 'run') ? 'What should the agent do? Drop files here too' : 'The agent replies in the thread';
       if (btn) btn.textContent = !mine && !data.starts ? 'Leave note' : 'Comment';
       if (mine) lbl?.remove();
@@ -2011,7 +2023,8 @@ async function onAct(act, el) {
     saved();
   }
   if (act === 'archive-series' || act === 'archive-workspace') {
-    const x = act === 'archive-series' ? cur.s : cur.w, flip = () => api(act === 'archive-series' ? seriesPath(cur) : `/api/workspaces/${cur.w.id}`, { method: 'PUT', body: JSON.stringify({ archived: !x.archived }) });
+    const isSeries = act === 'archive-series', x = isSeries ? (pv?.settings?.kind === 'series' ? pv.settings : cur.s) : (pv?.settings?.kind === 'workspace' ? pv.settings : cur.w);
+    const url = isSeries ? `/api/series/${x.id}` : `/api/workspaces/${x.id}`, nextArchived = !x.archived, flip = () => api(url, { method: 'PUT', body: JSON.stringify({ archived: nextArchived }) });
     if (x.archived) await flip();
     else if (!await ask({ title: `Archive ${x.name}?`, text: "It leaves the sidebar, except under Show archived. Nothing in it changes or runs until it's restored, and its wakes, weekly ones too, and requests to start an instance are cancelled for good: restoring brings none back.", ok: 'Archive', kind: 'danger', act: flip })) return;
     closePv();

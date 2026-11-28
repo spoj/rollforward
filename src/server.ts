@@ -1817,8 +1817,8 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
     const owner = seriesSettings(seriesDir(inst.seriesId)).owner;
     const canName = by === owner || canManage(me, t.workspaces[s.workspace]);
-    const since = inst.log.findLastIndex(e => e.op === 'owner');
-    if (s.single && canName && words && words !== 'AGENTS.md' && !inst.log.some((e, idx) => e.op === 'rename' || (idx > since && e.op === 'comment' && e !== said && !e.informs && !e.note && !e.parent && e.by === owner))) {
+    const since = inst.log.findLastIndex(e => e.op === 'authority' || e.op === 'owner');
+    if (s.single && canName && words && words !== 'AGENTS.md' && !inst.log.some((e, idx) => e.op === 'rename' || (idx > since && e.op === 'comment' && e !== said && !e.informs && !e.note && !e.parent && (!e.thread || e.thread === `c${e.seq}`) && e.by === owner))) {
       const from = inst.label;
       s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);
