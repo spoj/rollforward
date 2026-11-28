@@ -249,7 +249,7 @@ async function fetchInstance(path) {
 let checkDelete = null;
 
 function land(next, path, d, st) {
-  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived;
+  const was = data && path === shown ? lastDone()?.seq ?? 0 : undefined, wasOpen = data?.doc.status === 'open' && !archived(), open = d?.doc.status === 'open' && !archived(next?.w, next?.s), wasWorkspace = cur?.w.archived, wasSeries = cur?.s?.archived, wasOwner = cur?.s?.owner;
   // A new selection opens its rows in the sidebar; from then on only their chevrons fold and open them.
   if (next?.w && next.w.id !== cur?.w.id) expandRow(next.w.id, true);
   if (next?.s && next.s.id !== cur?.s?.id) expandRow(next.s.id, true);
@@ -268,22 +268,23 @@ function land(next, path, d, st) {
   }
   [cur, data, shown] = [next, d, path];
   checkDelete?.();
-  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
+  if ((wasWorkspace !== cur?.w.archived || wasSeries !== cur?.s?.archived || (pv?.settings?.kind === 'series' && (wasOwner !== cur?.s?.owner || pv.settings.owner !== cur?.s?.owner))) && ['workspace', 'series'].includes(pv?.settings?.kind)) {
     Object.assign(pv.settings, pv.settings.kind === 'workspace' ? cur.w : cur.s);
     renderPv();
   }
   if (pv?.settings?.kind === 'notes') {
     const nw = tree.find(w => w.series.some(s => s.id === pv.settings.id)), ns = nw?.series.find(s => s.id === pv.settings.id);
     if (nw && ns) {
-      const prevOwner = pv.settings.s?.owner;
+      const changed = pv.settings.s?.owner !== ns.owner || archived(pv.settings.w, pv.settings.s) !== archived(nw, ns) || pv.settings.w?.manage !== nw.manage;
       Object.assign(pv.settings, { w: nw, s: ns });
-      if (prevOwner !== ns.owner) {
-        const lbl = $('#pv .note-request'), row = $('#pv [data-act=note-post]')?.closest('.row2');
-        if (ns.owner === me.email) lbl?.remove();
-        else if (lbl) {
-          const chk = lbl.querySelector('#note-request')?.checked;
-          lbl.innerHTML = `<input type="checkbox" id="note-request"${chk ? ' checked' : ''}> For ${ns.owner ? esc(nameOf(ns.owner)) : 'the owner'} to decide`;
-        } else if (row) row.insertAdjacentHTML('beforeend', `<label class="note-request"><input type="checkbox" id="note-request"> For ${ns.owner ? esc(nameOf(ns.owner)) : 'the owner'} to decide</label>`);
+      if (changed) {
+        const text = $('#notetext')?.value, checked = $('#note-request')?.checked, files = $('#notefiles')?.files;
+        const settles = [...document.querySelectorAll('#pv .note .row2')].map(r => [r.querySelector('[data-seq]')?.dataset.seq, r.querySelector('input')?.value]).filter(([q, v]) => q && v);
+        renderPv();
+        if (text && $('#notetext')) $('#notetext').value = text;
+        if (checked && $('#note-request')) $('#note-request').checked = true;
+        if (files?.length && $('#notefiles')) $('#notefiles').files = files;
+        for (const [q, v] of settles) { const inp = $(`#pv [data-seq="${q}"]`)?.closest('.row2')?.querySelector('input'); if (inp) inp.value = v; }
       }
     }
   }
@@ -369,7 +370,9 @@ function renderSide() {
     if (!listed(w, won) || (mine && !w.mine && !won)) continue;
     // Each series with the instances that match, where only they do.
     const series = sorted(w.series.filter(s => !s.single && listed(s, cur?.s?.id === s.id)), sAct, s => s.name).map(s => [s, wHit || hit(s.name) ? null : s.instances.filter(i => hit(i.label))]).filter(([, found]) => !found || found.length);
-    const tasks = sorted(w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances.map(i => ({ ...i, notes: s.notes }))), recent, i => i.label).filter(i => wHit || hit(i.label));
+    const tasks = sorted(w.series.filter(s => s.single && listed(s, cur?.s?.id === s.id)).flatMap(s => s.instances.map(i => ({ ...i, notes: s.notes, _s: s }))), recent, i => i.label).filter(i => wHit || hit(i.label));
+    const reqRow = (s, r) => `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)}</span></span>`
+      + (archived(w, s) ? '' : `${s.owner !== me.email ? '' : `<button class="add" data-act="req-start" data-ws="${w.id}" data-id="${r.id}"${r.target ? ` data-target="${r.target}"` : ''} title="${r.target ? 'Wake' : 'Start'} it">\u25B6</button>`}${s.owner === me.email || w.manage || r.from === me.email ? `<button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>` : ''}`) + '</div>';
     if (!wHit && !series.length && !tasks.length) continue;
     shown++;
     if (!wHit) opened.add(w.id);
@@ -391,8 +394,7 @@ function renderSide() {
       const closed = s.instances.length - open.length;
       h += '<div class="tree">';
       for (const k of s.wakes) h += `<div class="row wake"><span class="nm" title="Starts ${esc(k.label)} ${when(k.at)}${k.text ? `: ${esc(k.text)}` : ''}"><span class="l">Starts ${esc(k.label)} ${soon(k.at)}</span></span><span class="n">${k.days ? 'weekly' : 'wake'}</span></div>`;
-      for (const r of s.requests) h += `<div class="row req"><span class="nm" title="${esc(`${r.from} asks to ${r.target ? 'wake' : 'start'} ${r.label}${r.text ? `: ${r.text}` : ''}`)}"><span class="l">${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)}</span></span>`
-        + (archived(w, s) ? '' : `${s.owner !== me.email ? '' : `<button class="add" data-act="req-start" data-ws="${w.id}" data-id="${r.id}"${r.target ? ` data-target="${r.target}"` : ''} title="${r.target ? 'Wake' : 'Start'} it">\u25B6</button>`}${s.owner === me.email || w.manage || r.from === me.email ? `<button class="add" data-act="req-drop" data-id="${r.id}" title="Dismiss">\u00D7</button>` : ''}`) + '</div>';
+      for (const r of s.requests) h += reqRow(s, r);
       h += s.instances.filter(i => i.status === 'open' || showClosed.has(s.id) || i.id === cur?.i?.id).map(row).join('');
       if (closed) h += closedToggle(s.id, closed);
       h += '</div>';
@@ -401,7 +403,7 @@ function renderSide() {
     if (!q) for (const m of w.moved) h += `<div class="row wake"><span class="nm"><span class="l">${esc(m.name)} moved to ${esc(m.to)}</span></span><span class="n">${ago(m.at)}</span></div>`;
     // Tasks, each a series of its one instance, listed under a heading that is no series.
     const done = !wHit ? 0 : tasks.filter(i => i.status !== 'open').length;
-    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => !wHit || i.status === 'open' || showClosed.has(w.id) || i.id === cur?.i?.id).map(row).join('')
+    if (tasks.length) h += '<div class="row grp"><span class="nm">Ungrouped</span></div>' + tasks.filter(i => !wHit || i.status === 'open' || showClosed.has(w.id) || i.id === cur?.i?.id).map(i => row(i) + i._s.requests.map(r => reqRow(i._s, r)).join('')).join('')
       + (done ? closedToggle(w.id, done) : '');
     h += '</div>';
   }
@@ -681,7 +683,19 @@ function renderLog(force = false) {
     + '<button class="x" data-act="panel" title="Close">\u00D7</button>');
   $('#conv').hidden = ui.audit;
   if (force || !drafting) put($('#conv'), conversationHtml());
-  else for (const el of $('#conv').querySelectorAll('.post > .tm > .note-state')) put(el, noteChip(data.noteStates?.[`c${el.closest('.post').dataset.seq}`]));
+  else {
+    for (const el of $('#conv').querySelectorAll('.post > .tm > .note-state')) put(el, noteChip(data.noteStates?.[`c${el.closest('.post').dataset.seq}`]));
+    const comp = $('#conv > .compose');
+    if (comp) {
+      const mine = data.owner.by === me.email, lbl = comp.querySelector('.note-request'), row = comp.querySelector('.row2'), sub = comp.querySelector(':scope > .sub');
+      if (sub && !data.starts) sub.textContent = mine ? 'Save series credentials to start runs' : `Owned by ${nameOf(data.owner.by)} — what you add here won't start a run`;
+      if (mine) lbl?.remove();
+      else if (lbl) {
+        const chk = lbl.querySelector('#comment-request')?.checked;
+        lbl.innerHTML = `<input type="checkbox" id="comment-request"${chk ? ' checked' : ''}> For ${data.owner.by ? esc(nameOf(data.owner.by)) : 'the owner'} to decide`;
+      } else if (row) row.insertAdjacentHTML('beforeend', `<label class="note-request"><input type="checkbox" id="comment-request"> For ${data.owner.by ? esc(nameOf(data.owner.by)) : 'the owner'} to decide</label>`);
+    }
+  }
   for (const [k, v] of Object.entries(draft.kept)) {
     const [seq, mode] = k.split(':'), box = mode ? $(`#conv .post[data-seq="${seq}"] > .reply[data-mode="${mode}"] textarea`) : $(`#${k}`);
     if (box) { box.value = v; delete draft.kept[k]; }
@@ -1547,7 +1561,7 @@ function waiting() {
       if (i.wrong && i.owner === me.email) { out.push(`<div class="wt">${at(w, s, i)}: ${plural(i.wrong, 'correction')} say${i.wrong > 1 ? '' : 's'} it's wrong</div>`); actionable++; }
     }
     for (const r of s.requests.filter(() => s.owner === me.email)) {
-      out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button></div>`);
+      out.push(`<div class="wt">${at(w, s)}: ${r.from.includes('@') ? person(r.from) : esc(r.from.split('/').slice(-2).join(' · '))} asks to ${r.target ? 'wake' : 'start'} ${esc(r.label)} <button class="btn" data-act="req-start" data-ws="${esc(w.id)}" data-id="${esc(r.id)}"${r.target ? ` data-target="${esc(r.target)}"` : ''}>${r.target ? 'Wake' : 'Start'}</button> <button class="quiet" data-act="req-drop" data-id="${esc(r.id)}">Dismiss</button></div>`);
       actionable++;
     }
   }
@@ -1869,9 +1883,10 @@ async function onAct(act, el) {
     await refresh();
   }
   if (act === 'note-post') {
-    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), live = tree.flatMap(w => w.series).find(s => s.id === id) ?? p.settings.s, request = live?.owner !== me.email && !!$('#note-request')?.checked, files = [];
+    const p = pv, { id } = p.settings, text = $('#notetext').value.trim(), wanted = !!$('#note-request')?.checked, files = [];
     if (!text) return;
     for (const f of $('#notefiles').files) files.push((await api(`/api/series/${id}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    const live = tree.flatMap(w => w.series).find(s => s.id === id) ?? p.settings.s, request = wanted && live?.owner !== me.email;
     await writeMessage({ series: id, text, files, ...(request && { request: true }) });
     if (pv === p) await openNotes(id);
     await refresh();
@@ -1888,8 +1903,9 @@ async function onAct(act, el) {
     const picked = at ? at.querySelector('input[type=file]') : $('#newfiles');
     if (!text) return;
     const instance = cur.i.id, path = instPath(), own = draft, files = [], place = at ? { thread: `c${el.dataset.seq}` } : { ...(own.on && { item: own.on }), ...(own.ref && { ref: own.ref }) };
-    const check = at ? null : own.el.querySelector('#comment-request'), request = data.owner.by !== me.email && check?.checked;
+    const check = at ? null : own.el.querySelector('#comment-request'), wanted = !!check?.checked;
     for (const f of picked.files) files.push((await api(`${path}/attach?name=${enc(f.name)}`, { method: 'POST', body: f })).file);
+    const request = wanted && data?.owner?.by !== me.email;
     await writeMessage({ instance, ...place, text, files, ...(request && { request: true }) });
     box.value = '';
     if (check) check.checked = false;
@@ -2056,6 +2072,7 @@ async function onAct(act, el) {
   if (act === 'req-drop') {
     await api(`/api/requests/${el.dataset.id}`, { method: 'DELETE' });
     await refresh();
+    if (pv?.settings?.kind === 'waiting') renderPv();
   }
   if (act === 'browser-audit') {
     const sid = el.dataset.session;

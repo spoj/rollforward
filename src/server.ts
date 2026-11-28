@@ -1503,6 +1503,7 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
       if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'a note has text');
       if (!Array.isArray(files)) throw new HttpError(400, 'files is an array');
       if (request !== undefined && typeof request !== 'boolean') throw new HttpError(400, 'request must be true or false');
+      if (request && !run && by === seriesSettings(book).owner) throw new HttpError(400, 'only a collaborator or run asks the series owner to decide');
       for (const f of files) {
         const fd = typeof f === 'string' && /^files\/[^./][^/]*$/.test(f) ? openFile(join(book, 'notes'), f) : undefined;
         if (fd === undefined) throw new HttpError(400, `no attachment ${f}`);
@@ -1814,8 +1815,9 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
     res.setHeader('X-RF-Comment-Seq', said.seq);
     // Until a task is renamed, its first steering comment's opening words name it.
     const s = t.series[inst.seriesId], words = text.trim().split(/\s+/).slice(0, 6).join(' ').replace(/^\.+/, '').slice(0, 60);
-    const canName = by === seriesSettings(seriesDir(inst.seriesId)).owner || canManage(me, t.workspaces[s.workspace]);
-    if (s.single && canName && words && words !== 'AGENTS.md' && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && !e.informs && !e.note && isPerson(e)))) {
+    const owner = seriesSettings(seriesDir(inst.seriesId)).owner;
+    const canName = by === owner || canManage(me, t.workspaces[s.workspace]);
+    if (s.single && canName && words && words !== 'AGENTS.md' && !inst.log.some(e => e.op === 'rename' || (e.op === 'comment' && e !== said && !e.informs && !e.note && e.by === owner))) {
       const from = inst.label;
       s.name = freeName(t, s.workspace, folderName(words));
       saveTree(t);

@@ -2554,6 +2554,10 @@ test('series rename, archive/restore, promote, and instance rename require serie
   assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'HijackedTask' }), c)).status, 403);
   assert.equal((await call('POST', `/api/series/${tid}/promote`, JSON.stringify({ name: 'PromotedTask' }), b)).status, 200);
 
+  // Series owner cannot mark their own series note as a request to themselves.
+  assert.equal((await call('POST', `/api/series/${sid}/notes`, JSON.stringify({ text: 'Self request', request: true }), b)).status, 400, 'owner cannot mark own series note as request');
+  assert.equal((await call('POST', `/api/series/${sid}/notes`, JSON.stringify({ text: 'Colleague request', request: true }), c)).status, 200, 'collaborator can mark series note as request');
+
   // Archiving the workspace prevents restoring a child archived series while the workspace remains archived.
   assert.equal((await call('PUT', `/api/series/${sid}`, JSON.stringify({ archived: true }), b)).status, 200);
   assert.equal((await call('PUT', `/api/workspaces/${ws}`, JSON.stringify({ archived: true }))).status, 200);

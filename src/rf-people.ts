@@ -199,7 +199,7 @@ What there is
   will do for its series owner, such as sending mail, which waits until the owner or named addressee approves or rejects it, or the agent withdraws it; a
   proposal missing information should be rejected with feedback, so the agent can revise and propose again. Generic comments
   are not proposal decisions. rf ls says how many asks wait in each instance. Reactions, thumbs up or down, are
-  quiet signals kept for later. Only the series owner or the person a proposal names (--to) may approve or reject it, which commits the instance's folder to its
+  quiet signals kept for later. Only the series owner or the person a proposal names (--to) may approve or reject it; approval commits the instance's folder to its
   history, .git in it, as it is then, as closing does. Whose approval counts, and for what, is the series' call.
 
 What rf pull copies, the folders as the agent sees them
@@ -1223,7 +1223,7 @@ else if (cmd === 'kill' && args.length === 1 && /^\d+$/.test(args[0])) {
 } else if (cmd === 'wakes' && args.length <= 1) {
   const at = (args[0] ?? '').replace(/\/+$/, ''), rows = (await get('/api')).flatMap(w => w.series.filter(s => !s.archived).flatMap(s => [
     ...(s.single ? [] : [{ path: `${w.name}/${s.name}`, fired: s.fired, wakes: s.wakes, requests: s.requests }]),
-    ...s.instances.filter(i => i.wakes.length).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, fired: i.fired, wakes: i.wakes, requests: [] })),
+    ...s.instances.filter(i => i.wakes.length || (s.single && s.requests.length)).map(i => ({ path: `${w.name}/${s.name}/${i.label}`, fired: i.fired, wakes: i.wakes, requests: s.single ? s.requests : [] })),
   ])).filter(r => !at || r.path === at || r.path.startsWith(at + '/'));
   if (flags.json) console.log(JSON.stringify(rows, null, 1));
   else for (const r of rows) {
