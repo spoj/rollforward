@@ -1845,13 +1845,18 @@ async function api(me: Caller, req: IncomingMessage, res: ServerResponse, url: U
           if (!seriesConversation(inst.seriesId).notes.some(n => n.id === ask.noteFor && (n.anchor?.inst ?? inst.id) === inst.id
             && !n.settled && n.proposal?.inst === inst.id && n.proposal.seq === ask.seq)) throw new HttpError(409, `${ask.noteFor} no longer waits for this proposal`);
         }
+        if (by !== s.owner && by !== ask.to) {
+          throw new HttpError(403, ask.to
+            ? `only the series owner, ${s.owner}, or ${ask.to} can decide this proposal`
+            : `only the series owner, ${s.owner}, can decide this proposal`);
+        }
       };
       if (action === 'signoff' || action === 'reject') {
-        // Anyone who sees the instance approves a proposal of the agent's, which `thread` names as cN, or rejects it, with a note, as an
-        // ask from before questions and proposals, `ask: true`, which may have been either. Approving is a sign-off, the route's and the
-        // entry's name: it commits the folder in their name, as they say yes to it, the proposal and the note its message, with their
-        // Signed-off-by. Only an owner's non-quiet decision starts a run. rf 0.12's reject, a sign-off
-        // with approved false, is refused.
+        // Only the series owner or the proposal's named --to addressee approves a proposal of the agent's, which `thread` names as cN,
+        // or rejects it, with a note, as an ask from before questions and proposals, `ask: true`, which may have been either. Approving
+        // is a sign-off, the route's and the entry's name: it commits the folder in their name, as they say yes to it, the proposal and
+        // the note its message, with their Signed-off-by. Non-quiet decisions start a run under current consent. rf 0.12's reject, a
+        // sign-off with approved false, is refused.
         if (approved === false) throw new HttpError(400, 'a sign-off approves; to say no, reject it, on the page or with rf reject');
         if (!ask) throw new HttpError(409, `${thread} is no proposal of the agent's`);
         currentProposal();

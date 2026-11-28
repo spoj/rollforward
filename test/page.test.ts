@@ -730,7 +730,7 @@ test("what the session names, such as a tool call's name, shows as text in the a
   await page.click('#log .seg [data-act=audit]');
 });
 
-test("an ask from before questions and proposals shows the files it links and the runs since it, and anyone who sees the instance approves it from under it, which commits the folder, as the thread and the audit say", async () => {
+test("an ask from before questions and proposals shows the files it links and the runs since it, and only the series owner or named addressee sees Approve/Reject, which commits the folder, as the thread and the audit say", async () => {
   await page.evaluate(() => { location.hash = '#/a5c0ff5e1f00'; });
   await page.waitForSelector('#log.open');
   await page.locator('#needs', { hasText: 'The pack is ready to send to the bank.' }).waitFor();
@@ -752,6 +752,24 @@ test("an ask from before questions and proposals shows the files it links and th
   assert.ok(runs >= 1, 'the fixture has a run since the ask');
   assert.match(since, new RegExp(`waits on you · ${runs} runs? since`), 'what it links may have changed since');
   assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Approve\u2026', 'Reject\u2026'], 'an old ask takes a decision too');
+  // Uninvited non-owner sees no Approve/Reject buttons, while a named --to addressee does.
+  await page.evaluate(() => {
+    (window as any).__origOwner = data.owner;
+    data.owner = { ...data.owner, by: 'bob@demo.test' };
+    render();
+  });
+  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}'], 'uninvited non-owner sees no Approve/Reject');
+  await page.evaluate(() => {
+    data.log[1].to = me.email;
+    render();
+  });
+  assert.deepEqual(await thread.locator('.post > .pa button').allInnerTexts(), ['\u{1F44D}', '\u{1F44E}', 'Approve\u2026', 'Reject\u2026'], 'named --to addressee sees Approve/Reject');
+  await page.evaluate(() => {
+    delete data.log[1].to;
+    data.owner = (window as any).__origOwner;
+    delete (window as any).__origOwner;
+    render();
+  });
   await thread.locator('.pa button', { hasText: 'Approve' }).click();
   await thread.locator('.reply:not([hidden]) textarea').fill('Looks right.');
   await thread.locator('[data-act=approve]').click();
