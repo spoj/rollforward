@@ -133,10 +133,10 @@ async function check(runner: string, ticks: string[], { method, url, headers, js
 // the answer that makes one, at Outlook's host for mail and SharePoint's for files; and a file's download address, on the
 // driveItems an answer about files gives that a tick covers, at its drive's own site's host when it has one; never what a
 // file's or a message's content holds.
-async function links(j: any, path: string, email: string, ticks: string[], checkpoint: () => void): Promise<string[]> {
+async function links(j: any, path: string, email: string, ticks: string[], checkpoint: () => void): Promise<Array<{ url: string; kind: 'upload_session' | 'download' }>> {
   const parts = path.replace(/^\/[^/]+/, '').split('/').slice(1).map(s => decodeURIComponent(s).replace(/\(.*$/, '').split('.').pop()!.toLowerCase());
   const [top, , part] = parts[0] === 'me' ? ['users', '', ...parts.slice(1)] : parts, action = parts.at(-1)!, url = (u: unknown): u is string => typeof u === 'string' && URL.canParse(u);
-  if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u));
+  if (action === 'createuploadsession') return [j?.uploadUrl].filter(u => url(u) && (parts.includes('attachments') ? /^https:\/\/outlook\.office(365)?\.com\//i : /^https:\/\/([\w-]+\.)*(sharepoint\.com|svc\.ms)\//i).test(u)).map(u => ({ url: u, kind: 'upload_session' as const }));
   if (!['drives', 'shares'].includes(top) && !['drive', 'drives'].includes(part) || ['content', '$value'].includes(action)) return [];
   const items = [j, ...(Array.isArray(j?.value) ? j.value : [])].filter(i => url(i?.['@microsoft.graph.downloadUrl']) && typeof i?.id === 'string' && typeof i?.parentReference?.driveId === 'string');
   const memo = new Map<string, Promise<string | undefined>>();
@@ -145,7 +145,7 @@ async function links(j: any, path: string, email: string, ticks: string[], check
     return (!site || new URL(i['@microsoft.graph.downloadUrl']).origin === `https://${site}`)
       && !!await covering(email, ticks, i.parentReference.driveId, i.id, i.parentReference.id, checkpoint, memo);
   }));
-  return items.filter((_, k) => at[k]).map(i => i['@microsoft.graph.downloadUrl']);
+  return items.filter((_, k) => at[k]).map(i => ({ url: i['@microsoft.graph.downloadUrl'], kind: 'download' as const }));
 }
 
 export default {

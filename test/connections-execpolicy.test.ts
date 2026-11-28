@@ -57,6 +57,14 @@ const upstream = createServer(async (req, res) => {
   for await (const ch of req) chunks.push(ch as Buffer);
   const rawBuf = Buffer.concat(chunks);
   const rawBody = rawBuf.toString('utf8');
+  if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/root:/folder/my-createUploadSession')) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return void res.end(JSON.stringify({
+      id: 'i1',
+      parentReference: { driveId: 'd1', id: 'root' },
+      '@microsoft.graph.downloadUrl': 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1',
+    }));
+  }
   if (req.method === 'GET' && req.url?.startsWith('/v1.0/drives/d1/items/i1')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     return void res.end(JSON.stringify({ id: 'i1', parentReference: { driveId: 'd1', id: 'root' } }));
@@ -365,6 +373,34 @@ test('R2 PrefixReader boundary sizes (65535B, 65536B, 65537B, 300 KiB), If-Match
   assert.equal(writeUpstreamHits, beforeChunk + 1);
   assert.equal(lastWriteLength, chunk320k.length, 'exact 320 KiB chunk received upstream');
   assert.equal((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
+
+  // 3b. R11 grant-issuance regression: Graph file lookup whose filename ends in `createUploadSession` returning
+  // `@microsoft.graph.downloadUrl` MUST record linkKind='download' (NEVER 'upload_session') so a subsequent
+  // PUT to that exact granted SharePoint URL is BLOCKED (not allow_upload_session_chunk)!
+  const rLookup = await sendViaProxy(
+    run,
+    'graph.microsoft.com',
+    'GET',
+    '/v1.0/drives/d1/root:/folder/my-createUploadSession',
+    {},
+  );
+  assert.equal(rLookup.status, 200);
+  const grantedDownloadUrl = 'https://contoso.sharepoint.com/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1';
+  assert.ok(run.links.has(grantedDownloadUrl), 'downloadUrl granted by Graph lookup');
+  const beforeSpoofPut = writeUpstreamHits;
+  const rDownloadPut = await sendViaProxy(
+    run,
+    'contoso.sharepoint.com',
+    'PUT',
+    '/sites/fin/_api/v2.0/drives/d1/items/i1/uploadSession?download=1',
+    { 'content-type': 'application/octet-stream' },
+    Buffer.alloc(100 * 1024, 0x42).toString('latin1'),
+  );
+  assert.equal(rDownloadPut.status, 403, 'PUT on download-granted URL MUST be blocked in enforce mode');
+  assert.match(rDownloadPut.text.trim(), /^blocked by policy: [a-z0-9_]+ \(decisionId=[0-9a-f-]+\)$/);
+  assert.equal(rDownloadPut.text.includes('allow_upload_session_chunk'), false);
+  assert.notEqual((entries.findLast(e => e.op === 'call')!.policy as any).ruleId, 'allow_upload_session_chunk');
+  assert.equal(writeUpstreamHits, beforeSpoofPut, 'blocked before upstream dial');
 
   // 4. Atomic concurrency test: owner-signed maxUses:1 + 5 parallel sendMail (150ms delayed upstream) -> EXACTLY 1 x 200 and 4 x 403!
   const prop = inst.append('agent', 'comment', {

@@ -1746,6 +1746,59 @@ test('R10 Astra convergence: authoritative linkKind provenance, strict host-spec
   }
 });
 
+test('R11 Astra convergence: earliest REST-marker subpath (_vti_bin before _api), /sites/deletebyids/ recycle() proposal parity, and interior empty segment rejection in uploadSession paths', () => {
+  const hmacKey = Buffer.alloc(32, 0xfb);
+
+  // 1. Astra P1-2: /_vti_bin/client.svc/DeleteByIds/_api/web/lists slices from earliest REST marker (_vti_bin) -> DeleteByIds detected & bodyShape/reqBody suppressed!
+  const vtiBeforeApi = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 1, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/_vti_bin/client.svc/DeleteByIds/_api/web/lists'),
+    headers: { 'content-type': 'application/json' },
+    rawBody: Buffer.from(JSON.stringify({ SecretVtiKey: ['vti-secret-id'], __metadata: { type: 'SecretVtiMeta' } })),
+    bodyComplete: true, projection: 'semantic+samples',
+  }).descriptor;
+  assert.equal(vtiBeforeApi.safe.actions[0].family, 'sharepoint');
+  assert.equal(vtiBeforeApi.safe.actions[0].op, 'sharepoint:delete');
+  assert.equal(vtiBeforeApi.safe.bodyShape, undefined, '_vti_bin before _api DeleteByIds must suppress bodyShape');
+  assert.equal(vtiBeforeApi.safe.reqBody, undefined, '_vti_bin before _api DeleteByIds must suppress reqBody');
+  assert.equal(vtiBeforeApi.safe.actions[0].details?.metadataType, undefined);
+  assert.equal(JSON.stringify(vtiBeforeApi.safe).includes('SecretVtiKey'), false);
+  assert.equal(JSON.stringify(vtiBeforeApi.safe).includes('vti-secret-id'), false);
+  assert.equal(evaluateStage1(vtiBeforeApi.safe, 'enforce', { approved: true, approvalRef: 'c2', recentApprovedProposals: [] }).ruleId, 'sharepoint_incomplete_selector');
+
+  // 2. Astra P2 #1: Site named /sites/deletebyids/_api/web/lists/items(1)/recycle() accepted as recycle() proposal WITHOUT demanding ids, and matches runtime!
+  const recycleUnderDeleteByIdsSite = validateAndNormalizeApprovalScope({
+    action: 'sharepoint_destructive_write',
+    connection: 'sp-svc',
+    host: 'sp-svc.rf.internal',
+    target: '/sites/deletebyids/_api/web/lists/items(1)/recycle()',
+    maxUses: 1,
+  }, { workspace: 'w', hmacKey });
+  assert.equal(recycleUnderDeleteByIdsSite.ids, undefined, 'site prefix deletebyids must not demand bulk ids');
+  const log: Entry[] = [
+    { seq: 1, at: '2026-11-27T01:00:00Z', by: 'alice@demo.test', op: 'create' },
+    { seq: 2, at: '2026-11-27T01:01:00Z', by: 'agent', op: 'comment', ask: 'proposal', text: 'Recycle item 1', execpolicy: recycleUnderDeleteByIdsSite },
+    { seq: 3, at: '2026-11-27T01:02:00Z', by: 'alice@demo.test', op: 'signoff', on: 2, text: 'Approved' },
+  ];
+  const rtRecycle = buildApiRequestDescriptor({
+    connection: 'sp-svc', connectionType: 'service', hmacKey, seq: 2, method: 'POST',
+    url: new URL('https://sp-svc.rf.internal/sites/deletebyids/_api/web/lists/items(1)/recycle()'),
+    headers: {}, rawBody: Buffer.alloc(0), bodyComplete: true,
+  }).descriptor;
+  assert.equal(findCurrentEpochApproval(log, { owner: 'alice@demo.test', workspace: 'w', safe: rtRecycle.safe }).approved, true, 'recycle() under /sites/deletebyids/ matches signed proposal');
+
+  // 3. Astra P2 #2: Reject interior empty segments (//) in upload-session path matching!
+  const doubleSlashUpload = buildApiRequestDescriptor({
+    connection: 'graph', connectionType: 'link', hmacKey, seq: 3, method: 'PUT',
+    url: new URL('https://contoso.sharepoint.com/_api//v2.0/drives/d/items/i/uploadSession'),
+    headers: { 'content-type': 'application/octet-stream' },
+    rawBody: Buffer.from([1, 2, 3]),
+    bodyComplete: false, transport: 'truncated',
+  }).descriptor;
+  assert.notEqual(doubleSlashUpload.safe.actions[0].op, 'graph:upload_session_chunk', 'interior // must not match upload-session endpoint');
+  assert.notEqual(evaluateStage1(doubleSlashUpload.safe, 'enforce', { approved: false, recentApprovedProposals: [] }).ruleId, 'allow_upload_session_chunk');
+});
+
 test('Stage-2 TriageHook: shadow adds zero latency, enforce fails closed on throw/timeout, and Stage-2 never overrides Stage-1 deny', async () => {
   const unguarded = buildApiRequestDescriptor({
     connection: 'graph', connectionType: 'graph', seq: 1, method: 'PUT',

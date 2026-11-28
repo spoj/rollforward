@@ -895,7 +895,19 @@ export function validateSharePointDeleteIds(
   return { ok: true, ids, bodySelector: JSON.stringify({ op: 'deletebyids', ids }) }
 }
 
+// Return the SharePoint REST subpath starting at the EARLIEST /_api/ or /_vti_bin/ marker in decoded path order.
+export function extractSharePointRestSubpath(decodedPath: string): string {
+  const lower = decodedPath.toLowerCase()
+  const apiIdx = lower.indexOf('/_api/')
+  const vtiIdx = lower.indexOf('/_vti_bin/')
+  const idx = apiIdx >= 0 && vtiIdx >= 0 ? Math.min(apiIdx, vtiIdx) : apiIdx >= 0 ? apiIdx : vtiIdx
+  return idx >= 0 ? decodedPath.slice(idx) : ''
+}
+
 export function isUploadSessionEndpointPath(rawPathname: string, host?: string): boolean {
+  // Reject interior empty segments (//) while preserving an optional single trailing slash!
+  const withoutTrailingSlash = rawPathname.endsWith('/') ? rawPathname.slice(0, -1) : rawPathname
+  if (withoutTrailingSlash.includes('//') || withoutTrailingSlash.endsWith('/')) return false
   const { decodedPath, invalidEncoding } = decodePathSegmentsStrict(rawPathname)
   if (invalidEncoding) return false
   const p = decodedPath.toLowerCase()
@@ -1856,12 +1868,9 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
         ))
       )
     const isUploadSessionHost = /(?:^|\.)(?:sharepoint\.com|svc\.ms|outlook\.office(?:365)?\.com)$/i.test(input.url.hostname)
-    // Scope SharePoint destructive operation matching strictly to the REST endpoint portion AFTER /_api/ or /_vti_bin/
-    // so a site named /sites/recycle/_api/... is never misclassified as a delete!
-    const spApiIdx = decodedLowerPath.indexOf('/_api/') >= 0
-      ? decodedLowerPath.indexOf('/_api/')
-      : decodedLowerPath.indexOf('/_vti_bin/')
-    const spRestPath = spApiIdx >= 0 ? decodedLowerPath.slice(spApiIdx) : ''
+    // Scope SharePoint destructive operation matching strictly to the REST endpoint portion starting at the
+    // EARLIEST /_api/ or /_vti_bin/ marker in decoded path order!
+    const spRestPath = extractSharePointRestSubpath(decodedLowerPath)
     const spDestructiveOp = spRestPath !== '' && /\/(?:recycle|recyclewithparameters|deleteobject|deletebyids?|deleteall|deleteallsecondstageitems|deletewithparameters)(?:\(|$|\/)/i.test(spRestPath)
     const isDeleteByIdsPath = spRestPath !== '' && /\/deletebyids(?:\(|$|\/)/i.test(spRestPath)
     const isSpBatchPath = /(?:^|\/)(?:_api|_vti_bin)(?:\/[^/]*)?\/\$batch\/?$/i.test(decodedLowerPath)
@@ -1896,9 +1905,7 @@ export function extractSemantic(input: ExtractInput): ExtractOutput {
       extractStatus = 'complete'
     } else if (isSharePointRoute) {
       // Classify supported SharePoint REST routes BEFORE generic Graph, Databricks, service, and E1 heuristics!
-      const sanLower = input.sanitizedPath.toLowerCase()
-      const apiIdx = sanLower.indexOf('/_api/') >= 0 ? sanLower.indexOf('/_api/') : sanLower.indexOf('/_vti_bin/')
-      const spResource = apiIdx >= 0 ? input.sanitizedPath.slice(apiIdx) : input.sanitizedPath
+      const spResource = extractSharePointRestSubpath(input.sanitizedPath) || input.sanitizedPath
       const hasIfMatch = hasStrongIfMatch(input.rawHeaders)
       const isDeleteByIds = isDeleteByIdsPath
       // Suppress body-derived key paths (bodyShape), raw samples (reqBody), and metadata values on DeleteByIds

@@ -13,6 +13,7 @@ import {
   computeTargetDigest,
   decodePathSegmentsStrict,
   effectiveAuthority,
+  extractSharePointRestSubpath,
   isValidEmailDomain,
   parseSemanticMethods,
   validateSharePointDeleteIds,
@@ -527,7 +528,8 @@ export function validateAndNormalizeApprovalScope(
     connType = 'graph'
     host = 'graph.microsoft.com'
   } else if (action === 'sharepoint_destructive_write') {
-    if (!decodedTargetLower.includes('/_api/') && !decodedTargetLower.includes('/_vti_bin/')) {
+    const spRestTarget = extractSharePointRestSubpath(decodedTargetLower)
+    if (!spRestTarget) {
       throw new HttpError(400, 'sharepoint_destructive_write target must be a /_api/ or /_vti_bin/ path')
     }
     if (!explicitHost) {
@@ -536,7 +538,7 @@ export function validateAndNormalizeApprovalScope(
     host = explicitHost
     surface = site ? 'browser' : 'api'
     connType = 'sharepoint'
-    const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(decodedTargetLower)
+    const isDeleteByIds = /\/deletebyids(?:\(|$|\/)/i.test(spRestTarget)
     if (isDeleteByIds) {
       const parsed = validateSharePointDeleteIds(obj.ids, containsRawSecret)
       if (!parsed.ok) {
